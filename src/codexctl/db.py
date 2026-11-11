@@ -85,6 +85,18 @@ CREATE TABLE IF NOT EXISTS audit_log (
     target TEXT NOT NULL,
     detail TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS admins (
+    username TEXT PRIMARY KEY,
+    password_hash TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS web_sessions (
+    token_hash TEXT PRIMARY KEY,
+    username TEXT NOT NULL,
+    csrf TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+);
 """
 
 

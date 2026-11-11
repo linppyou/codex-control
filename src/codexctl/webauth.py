@@ -1,0 +1,123 @@
+from __future__ import annotations
+
+import hashlib
+import re
+import secrets
+import sqlite3
+
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerificationError
+
+from .db import transaction
+
+SESSION_TTL = 12 * 3600
+MIN_PASSWORD_LEN = 12
+_NAME_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}$")
+_hasher = PasswordHasher()
+_DUMMY_HASH = _hasher.hash("codexctl-dummy-password")
+
+
+class AuthError(Exception):
+    pass
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _check_password(password: str) -> None:
+    if len(password) < MIN_PASSWORD_LEN:
+        raise AuthError(f"密码至少 {MIN_PASSWORD_LEN} 个字符")
+
+
+def create_admin(conn: sqlite3.Connection, username: str, password: str, *, now: int) -> None:
+    if not _NAME_RE.fullmatch(username):
+        raise AuthError("管理员用户名只能包含小写字母、数字、_ . -，且以字母或下划线开头，最长 32 位")
+    _check_password(password)
+    with transaction(conn):
+        if conn.execute("SELECT 1 FROM admins WHERE username = ?", (username,)).fetchone():
+            raise AuthError(f"管理员已存在：{username}")
+        conn.execute(
+            "INSERT INTO admins(username, password_hash, created_at) VALUES (?, ?, ?)",
+            (username, _hasher.hash(password), now),
+        )
+
+
+def set_password(conn: sqlite3.Connection, username: str, password: str, *, now: int) -> None:
+    _check_password(password)
+    with transaction(conn):
+        cur = conn.execute(
+            "UPDATE admins SET password_hash = ? WHERE username = ?", (_hasher.hash(password), username)
+        )
+        if cur.rowcount == 0:
+            raise AuthError(f"管理员不存在：{username}")
+        conn.execute("DELETE FROM web_sessions WHERE username = ?", (username,))
+
+
+def list_admins(conn: sqlite3.Connection) -> list[str]:
+    return [r["username"] for r in conn.execute("SELECT username FROM admins ORDER BY username")]
+
+
+def verify_login(conn: sqlite3.Connection, username: str, password: str) -> bool:
+    row = conn.execute("SELECT password_hash FROM admins WHERE username = ?", (username,)).fetchone()
+    stored = row["password_hash"] if row else _DUMMY_HASH
+    try:
+        _hasher.verify(stored, password)
+    except (VerificationError, InvalidHashError):
+        return False
+    if row is None:
+        return False
+    if _hasher.check_needs_rehash(stored):
+        conn.execute(
+            "UPDATE admins SET password_hash = ? WHERE username = ?", (_hasher.hash(password), username)
+        )
+    return True
+
+
+def create_session(conn: sqlite3.Connection, username: str, *, now: int) -> tuple[str, str]:
+    token = secrets.token_urlsafe(32)
+    csrf = secrets.token_urlsafe(32)
+    with transaction(conn):
+        conn.execute("DELETE FROM web_sessions WHERE expires_at < ?", (now,))
+        conn.execute(
+            "INSERT INTO web_sessions(token_hash, username, csrf, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+            (_hash_token(token), username, csrf, now, now + SESSION_TTL),
+        )
+    return token, csrf
+
+
+def get_session(conn: sqlite3.Connection, token: str, *, now: int) -> tuple[str, str] | None:
+    row = conn.execute(
+        "SELECT username, csrf FROM web_sessions WHERE token_hash = ? AND expires_at >= ?",
+        (_hash_token(token), now),
+    ).fetchone()
+    return (row["username"], row["csrf"]) if row else None
+
+
+def delete_session(conn: sqlite3.Connection, token: str) -> None:
+    conn.execute("DELETE FROM web_sessions WHERE token_hash = ?", (_hash_token(token),))
+
+
+class LoginRateLimiter:
+    def __init__(self, max_failures: int = 5, window: int = 900) -> None:
+        self.max_failures = max_failures
+        self.window = window
+        self._failures: dict[str, list[int]] = {}
+
+    def _recent(self, ip: str, now: int) -> list[int]:
+        recent = [t for t in self._failures.get(ip, []) if now - t < self.window]
+        if recent:
+            self._failures[ip] = recent
+        else:
+            self._failures.pop(ip, None)
+        return recent
+
+    def allowed(self, ip: str, now: int) -> bool:
+        return len(self._recent(ip, now)) < self.max_failures
+
+    def record_failure(self, ip: str, now: int) -> None:
+        self._recent(ip, now)
+        self._failures.setdefault(ip, []).append(now)
+
+    def reset(self, ip: str) -> None:
+        self._failures.pop(ip, None)

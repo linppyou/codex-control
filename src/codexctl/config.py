@@ -24,6 +24,10 @@ class Settings:
     usage_url: str = "https://chatgpt.com/backend-api/wham/usage"
     http_timeout: float = 10.0
     log_lookback_days: int = 8
+    web_host: str = "127.0.0.1"
+    web_port: int = 8700
+    web_cookie_secure: bool = True
+    hidden_users: tuple[str, ...] = ()
 
     @property
     def db_path(self) -> Path:
@@ -47,5 +51,9 @@ def load_settings(path: Path | None) -> Settings:
     for key, value in data.items():
         if key not in known:
             raise ValueError(f"unknown config key: {key}")
-        kwargs[key] = Path(value) if key in _PATH_KEYS else value
+        if key in _PATH_KEYS:
+            value = Path(value)
+        elif key == "hidden_users":
+            value = tuple(value)
+        kwargs[key] = value
     return Settings(**kwargs)

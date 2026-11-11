@@ -157,3 +157,29 @@ def test_account_republish_uses_locked_reload(ctx, tmp_path, monkeypatch):
     monkeypatch.setattr(cli.accounts, "republish_account", lambda c, label: called.append(label))
     assert run_cli(ctx, "account", "republish", "acc1") == 0
     assert called == ["acc1"]
+
+
+def _admin_cfg(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    cfg = tmp_path / "c.toml"
+    cfg.write_text(f'state_dir = "{state}"\n')
+    return cfg
+
+
+def test_admin_create_list_passwd(tmp_path, monkeypatch, capsys):
+    cfg = _admin_cfg(tmp_path)
+    pws = iter(["long-password-123", "long-password-123", "new-long-password-1", "new-long-password-1"])
+    monkeypatch.setattr("getpass.getpass", lambda *a, **k: next(pws))
+    assert cli.main(["-c", str(cfg), "admin", "create", "bob"]) == 0
+    assert cli.main(["-c", str(cfg), "admin", "list"]) == 0
+    assert "bob" in capsys.readouterr().out
+    assert cli.main(["-c", str(cfg), "admin", "passwd", "bob"]) == 0
+
+
+def test_admin_create_mismatch_returns_1(tmp_path, monkeypatch, capsys):
+    cfg = _admin_cfg(tmp_path)
+    pws = iter(["long-password-123", "different-password"])
+    monkeypatch.setattr("getpass.getpass", lambda *a, **k: next(pws))
+    assert cli.main(["-c", str(cfg), "admin", "create", "bob"]) == 1
+    assert "错误：" in capsys.readouterr().err

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import logging
 import sqlite3
 import sys
@@ -9,7 +10,7 @@ import tomllib
 from pathlib import Path
 from typing import Callable
 
-from . import accounts, assignments, daemon, db, locks, refresher, repo, selfcheck, watcher
+from . import accounts, assignments, daemon, db, locks, refresher, repo, selfcheck, watcher, webauth
 from .authfile import AuthFileError
 from .config import Settings, load_settings
 from .context import Context, open_context
@@ -22,7 +23,7 @@ DEFAULT_CONFIG = Path("/etc/codexctl/config.toml")
 ACTOR = "cli"
 _HANDLED = (
     accounts.AccountError, assignments.AssignError, UserError, AuthFileError,
-    PublishError, VaultError, CommandError, locks.LockBusy, OSError, sqlite3.Error, LookupError,
+    PublishError, VaultError, CommandError, webauth.AuthError, locks.LockBusy, OSError, sqlite3.Error, LookupError,
 )
 
 
@@ -73,6 +74,11 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--days", type=_positive_int, default=7)
     sub.add_parser("check", help="运行一次巡检")
     sub.add_parser("daemon", help="运行后台定时任务")
+    adm = sub.add_parser("admin", help="Web 面板管理员").add_subparsers(dest="admcmd", required=True)
+    adm.add_parser("list", help="列出管理员")
+    for name, help_text in (("create", "创建管理员"), ("passwd", "修改管理员密码")):
+        a = adm.add_parser(name, help=help_text)
+        a.add_argument("name")
     return p
 
 
@@ -89,6 +95,8 @@ def main(argv: list[str] | None = None, context_factory: Callable[[Settings], Co
             return cmd_init(settings)
         if args.cmd == "selfcheck":
             return report(selfcheck.selfcheck(settings))
+        if args.cmd == "admin":
+            return admin_cmd(settings, args)
         ctx = context_factory(settings)
         return dispatch(ctx, args)
     except (*_HANDLED, tomllib.TOMLDecodeError, ValueError) as e:
@@ -109,6 +117,29 @@ def cmd_init(settings: Settings) -> int:
     db.connect(settings.db_path).close()
     settings.db_path.chmod(0o600)
     return report(selfcheck.selfcheck(settings))
+
+
+def admin_cmd(settings: Settings, args: argparse.Namespace) -> int:
+    conn = db.connect(settings.db_path)
+    try:
+        if args.admcmd == "list":
+            for name in webauth.list_admins(conn):
+                print(_safe(name))
+            return 0
+        password = getpass.getpass("密码：")
+        if getpass.getpass("再输入一次：") != password:
+            print("错误：两次输入的密码不一致", file=sys.stderr)
+            return 1
+        now = int(time.time())
+        if args.admcmd == "create":
+            webauth.create_admin(conn, args.name, password, now=now)
+            print(_safe(f"已创建管理员 {args.name}"))
+        else:
+            webauth.set_password(conn, args.name, password, now=now)
+            print(_safe(f"已修改 {args.name} 的密码，其所有会话已失效"))
+        return 0
+    finally:
+        conn.close()
 
 
 def report(problems: list[str]) -> int:
