@@ -27,3 +27,7 @@ def test_unknown_key_rejected(tmp_path):
     cfg.write_text("nope = 1\n")
     with pytest.raises(ValueError, match="unknown config key: nope"):
         load_settings(cfg)
+
+
+def test_quota_poll_seconds_default():
+    assert Settings().quota_poll_seconds == 600

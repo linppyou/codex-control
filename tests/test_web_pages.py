@@ -1,4 +1,5 @@
 import dataclasses
+import httpx
 import re
 import time
 from urllib.parse import parse_qs, urlparse
@@ -325,3 +326,140 @@ def test_republish_and_cancel_audited(c, ctx):
     got = [tuple(x) for x in ctx.conn.execute("SELECT actor, action, target FROM audit_log")]
     assert ("web:root_admin", "account.republish", "acc1") in got
     assert ("web:root_admin", "account.login_cancel", "zzz") in got
+
+
+USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+USAGE_BODY = {"rate_limit": {
+    "primary_window": {"used_percent": 33, "limit_window_seconds": 18000, "reset_at": 1_800_000_000 + 3000},
+    "secondary_window": {"used_percent": 7, "limit_window_seconds": 604800, "reset_at": 1_800_000_000 + 90000},
+}}
+
+
+def seed_history(ctx, pk=1):
+    now = ctx.now()
+    for i, (a, b) in enumerate([(10.0, 1.0), (20.0, 2.0), (30.0, 3.0)]):
+        ts = now - 600 * (3 - i)
+        repo.insert_quota_sample(ctx.conn, pk, ts, "primary", a, 300, ts + 3000, "api")
+        repo.insert_quota_sample(ctx.conn, pk, ts, "secondary", b, 10080, ts + 90000, "api")
+    old = now - 3 * 86400
+    repo.insert_quota_sample(ctx.conn, pk, old, "primary", 77.0, 300, old + 100, "api")
+
+
+def test_quota_page_rows_and_days(c, ctx):
+    add_acc(ctx)
+    seed_history(ctx)
+    r = c.get("/accounts/acc1/quota")
+    assert r.status_code == 200 and 'style="' not in r.text
+    assert "acc1 额度记录" in r.text and "5小时已用" in r.text and "7天已用" in r.text
+    assert "30%" in r.text and "20%" in r.text and "10%" in r.text and "3%" in r.text
+    assert "77%" not in r.text and "立即更新" in r.text
+    assert "77%" in c.get("/accounts/acc1/quota?days=7").text
+    assert "77%" not in c.get("/accounts/acc1/quota?days=999").text
+
+
+def test_quota_page_empty_and_unknown(c, ctx):
+    add_acc(ctx)
+    assert "暂无记录" in c.get("/accounts/acc1/quota").text
+    path, q = qs(c.get("/accounts/nope/quota"))
+    assert path == "/accounts" and q["err"] == "账号不存在"
+    path, q = qs(c.get("/accounts/nope/quota.csv"))
+    assert path == "/accounts" and q["err"] == "账号不存在"
+
+
+def test_quota_csv_and_injection_guard(c, ctx):
+    add_acc(ctx)
+    seed_history(ctx)
+    r = c.get("/accounts/acc1/quota.csv?days=1")
+    assert r.status_code == 200 and 'filename="acc1-quota.csv"' in r.headers["content-disposition"]
+    lines = r.text.splitlines()
+    assert lines[0].split(",")[0] == "记录时间" and len(lines) == 4
+    assert lines[1].split(",")[1] == "30.0" and lines[1].split(",")[3] == "3.0"
+    assert len(c.get("/accounts/acc1/quota.csv?days=7").text.splitlines()) == 5
+    from codexctl.web.views import _csv_cell
+    assert _csv_cell("=1+1") == "'=1+1"
+
+
+def test_quota_refresh_records_sample_and_requires_csrf(c, ctx):
+    add_acc(ctx)
+    ctx.test_routes[("GET", USAGE_URL)] = lambda r: httpx.Response(200, json=USAGE_BODY)
+    assert c.post("/accounts/acc1/quota-refresh", data={}).status_code == 403
+    assert repo.quota_history(ctx.conn, 1, 0) == []
+    r = post(c, "/accounts/acc1/quota-refresh")
+    path, q = qs(r)
+    assert path == "/accounts" and q == {"msg": "额度已更新"}
+    h = repo.quota_history(ctx.conn, 1, 0)
+    assert len(h) == 1 and h[0]["primary"]["used_percent"] == 33.0
+    assert ("web:root_admin", "account.quota_refresh", "acc1") in [
+        tuple(x) for x in ctx.conn.execute("SELECT actor, action, target FROM audit_log")
+    ]
+    ctx.test_routes[("GET", USAGE_URL)] = lambda r: httpx.Response(500)
+    assert "err" in qs(post(c, "/accounts/acc1/quota-refresh"))[1]
+    assert "err" in qs(post(c, "/accounts/zzz/quota-refresh"))[1]
+
+
+def test_quota_refresh_next_validation(c, ctx):
+    add_acc(ctx)
+    ctx.test_routes[("GET", USAGE_URL)] = lambda r: httpx.Response(200, json=USAGE_BODY)
+    assert qs(post(c, "/accounts/acc1/quota-refresh", next="/"))[0] == "/"
+    assert qs(post(c, "/accounts/acc1/quota-refresh", next="/accounts/acc1/quota"))[0] == "/accounts/acc1/quota"
+    for bad in ("https://evil.com/", "//evil.com", "/users", "/accountsx"):
+        assert qs(post(c, "/accounts/acc1/quota-refresh", next=bad))[0] == "/accounts", bad
+
+
+def test_device_login_triggers_immediate_poll(c, ctx, mgr):
+    ctx.test_routes[("GET", USAGE_URL)] = lambda r: httpx.Response(200, json=USAGE_BODY)
+    mgr.src.write_bytes(make_auth_json(account_id="acct-9", email="n@example.com"))
+    page = post(c, "/accounts/login", label="newacc", mode="add").headers["location"]
+    lid = page.rsplit("/", 1)[1]
+    mgr.marker.write_text("")
+    wait_state(mgr, lid, "succeeded")
+    path, q = qs(c.get(page))
+    assert "已添加" in q["msg"]
+    acc = repo.get_account(ctx.conn, "newacc")
+    assert len(repo.quota_history(ctx.conn, acc.id, 0)) == 1
+
+
+def test_device_login_poll_failure_appended(c, ctx, mgr):
+    ctx.test_routes[("GET", USAGE_URL)] = lambda r: httpx.Response(500)
+    mgr.src.write_bytes(make_auth_json(account_id="acct-9", email="n@example.com"))
+    page = post(c, "/accounts/login", label="newacc", mode="add").headers["location"]
+    lid = page.rsplit("/", 1)[1]
+    mgr.marker.write_text("")
+    wait_state(mgr, lid, "succeeded")
+    q = qs(c.get(page))[1]
+    assert "已添加" in q["msg"] and "额度获取失败" in q["msg"]
+
+
+def test_dashboard_and_accounts_links(c, ctx):
+    add_acc(ctx)
+    seed_history(ctx)
+    d = c.get("/").text
+    assert "/accounts/acc1/quota" in d and "立即更新" in d and 'name="next" value="/"' in d
+    a = c.get("/accounts").text
+    assert "/accounts/acc1/quota" in a and "额度" in a
+
+
+def test_quota_pages_require_login(ctx, mgr):
+    webauth.create_admin(ctx.conn, "root_admin", PW, now=ctx.now())
+    anon = TestClient(create_app(ctx, devlogins=mgr), follow_redirects=False)
+    for p in ("/accounts/acc1/quota", "/accounts/acc1/quota.csv"):
+        r = anon.get(p)
+        assert r.status_code == 303 and r.headers["location"] == "/login", p
+
+
+def test_quota_page_chart_svg_and_week_remaining(c, ctx):
+    add_acc(ctx)
+    seed_history(ctx)
+    t = c.get("/accounts/acc1/quota").text
+    assert '<svg' in t and 'role="img"' in t and "acc1 7 天剩余额度趋势" in t
+    assert re.search(r'<path[^>]*class="chart-line"[^>]*d="M [\d.]+ [\d.]+ L', t)
+    assert "<title>" in t and "剩余 97%" in t and "7天剩余" in t and "style=" not in t
+    assert "7天剩余 97%" in c.get("/").text
+    c2 = c.get("/accounts/acc1/quota?days=30").text
+    assert "style=" not in c2
+
+
+def test_quota_page_no_chart_when_empty(c, ctx):
+    add_acc(ctx)
+    t = c.get("/accounts/acc1/quota").text
+    assert "<svg" not in t and "暂无记录" in t

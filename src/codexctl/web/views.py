@@ -9,7 +9,7 @@ from urllib.parse import urlencode
 from fastapi import Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from .. import accounts, assignments, events, refresher, repo
+from .. import accounts, assignments, events, quota, refresher, repo
 from ..authfile import AuthFileError
 from ..devicelogin import DeviceLoginError
 from ..cli import fmt_ts, window_name
@@ -18,12 +18,12 @@ from ..publisher import PublishError
 from ..runner import CommandError
 from ..sysusers import UserError
 from .app import clean_text, current_admin
+from .charts import quota_chart
 
 HANDLED = (
     accounts.AccountError, assignments.AssignError, UserError, AuthFileError,
     PublishError, LockBusy, CommandError, DeviceLoginError,
 )
-FRESH_API_SECONDS = 600
 _TERMINAL = ("succeeded", "failed", "cancelled", "expired")
 
 
@@ -77,8 +77,21 @@ def _quota_view(q, now: int) -> dict:
         percent = None
         if isinstance(pct, (int, float)) and math.isfinite(pct):
             percent = max(0, min(100, round(pct)))
-    return {"name": window_name(q["window_minutes"]), "percent": percent, "reset": reset,
+    return {"name": window_name(q["window_minutes"]), "minutes": q["window_minutes"], "percent": percent, "reset": reset,
             "source": clean_text(q["source"])}
+
+
+def _week_remaining(quotas: list[dict]) -> int | None:
+    """7 天窗口（10080 分钟）的剩余百分比；没有则取最后一个窗口。"""
+    pick = next((q for q in quotas if q["minutes"] == 10080), quotas[-1] if quotas else None)
+    return None if pick is None or pick["percent"] is None else 100 - pick["percent"]
+
+
+def _week_window(h: dict) -> dict | None:
+    for key in ("primary", "secondary"):
+        if h[key] is not None and h[key]["window_minutes"] == 10080:
+            return h[key]
+    return h["secondary"]
 
 
 def _account_rows(ctx) -> list[dict]:
@@ -88,8 +101,13 @@ def _account_rows(ctx) -> list[dict]:
         counts[a.account_pk] = counts.get(a.account_pk, 0) + 1
     rows = []
     for acc in repo.list_accounts(ctx.conn):
+        quotas = [
+            _quota_view(q, now)
+            for q in repo.latest_quota(ctx.conn, acc.id, api_fresh_since=now - 2 * ctx.settings.quota_poll_seconds)
+        ]
         rows.append({
             "label": acc.label,
+            "week_remaining": _week_remaining(quotas),
             "email": clean_text(acc.email or "-", 128),
             "plan": clean_text(acc.plan_type or "-"),
             "status": acc.status,
@@ -97,12 +115,22 @@ def _account_rows(ctx) -> list[dict]:
             "users": counts.get(acc.id, 0),
             "last_refresh": fmt_ts(acc.last_refresh),
             "expires": fmt_ts(acc.access_expires_at),
-            "quota": [
-                _quota_view(q, now)
-                for q in repo.latest_quota(ctx.conn, acc.id, api_fresh_since=now - FRESH_API_SECONDS)
-            ],
+            "quota": quotas,
         })
     return rows
+
+
+def _quota_days(request: Request) -> int:
+    try:
+        days = int(request.query_params.get("days", "1"))
+    except ValueError:
+        return 1
+    return days if days in (1, 7, 30) else 1
+
+
+def _safe_next(value: str) -> str:
+    ok = value == "/" or (value.startswith("/accounts/") and "\\" not in value and value.isprintable())
+    return value if ok else "/accounts"
 
 
 def _usage_days(request: Request) -> int:
@@ -113,7 +141,7 @@ def _usage_days(request: Request) -> int:
     return days if days in (1, 7, 30) else 7
 
 
-def _finish_login(ctx, devlogins, login_id: str, label: str, mode: str, actor: str) -> tuple[str, str]:
+def _finish_login_import(ctx, devlogins, login_id: str, label: str, mode: str, actor: str) -> tuple[str, str]:
     """取走一次登录结果并导入；返回 (msg, err)。调用方须持有全局锁。"""
     try:
         data = devlogins.take_result(login_id)
@@ -127,6 +155,17 @@ def _finish_login(ctx, devlogins, login_id: str, label: str, mode: str, actor: s
         return f"账号 {label} 已添加", ""
     except HANDLED as e:
         return "", str(e)
+
+
+def _finish_login(ctx, devlogins, login_id: str, label: str, mode: str, actor: str) -> tuple[str, str]:
+    msg, err = _finish_login_import(ctx, devlogins, login_id, label, mode, actor)
+    if msg:
+        acc = repo.get_account(ctx.conn, label)
+        if acc is not None:
+            failure = quota.poll_account(ctx, acc)
+            if failure:
+                msg += f"（额度获取失败：{clean_text(failure, 200)}）"
+    return msg, err
 
 
 def _complete_finished_logins(app, admin: tuple[str, str]) -> tuple[str, str]:
@@ -186,6 +225,99 @@ def register(app) -> None:
             except HANDLED as e:
                 return _redirect("/accounts", err=str(e))
         return _redirect("/accounts", msg=ok_msg)
+
+    @app.post("/accounts/{label}/quota-refresh")
+    def quota_refresh(
+        label: str, next: str = Form(""), admin: tuple[str, str] = Depends(current_admin)
+    ):
+        back = _safe_next(next)
+        with lock:
+            devlogins.sweep()
+            try:
+                acc = accounts.require_account(ctx, label)
+            except HANDLED as e:
+                return _redirect(back, err=str(e))
+            failure = quota.poll_account(ctx, acc)
+            events.audit(
+                ctx.conn, actor_of(admin), "account.quota_refresh", label,
+                clean_text(failure, 200) if failure else "", now=ctx.now(),
+            )
+        if failure:
+            return _redirect(back, err=f"额度获取失败：{clean_text(failure, 200)}")
+        return _redirect(back, msg="额度已更新")
+
+    def quota_data(label: str, days: int):
+        with lock:
+            devlogins.sweep()
+            acc = repo.get_account(ctx.conn, label)
+            if acc is None:
+                return None
+            now = ctx.now()
+            history = repo.quota_history(ctx.conn, acc.id, now - days * 86400)
+            latest = [
+                _quota_view(q, now)
+                for q in repo.latest_quota(ctx.conn, acc.id, api_fresh_since=now - 2 * ctx.settings.quota_poll_seconds)
+            ]
+        names = {"primary": "主窗口", "secondary": "次窗口"}
+        for h in history:
+            for key in names:
+                if h[key] is not None and h[key]["window_minutes"] is not None:
+                    names[key] = window_name(h[key]["window_minutes"])
+            if all(n not in ("主窗口", "次窗口") for n in names.values()):
+                break
+        return history, latest, names
+
+    def _cell(w: dict | None) -> tuple[float | None, str]:
+        if w is None:
+            return None, "-"
+        return w["used_percent"], fmt_ts(w["resets_at"])
+
+    @app.get("/accounts/{label}/quota", response_class=HTMLResponse)
+    def quota_page(label: str, request: Request, admin: tuple[str, str] = Depends(current_admin)):
+        days = _quota_days(request)
+        got = quota_data(label, days)
+        if got is None:
+            return _redirect("/accounts", err="账号不存在")
+        history, latest, names = got
+        rows = []
+        for h in history:
+            p, s = _cell(h["primary"]), _cell(h["secondary"])
+            wk = _week_window(h)
+            rows.append({
+                "week_left": "-" if wk is None else f"{max(0, 100 - round(wk['used_percent']))}%",
+                "ts": fmt_ts(h["ts"]),
+                "p_used": "-" if p[0] is None else f"{p[0]:.0f}%", "p_reset": p[1],
+                "s_used": "-" if s[0] is None else f"{s[0]:.0f}%", "s_reset": s[1],
+            })
+        points = [
+            (h["ts"], 100 - _week_window(h)["used_percent"]) for h in history if _week_window(h) is not None
+        ]
+        chart = quota_chart(points, gap=3 * ctx.settings.quota_poll_seconds)
+        return render(
+            request, "account_quota.html", admin=admin[0], csrf=admin[1], label=clean_text(label),
+            rows=rows, latest=latest, names=names, days=days, chart=chart,
+        )
+
+    @app.get("/accounts/{label}/quota.csv")
+    def quota_csv(label: str, request: Request, admin: tuple[str, str] = Depends(current_admin)):
+        days = _quota_days(request)
+        got = quota_data(label, days)
+        if got is None:
+            return _redirect("/accounts", err="账号不存在")
+        history, _latest, names = got
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        p, s = names["primary"], names["secondary"]
+        w.writerow(["记录时间", f"{p}已用", f"{p}重置时间", f"{s}已用", f"{s}重置时间"])
+        for h in history:
+            pu, pr = _cell(h["primary"])
+            su, sr = _cell(h["secondary"])
+            w.writerow([_csv_cell(fmt_ts(h["ts"])), "" if pu is None else pu, pr, "" if su is None else su, sr])
+        return Response(
+            buf.getvalue(),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{label}-quota.csv"'},
+        )
 
     @app.post("/accounts/login")
     def login_start(

@@ -208,6 +208,27 @@ def latest_quota(conn: sqlite3.Connection, account_pk: int, *, api_fresh_since: 
     ).fetchall()
 
 
+def prune_quota_samples(conn: sqlite3.Connection, before: int) -> int:
+    return conn.execute("DELETE FROM quota_samples WHERE ts < ?", (before,)).rowcount
+
+
+def quota_history(conn: sqlite3.Connection, account_pk: int, since: int, source: str = "api") -> list[dict]:
+    """按采样时间分组（新到旧），每个时间点含 primary/secondary 两个窗口（缺失为 None）。"""
+    rows = conn.execute(
+        "SELECT ts, win, used_percent, window_minutes, resets_at FROM quota_samples "
+        "WHERE account_pk = ? AND source = ? AND ts >= ? ORDER BY ts DESC, id",
+        (account_pk, source, since),
+    ).fetchall()
+    out: dict[int, dict] = {}
+    for r in rows:
+        entry = out.setdefault(r["ts"], {"ts": r["ts"], "primary": None, "secondary": None})
+        if r["win"] in ("primary", "secondary"):
+            entry[r["win"]] = {
+                "used_percent": r["used_percent"], "window_minutes": r["window_minutes"], "resets_at": r["resets_at"],
+            }
+    return list(out.values())
+
+
 USAGE_FIELDS = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens")
 
 

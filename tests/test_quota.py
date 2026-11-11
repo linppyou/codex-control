@@ -142,3 +142,39 @@ def test_poll_quotas_403_also_auth_rejected(ctx):
     ctx.test_routes[("GET", USAGE_URL)] = lambda r: httpx.Response(403)
     quota.poll_quotas(ctx)
     assert [a["kind"] for a in events.open_alerts(ctx.conn)] == ["auth_rejected"]
+
+
+def test_poll_account_success_failure_and_401(ctx):
+    acc = accounts.import_account(ctx, "acc1", make_auth_json(), "t")
+    ctx.test_routes[("GET", USAGE_URL)] = lambda r: httpx.Response(200, json=BODY)
+    assert quota.poll_account(ctx, acc) is None
+    assert len(repo.quota_history(ctx.conn, acc.id, 0)) == 1
+    ctx.test_routes[("GET", USAGE_URL)] = lambda r: httpx.Response(500)
+    assert "500" in quota.poll_account(ctx, acc)
+    ctx.test_routes[("GET", USAGE_URL)] = lambda r: httpx.Response(401)
+    assert "401" in quota.poll_account(ctx, acc)
+    assert "auth_rejected" in [a["kind"] for a in events.open_alerts(ctx.conn)]
+    ctx.test_routes[("GET", USAGE_URL)] = lambda r: (_ for _ in ()).throw(RuntimeError("boom"))
+    assert "boom" in quota.poll_account(ctx, acc)
+
+
+def test_poll_quotas_prunes_old_samples(ctx):
+    acc = accounts.import_account(ctx, "acc1", make_auth_json(), "t")
+    old = ctx.now() - 91 * 86400
+    quota.record(ctx, acc.id, old, [QuotaWindow("primary", 1.0, 300, None)], "api")
+    ctx.test_routes[("GET", USAGE_URL)] = lambda r: httpx.Response(200, json=BODY)
+    quota.poll_quotas(ctx)
+    assert [h["ts"] for h in repo.quota_history(ctx.conn, acc.id, 0)] == [ctx.now()]
+
+
+def test_quota_history_grouping_order_since_source(ctx):
+    acc = accounts.import_account(ctx, "acc1", make_auth_json(), "t")
+    quota.record(ctx, acc.id, T0, [QuotaWindow("primary", 10.0, 300, T0 + 5), QuotaWindow("secondary", 20.0, 10080, None)], "api")
+    quota.record(ctx, acc.id, T0 + 600, [QuotaWindow("primary", 11.0, 300, None)], "api")
+    quota.record(ctx, acc.id, T0 + 700, [QuotaWindow("primary", 99.0, 300, None)], "log")
+    h = repo.quota_history(ctx.conn, acc.id, 0)
+    assert [x["ts"] for x in h] == [T0 + 600, T0]
+    assert h[0] == {"ts": T0 + 600, "primary": {"used_percent": 11.0, "window_minutes": 300, "resets_at": None}, "secondary": None}
+    assert h[1]["secondary"] == {"used_percent": 20.0, "window_minutes": 10080, "resets_at": None}
+    assert [x["ts"] for x in repo.quota_history(ctx.conn, acc.id, T0 + 1)] == [T0 + 600]
+    assert [x["ts"] for x in repo.quota_history(ctx.conn, acc.id, 0, source="log")] == [T0 + 700]

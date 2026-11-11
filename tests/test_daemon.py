@@ -4,7 +4,15 @@ from codexctl.daemon import build_scheduler, safe_job
 def test_scheduler_has_expected_jobs(ctx):
     sched = build_scheduler(ctx)
     jobs = {j.id: j.trigger.interval.total_seconds() for j in sched.get_jobs()}
-    assert jobs == {"refresh": 600, "quota": 60, "logscan": 60, "watch": 300}
+    assert jobs == {"refresh": 600, "quota": 600, "logscan": 60, "watch": 300}
+
+
+def test_quota_interval_follows_settings(ctx):
+    import dataclasses
+
+    ctx.settings = dataclasses.replace(ctx.settings, quota_poll_seconds=120)
+    jobs = {j.id: j.trigger.interval.total_seconds() for j in build_scheduler(ctx).get_jobs()}
+    assert jobs["quota"] == 120
 
 
 def test_safe_job_swallows_and_logs_errors(caplog):

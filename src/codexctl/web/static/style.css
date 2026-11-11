@@ -27,3 +27,10 @@ progress { width: 160px; height: 10px; vertical-align: middle; }
 .code { font: 600 32px/1.4 ui-monospace, monospace; letter-spacing: 4px; }
 .muted { color: #7b8794; }
 .inline { display: inline; }
+.big { font-size: 22px; font-weight: 600; margin: 4px 0; }
+.chart { width: 100%; height: auto; max-width: 720px; }
+.chart-grid { stroke: #e4e7eb; stroke-width: 1; }
+.chart-axis { stroke: #9aa5b1; stroke-width: 1; }
+.chart-label { fill: #7b8794; font-size: 11px; }
+.chart-line { fill: none; stroke: #2f6fed; stroke-width: 1.5; }
+.chart-dot { fill: #2f6fed; }

@@ -19,6 +19,7 @@ class Settings:
     refresh_min_validity_days: float = 3.0
     quota_warn_percent: float = 80.0
     quota_crit_percent: float = 95.0
+    quota_poll_seconds: int = 600
     oauth_token_url: str = "https://auth.openai.com/oauth/token"
     oauth_client_id: str = "app_EMoamEEZ73f0CkXaXp7hrann"
     usage_url: str = "https://chatgpt.com/backend-api/wham/usage"

@@ -75,7 +75,7 @@ def record(ctx: Context, account_pk: int, ts: int, windows: list[QuotaWindow], s
 
 def evaluate_thresholds(ctx: Context, acc: repo.Account) -> None:
     now = ctx.now()
-    rows = repo.latest_quota(ctx.conn, acc.id, api_fresh_since=now - 600)
+    rows = repo.latest_quota(ctx.conn, acc.id, api_fresh_since=now - 2 * ctx.settings.quota_poll_seconds)
     if not rows:
         return
     worst = max(r["used_percent"] for r in rows)
@@ -97,25 +97,34 @@ def fetch_usage(ctx: Context, acc: repo.Account) -> list[QuotaWindow]:
     return parse_usage(resp.json(), ctx.now())
 
 
+def poll_account(ctx: Context, acc: repo.Account) -> str | None:
+    """拉取并记录单个账号的额度；失败返回错误说明，成功返回 None。"""
+    try:
+        windows = fetch_usage(ctx, acc)
+        record(ctx, acc.id, ctx.now(), windows, "api")
+        events.resolve_alert(ctx.conn, "auth_rejected", acc.label, now=ctx.now())
+        evaluate_thresholds(ctx, acc)
+        return None
+    except httpx.HTTPStatusError as e:
+        code = e.response.status_code
+        if code in (401, 403):
+            events.raise_alert(
+                ctx.conn, "critical", "auth_rejected", acc.label,
+                f"额度接口拒绝该账号凭证（HTTP {code}），凭证可能已失效，请执行 account refresh 或 relogin",
+                now=ctx.now(),
+            )
+        log.warning("额度接口请求失败 %s：%s", acc.label, e)
+        return f"额度接口返回 HTTP {code}"
+    except (httpx.HTTPError, ValueError) as e:
+        log.warning("额度接口请求失败 %s：%s", acc.label, e)
+        return f"额度接口请求失败：{type(e).__name__}"
+    except Exception as e:  # 单个账号出错不能影响其他账号
+        log.warning("额度轮询异常 %s：%r", acc.label, e)
+        return f"额度轮询异常：{e}"
+
+
 def poll_quotas(ctx: Context) -> None:
     for acc in repo.list_accounts(ctx.conn):
-        if acc.status != "active":
-            continue
-        try:
-            windows = fetch_usage(ctx, acc)
-            record(ctx, acc.id, ctx.now(), windows, "api")
-            events.resolve_alert(ctx.conn, "auth_rejected", acc.label, now=ctx.now())
-            evaluate_thresholds(ctx, acc)
-        except httpx.HTTPStatusError as e:
-            code = e.response.status_code
-            if code in (401, 403):
-                events.raise_alert(
-                    ctx.conn, "critical", "auth_rejected", acc.label,
-                    f"额度接口拒绝该账号凭证（HTTP {code}），凭证可能已失效，请执行 account refresh 或 relogin",
-                    now=ctx.now(),
-                )
-            log.warning("额度接口请求失败 %s：%s", acc.label, e)
-        except (httpx.HTTPError, ValueError) as e:
-            log.warning("额度接口请求失败 %s：%s", acc.label, e)
-        except Exception as e:  # 单个账号出错不能影响其他账号
-            log.warning("额度轮询异常 %s：%r", acc.label, e)
+        if acc.status == "active":
+            poll_account(ctx, acc)
+    repo.prune_quota_samples(ctx.conn, ctx.now() - 90 * 86400)

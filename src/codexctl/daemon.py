@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 # (任务名, 函数, 间隔秒数)。单线程执行器保证任务串行，同一时刻只有一个刷新在进行。
 JOBS: list[tuple[str, Callable[[Context], object], int]] = [
     ("refresh", refresher.refresh_due, 600),
-    ("quota", quota.poll_quotas, 60),
+    ("quota", quota.poll_quotas, 0),  # 0 表示取 settings.quota_poll_seconds
     ("logscan", logscan.scan_all, 60),
     ("watch", watcher.run_checks, 300),
 ]
@@ -40,6 +40,8 @@ def build_scheduler(ctx: Context) -> BlockingScheduler:
     )
     start = datetime.now()
     for i, (name, fn, seconds) in enumerate(JOBS):
+        if name == "quota":
+            seconds = ctx.settings.quota_poll_seconds
         sched.add_job(
             safe_job(name, fn, ctx),
             "interval",

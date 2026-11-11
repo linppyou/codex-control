@@ -3,11 +3,12 @@
 {% block content %}
 <h1>账号</h1>
 <table>
-  <tr><th>标签</th><th>邮箱</th><th>套餐</th><th>状态</th><th>last_error</th><th>用户数</th><th>上次刷新</th><th>token 到期</th><th>操作</th></tr>
+  <tr><th>标签</th><th>邮箱</th><th>套餐</th><th>状态</th><th>额度</th><th>last_error</th><th>用户数</th><th>上次刷新</th><th>token 到期</th><th>操作</th></tr>
   {% for r in rows %}
   <tr>
     <td>{{ r.label }}</td><td>{{ r.email }}</td><td>{{ r.plan }}</td>
     <td><span class="badge {{ r.status }}">{{ r.status }}</span></td>
+    <td>{% for q in r.quota %}{{ q.name }} {{ "未知" if q.percent is none else q.percent ~ "%" }}{% if not loop.last %} / {% endif %}{% else %}<span class="muted">-</span>{% endfor %} <a href="/accounts/{{ r.label }}/quota">记录</a></td>
     <td>{{ r.last_error }}</td><td>{{ r.users }}</td><td>{{ r.last_refresh }}</td><td>{{ r.expires }}</td>
     <td>
       {% for act, text in (("refresh", "刷新"), ("republish", "重新发布")) %}
