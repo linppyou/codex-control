@@ -127,3 +127,61 @@ def test_read_readers_parses_getfacl(pub, runner):
     )
     assert pub.read_readers("acc1") == {"alice", "bob"}
     assert runner.calls[0][:3] == ["getfacl", "--omit-header", "--absolute-names"]
+
+
+def test_read_link_unsafe_when_codex_dir_is_symlink(tmp_path, pub):
+    alice = make_user(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (alice.home / ".codex").symlink_to(elsewhere)
+    assert pub.read_link(alice).kind == "unsafe"
+
+
+def test_read_link_unsafe_on_oserror(tmp_path, pub):
+    alice = make_user(tmp_path)
+    alice.home.rmdir()
+    alice.home.write_text("not a dir")
+    assert pub.read_link(alice).kind == "unsafe"
+
+
+def test_unlink_user_never_raises_on_symlinked_codex_dir(tmp_path, pub):
+    alice = make_user(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (alice.home / ".codex").symlink_to(elsewhere)
+    assert pub.unlink_user(alice) is False
+
+
+def test_unlink_user_never_raises_on_oserror(tmp_path, pub):
+    alice = make_user(tmp_path)
+    alice.home.rmdir()
+    alice.home.write_text("not a dir")
+    assert pub.unlink_user(alice) is False
+
+
+def test_link_user_rejects_directory_as_tmp_name(tmp_path, pub):
+    alice = make_user(tmp_path)
+    (alice.home / ".codex").mkdir(mode=0o700)
+    (alice.home / ".codex" / ".auth.json.codexctl.tmp").mkdir()
+    with pytest.raises(PublishError):
+        pub.link_user(alice, "acc1", now=1)
+
+
+def test_link_user_backup_never_overwrites(tmp_path, pub):
+    alice = make_user(tmp_path)
+    d = alice.home / ".codex"
+    d.mkdir(mode=0o700)
+    (d / "auth.json").write_text("one")
+    b1 = pub.link_user(alice, "acc1", now=123)
+    (d / "auth.json").unlink()
+    (d / "auth.json").write_text("two")
+    b2 = pub.link_user(alice, "acc1", now=123)
+    assert b1 == d / "auth.json.bak.123"
+    assert b2 == d / "auth.json.bak.123.1"
+    assert b1.read_text() == "one"
+    assert b2.read_text() == "two"
+
+
+def test_account_file_rejects_trailing_newline(pub):
+    with pytest.raises(PublishError, match="非法账号标签"):
+        pub.account_file("acc1\n")

@@ -43,7 +43,7 @@ class Publisher:
     # ---- 账号凭证文件 ----
 
     def account_file(self, label: str) -> Path:
-        if not LABEL_RE.match(label):
+        if not LABEL_RE.fullmatch(label):
             raise PublishError(f"非法账号标签：{label!r}")
         return self.accounts_dir / label / "auth.json"
 
@@ -105,8 +105,15 @@ class Publisher:
                 if not create:
                     raise
                 os.mkdir(".codex", 0o700, dir_fd=home_fd)
-                fd = os.open(".codex", flags, dir_fd=home_fd)
-                os.fchown(fd, user.uid, user.gid)
+                try:
+                    fd = os.open(".codex", flags, dir_fd=home_fd)
+                except OSError as e2:
+                    if e2.errno in (errno.ELOOP, errno.ENOTDIR):
+                        raise PublishError(f"{user.home}/.codex 不是普通目录（可能是软链接），拒绝操作") from e2
+                    raise
+                st = os.fstat(fd)
+                if stat.S_ISDIR(st.st_mode) and st.st_uid == os.geteuid():
+                    os.fchown(fd, user.uid, user.gid)
             except OSError as e:
                 if e.errno in (errno.ELOOP, errno.ENOTDIR):
                     raise PublishError(f"{user.home}/.codex 不是普通目录（可能是软链接），拒绝操作") from e
@@ -130,13 +137,22 @@ class Publisher:
                 st = None
             if st is not None and not stat.S_ISLNK(st.st_mode):
                 backup_name = f"{_LINK}.bak.{now}"
+                n = 0
+                while True:
+                    try:
+                        os.stat(backup_name, dir_fd=fd, follow_symlinks=False)
+                    except FileNotFoundError:
+                        break
+                    n += 1
+                    backup_name = f"{_LINK}.bak.{now}.{n}"
                 os.rename(_LINK, backup_name, src_dir_fd=fd, dst_dir_fd=fd)
             try:
                 os.unlink(_LINK_TMP, dir_fd=fd)
             except FileNotFoundError:
                 pass
+            except OSError as e:
+                raise PublishError(f"无法清理 {user.home}/.codex/{_LINK_TMP}：{e}") from e
             os.symlink(target, _LINK_TMP, dir_fd=fd)
-            os.chown(_LINK_TMP, user.uid, user.gid, dir_fd=fd, follow_symlinks=False)
             # POSIX rename 原子替换目标；用 os.rename 而非 os.replace，因为前者在 os.supports_dir_fd 中有明确支持。
             os.rename(_LINK_TMP, _LINK, src_dir_fd=fd, dst_dir_fd=fd)
         finally:
@@ -144,20 +160,19 @@ class Publisher:
         return user.home / ".codex" / backup_name if backup_name else None
 
     def unlink_user(self, user: SysUser) -> bool:
-        """只删除软链接；普通文件（用户自己的）保持不动。"""
+        """只删除软链接；普通文件（用户自己的）保持不动。用户可控的异常一律返回 False。"""
         try:
             fd = self._open_codex_dir(user, create=False)
-        except FileNotFoundError:
+        except (PublishError, OSError):
             return False
         try:
-            try:
-                st = os.stat(_LINK, dir_fd=fd, follow_symlinks=False)
-            except FileNotFoundError:
-                return False
+            st = os.stat(_LINK, dir_fd=fd, follow_symlinks=False)
             if not stat.S_ISLNK(st.st_mode):
                 return False
             os.unlink(_LINK, dir_fd=fd)
             return True
+        except OSError:
+            return False
         finally:
             os.close(fd)
 
@@ -166,7 +181,7 @@ class Publisher:
             fd = self._open_codex_dir(user, create=False)
         except FileNotFoundError:
             return LinkState("no_codex_dir")
-        except PublishError as e:
+        except (PublishError, OSError) as e:
             return LinkState("unsafe", str(e))
         try:
             try:
@@ -176,5 +191,7 @@ class Publisher:
             if stat.S_ISLNK(st.st_mode):
                 return LinkState("symlink", os.readlink(_LINK, dir_fd=fd))
             return LinkState("file")
+        except OSError as e:
+            return LinkState("unsafe", str(e))
         finally:
             os.close(fd)
