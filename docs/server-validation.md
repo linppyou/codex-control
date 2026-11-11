@@ -55,3 +55,25 @@ primary 为 5 小时窗口，secondary 为 7 天窗口，与计划 Task 13 中 `
 - **已有的 codex**：`/usr/local/bin/codex` 已被占用。用户 `linpp`、`zdy` 和 root 各有自己的 `~/.codex`，`zdy` 有常驻的 `codex app-server` 进程。部署包装脚本前，要先把真实二进制移到 `/opt/codex/bin/codex`，并确定如何处理这些用户现有的登录。
 - **服务账号**：`www`、`mysql`、`redis`、`memcached` 的 uid 都 ≥ 1000，`codexctl users` 列表会把它们列出来。需要在配置里排除，或者在 Web 面板计划中增加用户白名单。
 - **执行 codex exec 时**：stdin 必须重定向（`< /dev/null`），否则 Codex 会一直等待 stdin 输入。
+
+## 账号清单（部署 codexctl 后处理）
+
+| 标签 | 账号 | 套餐 | 状态 | 位置 / 处理方式 |
+|---|---|---|---|---|
+| `acc-root` | 483185561@qq.com | prolite | 失效（refresh token 已在服务端被吊销，2026-11-11 发现） | 凭证保存在服务器 `/root/codexctl-import/acc-root/auth.json`，同目录有 `STATUS` 说明；`/root/.codex/auth.json` 是指向它的软链接 |
+| 待定 | linpp227@gmail.com | plus | 未保存（Task 0 测试后凭证已删除，账号本身正常） | 部署后用 `codexctl account add` 重新登录 |
+
+部署后的处理顺序：
+
+```bash
+codexctl account import acc-root /root/codexctl-import/acc-root/auth.json
+codexctl account relogin acc-root          # device-auth，需要在浏览器批准
+codexctl account add <标签>                # linpp227@gmail.com，需要在浏览器批准
+```
+
+`acc-root` 导入后，即使暂时不执行 relogin，第一次定时刷新也会因为 refresh token 已被吊销而失败，系统会自动把它标记为 `needs_relogin` 并发出 critical 告警，不会被误当成可用账号。relogin 成功后：
+
+- 把 root 的链接改为由 codexctl 管理（如果 root 也要用这个账号，执行 `codexctl assign`）；
+- 删除 `/root/codexctl-import/acc-root/`。
+
+注意：root 的 uid 是 0，低于 `min_uid`，所以不能直接 `assign` 给 root。如果 root 需要使用，需在 Web 面板计划中另行设计。
