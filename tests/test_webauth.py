@@ -108,3 +108,23 @@ def test_verify_login_rehash_updates_only_matching_hash(conn):
     assert webauth.verify_login(conn, "dave", PW)
     new = conn.execute("SELECT password_hash FROM admins WHERE username='dave'").fetchone()[0]
     assert new != weak and webauth.verify_login(conn, "dave", PW)
+
+
+def test_limiter_evicts_non_user_keys_first(monkeypatch):
+    monkeypatch.setattr(webauth, "MAX_LIMITER_KEYS", 10)
+    rl = LoginRateLimiter(max_failures=5, window=900)
+    for i in range(5):
+        rl.record_failure(f"user:u{i}", 100 + i)
+    for i in range(6):
+        rl.record_failure(f"ip{i}", 200 + i)
+    assert len(rl._failures) == 10
+    assert all(f"user:u{i}" in rl._failures for i in range(5))
+    assert "ip0" not in rl._failures
+
+
+def test_check_password_pure():
+    h = webauth._hasher.hash(PW)
+    assert webauth.check_password(h, PW)
+    assert not webauth.check_password(h, "nope-nope-nope")
+    assert not webauth.check_password(None, PW)
+    assert not webauth.check_password(h, PW + "x" * 1100)

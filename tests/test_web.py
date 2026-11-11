@@ -122,3 +122,81 @@ def test_flash_escaped(client):
     do_login(client)
     r = client.get("/?msg=<script>alert(1)</script>")
     assert "<script>alert" not in r.text and "&lt;script&gt;" in r.text
+
+
+def test_every_post_route_enforces_csrf(client):
+    from fastapi.routing import APIRoute
+
+    do_login(client)
+    posts = [r for r in client.app.routes if isinstance(r, APIRoute) and "POST" in r.methods and r.path != "/login"]
+    assert posts
+    for r in posts:
+        assert client.post(r.path, data={}).status_code == 403, r.path
+        assert client.post(r.path, data={"csrf": "bad"}).status_code == 403, r.path
+
+
+def test_unhandled_error_has_headers_and_no_traceback(ctx):
+    ctx.settings = dataclasses.replace(ctx.settings, web_cookie_secure=False)
+    app = create_app(ctx)
+
+    @app.get("/boom")
+    def boom():
+        raise RuntimeError("secret-detail")
+
+    c = TestClient(app, raise_server_exceptions=False)
+    r = c.get("/boom")
+    assert r.status_code == 500 and r.text == "内部错误"
+    assert "secret-detail" not in r.text and "Traceback" not in r.text
+    assert "default-src 'self'" in r.headers["content-security-policy"]
+    assert r.headers["cache-control"] == "no-store"
+
+
+def test_login_page_ignores_query_flash(client):
+    r = client.get("/login?msg=hello&err=evil")
+    assert "hello" not in r.text and "evil" not in r.text
+
+
+def test_cookie_attrs_on_delete_and_old_session_removed(client, ctx):
+    do_login(client)
+    old = client.cookies.get("codexctl_session")
+    assert ctx.conn.execute("SELECT COUNT(*) FROM web_sessions").fetchone()[0] == 1
+    do_login(client)
+    assert ctx.conn.execute("SELECT COUNT(*) FROM web_sessions").fetchone()[0] == 1
+    assert client.cookies.get("codexctl_session") != old
+    page = client.get("/").text
+    csrf = re.search(r'name="csrf" value="([^"]+)"', page).group(1)
+    sc = client.post("/logout", data={"csrf": csrf}).headers["set-cookie"].lower()
+    assert "httponly" in sc and "samesite=strict" in sc and "path=/" in sc
+
+
+def test_client_ip_rules(ctx):
+    from codexctl.web.app import client_ip, clean_text
+
+    class Req:
+        def __init__(self, host, real=None):
+            self.client = None if host is None else type("C", (), {"host": host})()
+            self.headers = {"x-real-ip": real} if real else {}
+
+    assert client_ip(Req(None, "1.2.3.4")) == "1.2.3.4"
+    assert client_ip(Req("::1", "1.2.3.4")) == "1.2.3.4"
+    assert client_ip(Req("127.0.0.1", "garbage")) == "127.0.0.1"
+    assert client_ip(Req("8.8.8.8", "1.2.3.4")) == "8.8.8.8"
+    assert client_ip(Req(None, "x")) == "unknown"
+    assert client_ip(Req("127.0.0.1", "2001:db8::1:2")) == client_ip(Req("127.0.0.1", "2001:db8::9"))
+    assert clean_text("a‮b\x00c\td e") == "a?b?c?d e"
+
+
+def test_user_limiter_threshold_is_30(ctx):
+    ctx.settings = dataclasses.replace(ctx.settings, web_cookie_secure=False)
+    webauth.create_admin(ctx.conn, "root_admin", PW, now=ctx.now())
+    app = create_app(ctx)
+    c = TestClient(app, client=("127.0.0.1", 1), follow_redirects=False)
+    for i in range(30):
+        r = do_login(c, password="wrong-password-xx", headers={"X-Real-IP": f"10.0.{i // 5}.{i}"})
+        assert r.status_code == 200, i
+    assert do_login(c, headers={"X-Real-IP": "10.9.9.9"}).status_code == 429
+
+
+def test_failure_detail_truncated(client, ctx):
+    do_login(client, username="a" * 60)
+    assert ("web", "web.login_failed", "testclient", "a" * 32) in audits(ctx)

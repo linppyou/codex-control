@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import hmac
-import re
+import ipaddress
+import logging
 import secrets
 import threading
+import unicodedata
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -15,7 +17,6 @@ from .. import events, webauth
 from ..context import Context
 from ..devicelogin import DeviceLoginManager
 from ..webauth import (
-    MAX_LOGIN_PASSWORD_LEN,
     MAX_LOGIN_USERNAME_LEN,
     SESSION_TTL,
     LoginRateLimiter,
@@ -24,7 +25,7 @@ from ..webauth import (
 SESSION_COOKIE = "codexctl_session"
 PRELOGIN_COOKIE = "codexctl_prelogin"
 _LOCAL_HOSTS = {"127.0.0.1", "::1"}
-_NONPRINTABLE = re.compile(r"[^\x20-\x7e -\U0010ffff]|[  ​-‏‪-‮]")
+log = logging.getLogger(__name__)
 
 CSP = (
     "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self'; "
@@ -40,16 +41,31 @@ SECURITY_HEADERS = {
 
 
 def clean_text(value: str, limit: int = 64) -> str:
-    return _NONPRINTABLE.sub("?", value)[:limit]
+    return "".join(
+        "?" if (unicodedata.category(c)[0] in "CZ" and c != " ") else c for c in value[:limit]
+    )
+
+
+def _valid_ip(value: str) -> str | None:
+    try:
+        ip = ipaddress.ip_address(value.strip())
+    except ValueError:
+        return None
+    if ip.version == 6:
+        return str(ipaddress.ip_network(f"{ip}/64", strict=False))
+    return str(ip)
 
 
 def client_ip(request: Request) -> str:
-    host = request.client.host if request.client else "unknown"
-    if host in _LOCAL_HOSTS:
-        real = request.headers.get("x-real-ip", "").strip()
+    client = request.client
+    host = client.host if client else None
+    if client is None or host in _LOCAL_HOSTS:
+        real = _valid_ip(request.headers.get("x-real-ip", ""))
         if real:
-            return clean_text(real, 64)
-    return host
+            return real
+    if host is None:
+        return "unknown"
+    return _valid_ip(host) or clean_text(host)
 
 
 def current_admin(request: Request) -> tuple[str, str]:
@@ -75,44 +91,72 @@ def admin_csrf(request: Request, csrf: str = Form("")) -> tuple[str, str]:
     return username, expected
 
 
+def csrf_guard(request: Request, csrf: str = Form("")) -> None:
+    """全局依赖：除 /login 外的所有写请求都必须带有效会话和 csrf。"""
+    if request.method in ("GET", "HEAD", "OPTIONS") or request.url.path == "/login":
+        return
+    admin_csrf(request, csrf)
+
+
+class SecurityHeadersMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = [(k, v) for k, v in message.get("headers", []) if k.decode().lower() not in _HEADER_NAMES]
+                headers += [(k.lower().encode(), v.encode()) for k, v in SECURITY_HEADERS.items()]
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
+_HEADER_NAMES = {k.lower() for k in SECURITY_HEADERS}
+
+
 def create_app(
     ctx: Context,
     *,
     devlogins: DeviceLoginManager | None = None,
     limiter: LoginRateLimiter | None = None,
 ) -> FastAPI:
-    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, dependencies=[Depends(csrf_guard)])
     base = Path(__file__).parent
     app.state.ctx = ctx
     app.state.lock = threading.Lock()
     app.state.devlogins = devlogins if devlogins is not None else DeviceLoginManager(ctx.settings, clock=ctx.clock)
     app.state.limiter = limiter if limiter is not None else LoginRateLimiter()
+    app.state.user_limiter = LoginRateLimiter(max_failures=30, window=900)
     app.state.templates = Jinja2Templates(directory=str(base / "templates"))
     app.mount("/static", StaticFiles(directory=str(base / "static")), name="static")
 
-    @app.middleware("http")
-    async def security_headers(request: Request, call_next):
-        response = await call_next(request)
-        for k, v in SECURITY_HEADERS.items():
-            response.headers[k] = v
-        return response
+    @app.exception_handler(Exception)
+    async def unhandled(request: Request, exc: Exception):
+        log.exception("unhandled error: %s %s", request.method, request.url.path, exc_info=exc)
+        return PlainTextResponse("内部错误", status_code=500, headers=dict(SECURITY_HEADERS))
 
-    def render(request: Request, name: str, status: int = 200, **context) -> HTMLResponse:
+    def render(request: Request, name: str, status: int = 200, flash: bool = True, **context) -> HTMLResponse:
         context.setdefault("admin", None)
         context.setdefault("csrf", "")
-        context["msg"] = request.query_params.get("msg", "")
-        context["err"] = request.query_params.get("err", "")
+        context["msg"] = request.query_params.get("msg", "") if flash else ""
+        context["err"] = request.query_params.get("err", "") if flash else ""
         return app.state.templates.TemplateResponse(request, name, context, status_code=status)
 
     app.state.render = render
 
+    def cookie_attrs() -> dict:
+        return {"httponly": True, "samesite": "strict", "secure": ctx.settings.web_cookie_secure, "path": "/"}
+
     def login_page(request: Request, status: int = 200, err: str = "") -> HTMLResponse:
         token = secrets.token_urlsafe(32)
-        resp = render(request, "login.html", status, prelogin=token, login_err=err)
-        resp.set_cookie(
-            PRELOGIN_COOKIE, token, httponly=True, samesite="strict",
-            secure=ctx.settings.web_cookie_secure, path="/", max_age=3600,
-        )
+        resp = render(request, "login.html", status, False, prelogin=token, login_err=err)
+        resp.set_cookie(PRELOGIN_COOKIE, token, max_age=3600, **cookie_attrs())
         return resp
 
     @app.get("/login", response_class=HTMLResponse)
@@ -131,31 +175,33 @@ def create_app(
             raise HTTPException(status_code=403, detail="CSRF 校验失败")
         ip = client_ip(request)
         ukey = "user:" + username.lower()[:MAX_LOGIN_USERNAME_LEN]
+        lim: LoginRateLimiter = app.state.limiter
+        ulim: LoginRateLimiter = app.state.user_limiter
         with app.state.lock:
             now = ctx.now()
-            lim: LoginRateLimiter = app.state.limiter
-            if not (lim.allowed(ip, now) and lim.allowed(ukey, now)):
+            if not (lim.allowed(ip, now) and ulim.allowed(ukey, now)):
                 return login_page(request, 429, "尝试过多，请 15 分钟后再试")
-            ok = (
-                len(password) <= MAX_LOGIN_PASSWORD_LEN
-                and len(username) <= MAX_LOGIN_USERNAME_LEN
-                and webauth.verify_login(ctx.conn, username, password)
-            )
+            stored = webauth.get_hash(ctx.conn, username)
+        # argon2 较慢，放在全局锁之外；stored 为 None 时用假哈希，仍然校验
+        ok = webauth.check_password(stored, password)
+        with app.state.lock:
+            now = ctx.now()
             if not ok:
                 lim.record_failure(ip, now)
-                lim.record_failure(ukey, now)
-                events.audit(ctx.conn, "web", "web.login_failed", ip, clean_text(username), now=now)
+                ulim.record_failure(ukey, now)
+                events.audit(ctx.conn, "web", "web.login_failed", ip, clean_text(username, 32), now=now)
                 return login_page(request, 200, "用户名或密码错误")
+            webauth.rehash_if_needed(ctx.conn, username, stored, password)
             lim.reset(ip)
-            lim.reset(ukey)
+            ulim.reset(ukey)
+            old = request.cookies.get(SESSION_COOKIE)
+            if old:
+                webauth.delete_session(ctx.conn, old)
             token, _ = webauth.create_session(ctx.conn, username, now=now)
             events.audit(ctx.conn, username, "web.login", ip, now=now)
         resp = RedirectResponse("/", status_code=303)
-        resp.set_cookie(
-            SESSION_COOKIE, token, httponly=True, samesite="strict",
-            secure=ctx.settings.web_cookie_secure, path="/", max_age=SESSION_TTL,
-        )
-        resp.delete_cookie(PRELOGIN_COOKIE, path="/")
+        resp.set_cookie(SESSION_COOKIE, token, max_age=SESSION_TTL, **cookie_attrs())
+        resp.delete_cookie(PRELOGIN_COOKIE, **cookie_attrs())
         return resp
 
     @app.post("/logout")
@@ -164,11 +210,12 @@ def create_app(
         with app.state.lock:
             webauth.delete_session(ctx.conn, token)
         resp = RedirectResponse("/login", status_code=303)
-        resp.delete_cookie(SESSION_COOKIE, path="/")
+        resp.delete_cookie(SESSION_COOKIE, **cookie_attrs())
         return resp
 
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request, admin: tuple[str, str] = Depends(current_admin)):
         return render(request, "dashboard.html", admin=admin[0], csrf=admin[1])
 
+    app.add_middleware(SecurityHeadersMiddleware)
     return app

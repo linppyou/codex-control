@@ -61,23 +61,38 @@ def list_admins(conn: sqlite3.Connection) -> list[str]:
     return [r["username"] for r in conn.execute("SELECT username FROM admins ORDER BY username")]
 
 
-def verify_login(conn: sqlite3.Connection, username: str, password: str) -> bool:
-    if len(password) > MAX_LOGIN_PASSWORD_LEN or len(username) > MAX_LOGIN_USERNAME_LEN:
+def check_password(stored_hash: str | None, password: str) -> bool:
+    """纯函数：不碰数据库，可在全局锁之外调用。stored_hash 为 None 时用假哈希耗时间。"""
+    if len(password) > MAX_LOGIN_PASSWORD_LEN:
         return False
-    row = conn.execute("SELECT password_hash FROM admins WHERE username = ?", (username,)).fetchone()
-    stored = row["password_hash"] if row else _DUMMY_HASH
     try:
-        _hasher.verify(stored, password)
+        _hasher.verify(stored_hash or _DUMMY_HASH, password)
     except (VerificationError, InvalidHashError):
         return False
-    if row is None:
-        return False
+    return stored_hash is not None
+
+
+def get_hash(conn: sqlite3.Connection, username: str) -> str | None:
+    if len(username) > MAX_LOGIN_USERNAME_LEN:
+        return None
+    row = conn.execute("SELECT password_hash FROM admins WHERE username = ?", (username,)).fetchone()
+    return row["password_hash"] if row else None
+
+
+def rehash_if_needed(conn: sqlite3.Connection, username: str, stored: str, password: str) -> None:
     if _hasher.check_needs_rehash(stored):
         with transaction(conn):
             conn.execute(
                 "UPDATE admins SET password_hash = ? WHERE username = ? AND password_hash = ?",
                 (_hasher.hash(password), username, stored),
             )
+
+
+def verify_login(conn: sqlite3.Connection, username: str, password: str) -> bool:
+    stored = get_hash(conn, username)
+    if not check_password(stored, password):
+        return False
+    rehash_if_needed(conn, username, stored, password)
     return True
 
 
@@ -131,9 +146,11 @@ class LoginRateLimiter:
     def _prune(self, now: int) -> None:
         for key in [k for k, v in self._failures.items() if all(now - t >= self.window for t in v)]:
             del self._failures[key]
-        if len(self._failures) > MAX_LIMITER_KEYS:
-            ordered = sorted(self._failures, key=lambda k: max(self._failures[k]))
-            for key in ordered[: len(self._failures) - MAX_LIMITER_KEYS]:
+        excess = len(self._failures) - MAX_LIMITER_KEYS
+        if excess > 0:
+            # 先淘汰最旧的非 user: 键，user: 键最后才动
+            ordered = sorted(self._failures, key=lambda k: (k.startswith("user:"), max(self._failures[k])))
+            for key in ordered[:excess]:
                 del self._failures[key]
 
     def reset(self, ip: str) -> None:

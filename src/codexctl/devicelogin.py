@@ -64,17 +64,20 @@ class DeviceLoginManager:
         self._clock = clock
         self._lock = threading.Lock()
         self._logins: dict[str, _Login] = {}
-        # 管理器每个 web 进程只建一次，staging 下残留的都来自上次崩溃的进程
+        # 只清理超过 15 分钟的残留：CLI `account add` 可能正在并发使用 staging
         staging = settings.staging_dir
+        cutoff = clock() - LOGIN_TIMEOUT
         if staging.is_dir():
             for entry in staging.iterdir():
-                if entry.is_dir() and not entry.is_symlink():
-                    shutil.rmtree(entry, ignore_errors=True)
-                else:
-                    try:
+                try:
+                    if entry.lstat().st_mtime >= cutoff:
+                        continue
+                    if entry.is_dir() and not entry.is_symlink():
+                        shutil.rmtree(entry, ignore_errors=True)
+                    else:
                         entry.unlink()
-                    except OSError:
-                        pass
+                except OSError:
+                    pass
 
     def start(self, label: str, mode: str) -> str:
         if mode not in ("add", "relogin"):

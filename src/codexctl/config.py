@@ -27,6 +27,8 @@ class Settings:
     web_host: str = "127.0.0.1"
     web_port: int = 8700
     web_cookie_secure: bool = True
+    web_socket: str = "/run/codexctl/web.sock"
+    web_socket_group: str = "www"
     hidden_users: tuple[str, ...] = ()
 
     @property

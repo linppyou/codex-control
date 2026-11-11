@@ -166,13 +166,22 @@ def test_failed_removes_dir(mgr_factory):
     assert not m._logins[lid].home.exists()
 
 
-def test_startup_purges_staging(tmp_path):
+def test_startup_purges_only_old_staging(tmp_path):
+    import os
+
     s = Settings(state_dir=tmp_path / "state", key_file=tmp_path / "k", codex_bin=tmp_path / "codex")
-    (s.staging_dir / "old-abc").mkdir(parents=True)
-    (s.staging_dir / "old-abc" / "auth.json").write_text("x")
-    (s.staging_dir / "stray").write_text("x")
+    old = s.staging_dir / "old-abc"
+    old.mkdir(parents=True)
+    (old / "auth.json").write_text("x")
+    stray = s.staging_dir / "stray"
+    stray.write_text("x")
+    fresh = s.staging_dir / "fresh-cli"
+    fresh.mkdir()
+    past = time.time() - 16 * 60
+    os.utime(old, (past, past))
+    os.utime(stray, (past, past))
     DeviceLoginManager(s)
-    assert list(s.staging_dir.iterdir()) == []
+    assert [e.name for e in s.staging_dir.iterdir()] == ["fresh-cli"]
 
 
 def test_close_cancels_all_and_kills_group(mgr_factory):
