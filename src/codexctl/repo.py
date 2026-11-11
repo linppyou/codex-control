@@ -99,6 +99,14 @@ def set_status(conn: sqlite3.Connection, pk: int, status: str, error: str | None
     conn.execute("UPDATE accounts SET status = ?, last_error = ? WHERE id = ?", (status, error, pk))
 
 
+def mark_needs_relogin(conn: sqlite3.Connection, pk: int, error: str) -> None:
+    conn.execute(
+        "UPDATE accounts SET status = CASE WHEN status = 'disabled' THEN 'disabled' ELSE 'needs_relogin' END, "
+        "last_error = ? WHERE id = ?",
+        (error, pk),
+    )
+
+
 def mark_retry(conn: sqlite3.Connection, pk: int, error: str, next_retry_at: int) -> None:
     conn.execute(
         "UPDATE accounts SET retry_count = retry_count + 1, last_error = ?, next_retry_at = ? WHERE id = ?",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import httpx
@@ -18,15 +19,24 @@ class RefreshResult:
     id_token: str | None
 
 
+_CODE_RE = re.compile(r"^[a-z0-9_.-]{1,64}$")
+_PERMANENT_CODES = {
+    "refresh_token_reused", "refresh_token_expired", "refresh_token_invalidated",
+    "invalid_grant", "invalid_request",
+}
+
+
 def _error_code(response: httpx.Response) -> str:
+    """只返回形如标识符的错误码，绝不回显响应正文（可能含凭证）。"""
     try:
         body = response.json()
     except ValueError:
-        return response.text[:200]
+        return ""
     err = body.get("error") if isinstance(body, dict) else None
-    if isinstance(err, dict):
-        return str(err.get("code") or err.get("message") or err)
-    return str(err or body)[:200]
+    code = err.get("code") if isinstance(err, dict) else err
+    if isinstance(code, str) and _CODE_RE.match(code):
+        return code
+    return ""
 
 
 def refresh_tokens(http: httpx.Client, token_url: str, client_id: str, refresh_token: str) -> RefreshResult:
@@ -46,7 +56,11 @@ def refresh_tokens(http: httpx.Client, token_url: str, client_id: str, refresh_t
     if resp.status_code == 429 or resp.status_code >= 500:
         raise RefreshError(f"服务端暂时不可用（HTTP {resp.status_code}）", retryable=True)
     if resp.status_code != 200:
-        raise RefreshError(f"刷新被拒绝（HTTP {resp.status_code}）：{_error_code(resp)}", retryable=False)
+        code = _error_code(resp)
+        msg = f"刷新被拒绝（HTTP {resp.status_code}）" + (f"：{code}" if code else "")
+        status = resp.status_code
+        permanent = (status in (400, 401, 403) and code in _PERMANENT_CODES) or (status in (400, 401) and bool(code))
+        raise RefreshError(msg, retryable=not permanent)
     try:
         body = resp.json()
     except ValueError as e:

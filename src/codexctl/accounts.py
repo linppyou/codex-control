@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from .locks import account_lock
 from . import events, repo
 from .authfile import AuthBundle
 from .context import Context
@@ -86,22 +87,23 @@ def relogin_account(ctx: Context, label: str, data: bytes, actor: str) -> repo.A
     bundle = AuthBundle.from_bytes(data)
     if bundle.account_id != acc.account_id:
         raise AccountError(f"登录的是另一个 ChatGPT 账号（{bundle.email}），与 {label} 不一致")
-    now = ctx.now()
-    with transaction(ctx.conn):
-        repo.store_secret(ctx.conn, acc.id, ctx.vault.encrypt(bundle.to_bytes(), _aad(label)), now)
-        repo.update_token_meta(
-            ctx.conn,
-            acc.id,
-            email=bundle.email,
-            plan_type=bundle.plan_type,
-            last_refresh=bundle.last_refresh or now,
-            access_expires_at=bundle.access_expires_at,
-        )
-        for kind in ("refresh_failed", "refresh_retry"):
-            events.resolve_alert(ctx.conn, kind, label, now=now)
-        events.audit(ctx.conn, actor, "account.relogin", label, now=now)
-    acc = require_account(ctx, label)
-    publish_account(ctx, acc, bundle)
+    with account_lock(ctx.settings.state_dir, label):
+        now = ctx.now()
+        with transaction(ctx.conn):
+            repo.store_secret(ctx.conn, acc.id, ctx.vault.encrypt(bundle.to_bytes(), _aad(label)), now)
+            repo.update_token_meta(
+                ctx.conn,
+                acc.id,
+                email=bundle.email,
+                plan_type=bundle.plan_type,
+                last_refresh=bundle.last_refresh or now,
+                access_expires_at=bundle.access_expires_at,
+            )
+            for kind in ("refresh_failed", "refresh_retry"):
+                events.resolve_alert(ctx.conn, kind, label, now=now)
+            events.audit(ctx.conn, actor, "account.relogin", label, now=now)
+        acc = require_account(ctx, label)
+        publish_account(ctx, acc, bundle)
     return acc
 
 
