@@ -30,11 +30,14 @@ uv pip install --python /opt/codexctl/venv/bin/python /path/to/codex_control
 
 ### 2. codex 二进制与包装脚本
 
-服务器上 codex 已作为静态二进制安装在 `/usr/local/bin/codex`（v0.167.0，非 npm 安装）。**必须先把真实二进制挪到 `/opt/codex/bin/`，再用包装脚本覆盖 `/usr/local/bin/codex`**。第一行只在第一次执行（已存在 `/opt/codex/bin/codex` 时跳过，否则重复执行会把包装脚本当成真实二进制复制过去）：
+使用完整的同版本 Codex 安装包，保留包中的目录结构。仅复制 `codex` 主程序会遗漏 `codex-code-mode-host` 等辅助程序，导致执行工具无法启动。以下示例安装服务器当前版本；升级时将版本号改为目标版本，并先备份现有安装：
 
 ```bash
-[ -e /opt/codex/bin/codex ] || install -D -m 755 /usr/local/bin/codex /opt/codex/bin/codex
+mkdir -p /opt/codex
+curl -fL https://github.com/openai/codex/releases/download/rust-v0.167.0/codex-package-x86_64-unknown-linux-musl.tar.gz -o /tmp/codex-package.tar.gz
+tar -xzf /tmp/codex-package.tar.gz -C /opt/codex
 /opt/codex/bin/codex --version
+test -x /opt/codex/bin/codex-code-mode-host
 install -m 755 deploy/codex-wrapper.sh /usr/local/bin/codex
 install -d -m 755 /etc/codex && install -m 644 deploy/requirements.toml /etc/codex/requirements.toml
 ```
