@@ -202,6 +202,7 @@ def account_cmd(ctx: Context, args: argparse.Namespace) -> int:
             print(line + (_safe(f" 错误={acc.last_error}") if acc.last_error else ""))
         return 0
     if c == "add":
+        accounts.check_new_label(ctx, args.label)
         acc = accounts.import_account(ctx, args.label, accounts.device_login(ctx, args.label), ACTOR)
         print(_safe(f"已添加 {acc.label}（{acc.email}）"))
         return 0
@@ -210,6 +211,7 @@ def account_cmd(ctx: Context, args: argparse.Namespace) -> int:
         print(_safe(f"已导入 {acc.label}（{acc.email}）"))
         return 0
     if c == "relogin":
+        accounts.require_account(ctx, args.label)
         data = args.file.read_bytes() if args.file else accounts.device_login(ctx, args.label)
         accounts.relogin_account(ctx, args.label, data, ACTOR)
         print(f"{args.label} 已重新登录并发布")
@@ -227,7 +229,7 @@ def account_cmd(ctx: Context, args: argparse.Namespace) -> int:
         print(f"{args.label} 已{'停用' if c == 'disable' else '启用'}")
         return 0
     if c == "republish":
-        accounts.publish_account(ctx, accounts.require_account(ctx, args.label))
+        accounts.republish_account(ctx, args.label)
         print(f"{args.label} 已重新发布")
         return 0
     raise AssertionError(f"unhandled account command {c}")

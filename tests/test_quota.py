@@ -123,3 +123,22 @@ def test_poll_quotas_continues_after_account_exception(ctx, monkeypatch):
 def test_huge_integers_are_dropped_not_overflowing():
     rl = {"primary": {"used_percent": 10.0, "window_minutes": 2**70, "resets_at": 2**64}}
     assert quota.windows_from_rate_limits(rl) == [QuotaWindow("primary", 10.0, None, None)]
+
+
+def test_poll_quotas_auth_rejected_alert_and_resolution(ctx):
+    acc = accounts.import_account(ctx, "acc1", make_auth_json(), "t")
+    ctx.test_routes[("GET", USAGE_URL)] = lambda r: httpx.Response(401)
+    quota.poll_quotas(ctx)
+    alerts = events.open_alerts(ctx.conn)
+    assert [(a["kind"], a["level"], a["target"]) for a in alerts] == [("auth_rejected", "critical", "acc1")]
+    assert "HTTP 401" in alerts[0]["message"] and "relogin" in alerts[0]["message"]
+    ctx.test_routes[("GET", USAGE_URL)] = lambda r: httpx.Response(200, json={})
+    quota.poll_quotas(ctx)
+    assert [a["kind"] for a in events.open_alerts(ctx.conn)] == []
+
+
+def test_poll_quotas_403_also_auth_rejected(ctx):
+    accounts.import_account(ctx, "acc1", make_auth_json(), "t")
+    ctx.test_routes[("GET", USAGE_URL)] = lambda r: httpx.Response(403)
+    quota.poll_quotas(ctx)
+    assert [a["kind"] for a in events.open_alerts(ctx.conn)] == ["auth_rejected"]

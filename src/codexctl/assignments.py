@@ -6,6 +6,7 @@ from pathlib import Path
 from . import accounts, events, repo
 from .context import Context
 from .db import transaction
+from .locks import account_lock
 from .sysusers import UserError
 
 
@@ -15,7 +16,9 @@ class AssignError(Exception):
 
 def _sync_acl(ctx: Context, account_pk: int) -> None:
     acc = repo.get_account_by_pk(ctx.conn, account_pk)
-    ctx.publisher.set_readers(acc.label, accounts.readers_for(ctx, account_pk))
+    # 与刷新/重新发布互斥，避免读者列表在并发发布中被旧值覆盖（调用方不得已持有同一账号的锁）
+    with account_lock(ctx.settings.state_dir, acc.label):
+        ctx.publisher.set_readers(acc.label, accounts.readers_for(ctx, account_pk))
 
 
 def assign(ctx: Context, username: str, label: str, actor: str) -> Path | None:

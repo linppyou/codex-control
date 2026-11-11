@@ -104,7 +104,17 @@ def poll_quotas(ctx: Context) -> None:
         try:
             windows = fetch_usage(ctx, acc)
             record(ctx, acc.id, ctx.now(), windows, "api")
+            events.resolve_alert(ctx.conn, "auth_rejected", acc.label, now=ctx.now())
             evaluate_thresholds(ctx, acc)
+        except httpx.HTTPStatusError as e:
+            code = e.response.status_code
+            if code in (401, 403):
+                events.raise_alert(
+                    ctx.conn, "critical", "auth_rejected", acc.label,
+                    f"额度接口拒绝该账号凭证（HTTP {code}），凭证可能已失效，请执行 account refresh 或 relogin",
+                    now=ctx.now(),
+                )
+            log.warning("额度接口请求失败 %s：%s", acc.label, e)
         except (httpx.HTTPError, ValueError) as e:
             log.warning("额度接口请求失败 %s：%s", acc.label, e)
         except Exception as e:  # 单个账号出错不能影响其他账号

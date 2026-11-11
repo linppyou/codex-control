@@ -126,3 +126,34 @@ def test_sqlite_error_handled(ctx, monkeypatch, capsys):
     monkeypatch.setattr(cli.repo, "list_accounts", boom)
     assert run_cli(ctx, "account", "list") == 1
     assert "错误：" in capsys.readouterr().err
+
+
+def test_account_add_existing_label_fails_before_login(ctx, tmp_path, monkeypatch, capsys):
+    f = tmp_path / "auth.json"
+    f.write_bytes(make_auth_json())
+    run_cli(ctx, "account", "import", "acc1", str(f))
+
+    def boom(*a, **k):
+        raise AssertionError("device_login should not run")
+
+    monkeypatch.setattr(cli.accounts, "device_login", boom)
+    assert run_cli(ctx, "account", "add", "acc1") == 1
+    assert run_cli(ctx, "account", "add", "Bad Label") == 1
+
+
+def test_account_relogin_unknown_label_fails_before_login(ctx, monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("device_login should not run")
+
+    monkeypatch.setattr(cli.accounts, "device_login", boom)
+    assert run_cli(ctx, "account", "relogin", "nope") == 1
+
+
+def test_account_republish_uses_locked_reload(ctx, tmp_path, monkeypatch):
+    f = tmp_path / "auth.json"
+    f.write_bytes(make_auth_json())
+    run_cli(ctx, "account", "import", "acc1", str(f))
+    called = []
+    monkeypatch.setattr(cli.accounts, "republish_account", lambda c, label: called.append(label))
+    assert run_cli(ctx, "account", "republish", "acc1") == 0
+    assert called == ["acc1"]

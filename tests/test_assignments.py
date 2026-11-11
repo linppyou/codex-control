@@ -185,3 +185,28 @@ def test_reconcile_ignores_dotdot_target(setup):
     link.symlink_to(str(ctx.publisher.accounts_dir) + "/../../x")
     assignments.reconcile_user(ctx, "bob", "t")
     assert os.path.lexists(link)
+
+
+def test_sync_acl_holds_account_lock(ctx, monkeypatch):
+    from codexctl import accounts, assignments, locks
+    from fakes import make_auth_json
+
+    acc = accounts.import_account(ctx, "acc1", make_auth_json(), "t")
+    try:
+        with locks.account_lock(ctx.settings.state_dir, "acc1"):
+            # 另一个 fd 上的非阻塞加锁应失败，说明锁被占用时 _sync_acl 会等待
+            seen = []
+            real = locks.account_lock
+
+            def spy(state_dir, label, **kw):
+                seen.append(label)
+                return real(state_dir, label, blocking=False)
+
+            monkeypatch.setattr(assignments, "account_lock", spy)
+            try:
+                assignments._sync_acl(ctx, acc.id)
+            except locks.LockBusy:
+                pass
+            assert seen == ["acc1"]
+    finally:
+        pass

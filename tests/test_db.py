@@ -55,3 +55,8 @@ def test_db_file_mode_0600_regardless_of_umask(tmp_path):
     finally:
         os.umask(old)
     assert stat.S_IMODE((tmp_path / "x.db").stat().st_mode) == 0o600
+
+
+def test_busy_timeout_set(tmp_path):
+    conn = db.connect(tmp_path / "x.db")
+    assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 30000

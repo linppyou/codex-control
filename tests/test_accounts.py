@@ -112,3 +112,17 @@ def test_device_login_missing_binary(ctx):
     with pytest.raises(accounts.AccountError, match="无法运行 codex"):
         accounts.device_login(ctx, "acc1")
     assert list(ctx.settings.staging_dir.iterdir()) == []
+
+
+def test_republish_account_rereads_under_lock(ctx):
+    from codexctl import locks
+
+    accounts.import_account(ctx, "acc1", make_auth_json(), "t")
+    accounts.republish_account(ctx, "acc1")
+    import pytest
+    with pytest.raises(accounts.AccountError):
+        accounts.republish_account(ctx, "nope")
+    with locks.account_lock(ctx.settings.state_dir, "acc1"):
+        with pytest.raises(locks.LockBusy):
+            with locks.account_lock(ctx.settings.state_dir, "acc1", blocking=False):
+                pass

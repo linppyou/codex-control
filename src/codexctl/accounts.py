@@ -28,6 +28,12 @@ def _check_label(label: str) -> None:
         raise AccountError("账号标签只能包含小写字母、数字、- 和 _，以字母或数字开头，且不超过 32 个字符")
 
 
+def check_new_label(ctx: Context, label: str) -> None:
+    _check_label(label)
+    if repo.get_account(ctx.conn, label) is not None:
+        raise AccountError(f"账号标签已存在：{label}")
+
+
 def require_account(ctx: Context, label: str) -> repo.Account:
     acc = repo.get_account(ctx.conn, label)
     if acc is None:
@@ -53,6 +59,14 @@ def load_bundle(ctx: Context, acc: repo.Account) -> AuthBundle:
 def publish_account(ctx: Context, acc: repo.Account, bundle: AuthBundle | None = None) -> None:
     bundle = bundle or load_bundle(ctx, acc)
     ctx.publisher.publish(acc.label, bundle.to_bytes(), readers_for(ctx, acc.id))
+
+
+def republish_account(ctx: Context, label: str) -> None:
+    """加账号锁后重新读取账号与保险库内容再发布，避免用过期 token 覆盖刚刷新的凭证。"""
+    require_account(ctx, label)
+    with account_lock(ctx.settings.state_dir, label):
+        acc = require_account(ctx, label)
+        publish_account(ctx, acc, load_bundle(ctx, acc))
 
 
 def import_account(ctx: Context, label: str, data: bytes, actor: str) -> repo.Account:
