@@ -78,3 +78,33 @@ def test_hidden_users_list_becomes_tuple(tmp_path):
     f = tmp_path / "c.toml"
     f.write_text('hidden_users = ["a", "b"]\n')
     assert load_settings(f).hidden_users == ("a", "b")
+
+
+def test_limiter_caps_keys():
+    rl = LoginRateLimiter(max_failures=5, window=900)
+    for i in range(10_050):
+        rl.record_failure(f"k{i}", 1000 + i // 100)
+    assert len(rl._failures) <= 10_000
+    rl2 = LoginRateLimiter(max_failures=5, window=10)
+    for i in range(9_000):
+        rl2.record_failure(f"old{i}", 0)
+    for i in range(2_000):
+        rl2.record_failure(f"new{i}", 100)
+    assert len(rl2._failures) == 2_000
+
+
+def test_verify_login_rejects_overlong_and_rehash_guard(conn):
+    webauth.create_admin(conn, "carol", PW, now=1)
+    assert not webauth.verify_login(conn, "carol", PW + "x" * 1100)
+    assert not webauth.verify_login(conn, "c" * 65, PW)
+    assert webauth.verify_login(conn, "carol", PW)
+
+
+def test_verify_login_rehash_updates_only_matching_hash(conn):
+    from argon2 import PasswordHasher
+
+    weak = PasswordHasher(time_cost=1, memory_cost=8, parallelism=1).hash(PW)
+    conn.execute("INSERT INTO admins(username, password_hash, created_at) VALUES ('dave', ?, 1)", (weak,))
+    assert webauth.verify_login(conn, "dave", PW)
+    new = conn.execute("SELECT password_hash FROM admins WHERE username='dave'").fetchone()[0]
+    assert new != weak and webauth.verify_login(conn, "dave", PW)

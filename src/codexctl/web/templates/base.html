@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}codexctl 面板{% endblock %}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+{% if admin %}
+<header class="nav">
+  <strong class="brand">codexctl</strong>
+  <nav>
+    <a href="/">总览</a>
+    <a href="/accounts">账号</a>
+    <a href="/users">用户</a>
+    <a href="/usage">用量</a>
+    <a href="/audit">审计</a>
+  </nav>
+  <form method="post" action="/logout" class="who">
+    <span>{{ admin }}</span>
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button type="submit" class="btn">退出</button>
+  </form>
+</header>
+{% endif %}
+<main class="container">
+  {% if msg %}<div class="flash ok">{{ msg }}</div>{% endif %}
+  {% if err %}<div class="flash bad">{{ err }}</div>{% endif %}
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

@@ -12,6 +12,9 @@ from .db import transaction
 
 SESSION_TTL = 12 * 3600
 MIN_PASSWORD_LEN = 12
+MAX_LOGIN_PASSWORD_LEN = 1024
+MAX_LOGIN_USERNAME_LEN = 64
+MAX_LIMITER_KEYS = 10_000
 _NAME_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}$")
 _hasher = PasswordHasher()
 _DUMMY_HASH = _hasher.hash("codexctl-dummy-password")
@@ -59,6 +62,8 @@ def list_admins(conn: sqlite3.Connection) -> list[str]:
 
 
 def verify_login(conn: sqlite3.Connection, username: str, password: str) -> bool:
+    if len(password) > MAX_LOGIN_PASSWORD_LEN or len(username) > MAX_LOGIN_USERNAME_LEN:
+        return False
     row = conn.execute("SELECT password_hash FROM admins WHERE username = ?", (username,)).fetchone()
     stored = row["password_hash"] if row else _DUMMY_HASH
     try:
@@ -68,9 +73,11 @@ def verify_login(conn: sqlite3.Connection, username: str, password: str) -> bool
     if row is None:
         return False
     if _hasher.check_needs_rehash(stored):
-        conn.execute(
-            "UPDATE admins SET password_hash = ? WHERE username = ?", (_hasher.hash(password), username)
-        )
+        with transaction(conn):
+            conn.execute(
+                "UPDATE admins SET password_hash = ? WHERE username = ? AND password_hash = ?",
+                (_hasher.hash(password), username, stored),
+            )
     return True
 
 
@@ -118,6 +125,16 @@ class LoginRateLimiter:
     def record_failure(self, ip: str, now: int) -> None:
         self._recent(ip, now)
         self._failures.setdefault(ip, []).append(now)
+        if len(self._failures) > MAX_LIMITER_KEYS:
+            self._prune(now)
+
+    def _prune(self, now: int) -> None:
+        for key in [k for k, v in self._failures.items() if all(now - t >= self.window for t in v)]:
+            del self._failures[key]
+        if len(self._failures) > MAX_LIMITER_KEYS:
+            ordered = sorted(self._failures, key=lambda k: max(self._failures[k]))
+            for key in ordered[: len(self._failures) - MAX_LIMITER_KEYS]:
+                del self._failures[key]
 
     def reset(self, ip: str) -> None:
         self._failures.pop(ip, None)
