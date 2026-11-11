@@ -74,6 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--days", type=_positive_int, default=7)
     sub.add_parser("check", help="运行一次巡检")
     sub.add_parser("daemon", help="运行后台定时任务")
+    sub.add_parser("web", help="运行 Web 面板")
     adm = sub.add_parser("admin", help="Web 面板管理员").add_subparsers(dest="admcmd", required=True)
     adm.add_parser("list", help="列出管理员")
     for name, help_text in (("create", "创建管理员"), ("passwd", "修改管理员密码")):
@@ -166,6 +167,11 @@ def fmt_ts(ts: int | None) -> str:
 
 
 def dispatch(ctx: Context, args: argparse.Namespace) -> int:
+    if args.cmd == "web":
+        from .web import server
+
+        server.serve(ctx)
+        return 0
     if args.cmd == "account":
         return account_cmd(ctx, args)
     if args.cmd in ("assign", "unassign", "fix"):

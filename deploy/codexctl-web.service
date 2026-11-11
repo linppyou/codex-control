@@ -1,0 +1,16 @@
+[Unit]
+Description=codexctl - Web panel
+After=network-online.target codexctl.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+UMask=0077
+ExecStart=/opt/codexctl/venv/bin/codexctl -c /etc/codexctl/config.toml web
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

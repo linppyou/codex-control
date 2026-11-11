@@ -109,6 +109,50 @@ systemd 单元设置了 `TimeoutStopSec=120` 与 `KillMode=mixed`：`systemctl s
 
 重新执行 `docs/server-validation.md` 中的 Step 2–4，确认软链接写入行为与额度接口格式未变。
 
-## 后续规划
+## Web 面板
 
-Web 管理面板（域名 codex-control.ppspace.xyz）属于后续计划，不在本次部署范围内。
+域名 `codex-control.ppspace.xyz`。面板进程监听 Unix socket `/run/codexctl/web.sock`（属组 `www`，权限 0660），由 nginx 反向代理；不监听 TCP 端口。按顺序执行：
+
+1. 重新安装包（带上面板依赖）：
+   ```
+   UV_PYTHON_INSTALL_DIR=/opt/codexctl/python uv pip install --python /opt/codexctl/venv/bin/python /opt/codexctl/src
+   ```
+2. 创建管理员（交互式输入密码，由管理员本人完成）：`codexctl admin create <名字>`。
+3. 安装并启动 systemd 单元：
+   ```
+   cp deploy/codexctl-web.service /etc/systemd/system/
+   systemctl daemon-reload
+   systemctl enable --now codexctl-web
+   ```
+4. 检查 socket：`ls -l /run/codexctl/web.sock`，应为 `srw-rw---- root www`。
+5. 创建站点目录：`mkdir -p /www/wwwroot/codex-control.ppspace.xyz`。
+6. 证书签发前先只放 80 端口配置，并重载 nginx：
+   ```
+   cp deploy/nginx/codex-control.ppspace.xyz.http-only.conf /www/server/panel/vhost/nginx/codex-control.ppspace.xyz.conf
+   nginx -t && nginx -s reload
+   ```
+7. 如未安装 acme.sh：`curl https://get.acme.sh | sh -s email=<管理员邮箱>`。
+8. 签发证书并安装到指定位置：
+   ```
+   acme.sh --issue -d codex-control.ppspace.xyz -w /www/wwwroot/codex-control.ppspace.xyz --webroot --server letsencrypt
+   mkdir -p /www/server/panel/vhost/cert/codex-control.ppspace.xyz
+   acme.sh --install-cert -d codex-control.ppspace.xyz \
+     --fullchain-file /www/server/panel/vhost/cert/codex-control.ppspace.xyz/fullchain.pem \
+     --key-file /www/server/panel/vhost/cert/codex-control.ppspace.xyz/privkey.pem \
+     --reloadcmd "nginx -t && nginx -s reload"
+   ```
+9. 换成完整配置（80 跳转 + 443 反向代理）并重载：
+   ```
+   cp deploy/nginx/codex-control.ppspace.xyz.conf /www/server/panel/vhost/nginx/codex-control.ppspace.xyz.conf
+   nginx -t && nginx -s reload
+   ```
+10. 验证：`curl -I https://codex-control.ppspace.xyz/login`，应返回 200；`curl -I http://codex-control.ppspace.xyz/` 应 301 到 https。
+
+说明：
+
+- 证书由 acme.sh 的 cron 自动续期，续期后由 `--reloadcmd` 重载 nginx。
+- 这个站点是手工放进 `vhost/nginx` 的，不会出现在宝塔面板的网站列表里；不要在宝塔里为该域名再建站点。
+- nginx 只向面板传 `X-Real-IP`（取自 `$remote_addr`），不转发客户端自带的 `X-Real-IP` / `X-Forwarded-For`。
+- 登录限速保存在进程内存中，`systemctl restart codexctl-web` 会重置计数。
+- 面板「用户」页可隐藏服务账号，在 `/etc/codexctl/config.toml` 中配置：`hidden_users = ["www", "mysql", "redis", "memcached"]`，改后重启 `codexctl-web`。
+

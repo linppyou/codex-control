@@ -7,3 +7,5 @@
 # refresh_min_validity_days = 3.0
 # quota_warn_percent = 80.0
 # quota_crit_percent = 95.0
+# 面板「用户」页隐藏的服务账号
+# hidden_users = ["www", "mysql", "redis", "memcached"]

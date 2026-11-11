@@ -183,3 +183,10 @@ def test_admin_create_mismatch_returns_1(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("getpass.getpass", lambda *a, **k: next(pws))
     assert cli.main(["-c", str(cfg), "admin", "create", "bob"]) == 1
     assert "错误：" in capsys.readouterr().err
+
+
+def test_web_command_calls_serve(ctx, monkeypatch):
+    called = []
+    monkeypatch.setattr("codexctl.web.server.serve", lambda c: called.append(c))
+    assert cli.main(["web"], context_factory=lambda s: ctx) == 0
+    assert called == [ctx]
