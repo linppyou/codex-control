@@ -192,17 +192,19 @@ def insert_quota_sample(
     )
 
 
-def latest_quota(conn: sqlite3.Connection, account_pk: int) -> list[sqlite3.Row]:
+def latest_quota(conn: sqlite3.Connection, account_pk: int, *, api_fresh_since: int = 0) -> list[sqlite3.Row]:
+    """每个窗口取一条：优先 ts >= api_fresh_since 的最新 api 样本，否则取任意来源的最新样本。"""
     return conn.execute(
         """
-        SELECT q.* FROM quota_samples q
-        JOIN (SELECT win, MAX(ts) AS ts FROM quota_samples WHERE account_pk = ? GROUP BY win) m
-          ON q.win = m.win AND q.ts = m.ts
-        WHERE q.account_pk = ?
-        GROUP BY q.win
-        ORDER BY q.win
+        SELECT * FROM (
+            SELECT q.*, ROW_NUMBER() OVER (
+                PARTITION BY q.win
+                ORDER BY (q.source = 'api' AND q.ts >= ?) DESC, q.ts DESC, q.id DESC
+            ) AS rn
+            FROM quota_samples q WHERE q.account_pk = ?
+        ) WHERE rn = 1 ORDER BY win
         """,
-        (account_pk, account_pk),
+        (api_fresh_since, account_pk),
     ).fetchall()
 
 

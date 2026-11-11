@@ -118,3 +118,58 @@ def test_scan_all_only_scans_assigned_users(setup):
     write(bob_log, event(T0 + 10, 100))
     assert logscan.scan_all(ctx) == 1
     assert repo.usage_summary(ctx.conn, since=0)[0]["username"] == "alice"
+
+
+def test_parse_line_rejects_bad_counters():
+    good = json.loads(event(T0, 100))
+    for bad in ("abc", True, -1, 2**53, 1.5, None):
+        d = json.loads(event(T0, 100))
+        d["payload"]["info"]["total_token_usage"]["input_tokens"] = bad
+        assert logscan.parse_line(json.dumps(d)) is None, bad
+    assert logscan.parse_line("[" * 100000) is None
+    assert logscan.parse_line(json.dumps(good)) is not None
+
+
+def test_future_and_ancient_events_ignored(setup):
+    ctx, acc, path = setup
+    rate = {"primary": {"used_percent": 99.0, "window_minutes": 300, "resets_at": None}}
+    write(path, event(ctx.now() + 1000, 100, rate=rate) + event(ctx.now() - 20 * 86400, 200)
+          + event(T0 + 10, 300))
+    logscan.scan_file(ctx, "alice", path)
+    assert [r[4] for r in usage_rows(ctx)] == [300]
+    assert repo.latest_quota(ctx.conn, acc.id) == []
+
+
+def test_fifo_does_not_block(setup):
+    ctx, _, path = setup
+    write(path, event(T0 + 10, 100))
+    os.mkfifo(path.parent / "rollout-f.jsonl")
+    assert logscan.scan_all(ctx) == 1
+
+
+def test_symlinked_sessions_dir_is_not_followed(setup):
+    ctx, _, path = setup
+    other = path.parent.parent.parent.parent.parent / "elsewhere"
+    other.mkdir()
+    write(other / "rollout-z.jsonl", event(T0 + 10, 100))
+    sessions = path.parents[3]
+    import shutil
+    shutil.rmtree(sessions)
+    sessions.symlink_to(other)
+    assert logscan.scan_all(ctx) == 0
+
+
+def test_endless_line_chunk_is_skipped(setup, monkeypatch):
+    ctx, _, path = setup
+    monkeypatch.setattr(logscan, "CHUNK_SIZE", 512)
+    monkeypatch.setattr(logscan, "MAX_LINE", 32)
+    write(path, "x" * 600 + "\n" + event(T0 + 10, 100))
+    logscan.scan_file(ctx, "alice", path)
+    assert [r[4] for r in usage_rows(ctx)] == [100]
+
+
+def test_scan_all_survives_file_exception(setup, monkeypatch):
+    ctx, _, path = setup
+    write(path, event(T0 + 10, 100))
+    monkeypatch.setattr(logscan, "scan_file", lambda *a, **k: 1 / 0)
+    assert logscan.scan_all(ctx) == 0

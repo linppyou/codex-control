@@ -79,3 +79,42 @@ def test_threshold_levels_and_resolution(ctx):
     quota.record(ctx, acc.id, T0 + 60, [QuotaWindow("primary", 10.0, 300, None)], "api")
     quota.evaluate_thresholds(ctx, acc)
     assert events.open_alerts(ctx.conn) == []
+
+
+def test_odd_values_are_skipped_or_nulled():
+    for bad in (float("nan"), "x", 150, -1, True, None, float("inf")):
+        rl = {"primary": {"used_percent": bad, "window_minutes": 300}}
+        assert quota.windows_from_rate_limits(rl) == []
+        body = {"rate_limit": {"primary_window": {"used_percent": bad}}}
+        assert quota.parse_usage(body, now=0) == []
+    rl = {"primary": {"used_percent": 5, "window_minutes": "x", "resets_at": -3}}
+    assert quota.windows_from_rate_limits(rl) == [QuotaWindow("primary", 5.0, None, None)]
+    body = {"rate_limit": {"primary_window": {"used_percent": 5, "limit_window_seconds": [1],
+                                              "reset_at": True, "reset_after_seconds": "9"}}}
+    assert quota.parse_usage(body, now=0) == [QuotaWindow("primary", 5.0, None, None)]
+    assert quota.parse_usage({"rate_limit": []}, now=0) == []
+
+
+def test_fresh_api_sample_beats_newer_log_sample(ctx):
+    acc = accounts.import_account(ctx, "acc1", make_auth_json(), "t")
+    ctx.test_clock.t = T0 + 100
+    quota.record(ctx, acc.id, T0 + 10, [QuotaWindow("primary", 96.0, 300, None)], "api")
+    quota.record(ctx, acc.id, T0 + 50, [QuotaWindow("primary", 0.0, 300, None)], "log")
+    quota.evaluate_thresholds(ctx, acc)
+    assert [a["level"] for a in events.open_alerts(ctx.conn)] == ["critical"]
+
+
+def test_poll_quotas_continues_after_account_exception(ctx, monkeypatch):
+    accounts.import_account(ctx, "acc1", make_auth_json(), "t")
+    accounts.import_account(ctx, "acc2", make_auth_json(account_id="acct-2"), "t")
+    calls = []
+
+    def fake_fetch(c, acc):
+        calls.append(acc.label)
+        if acc.label == "acc1":
+            raise RuntimeError("boom")
+        return [QuotaWindow("primary", 1.0, 300, None)]
+
+    monkeypatch.setattr(quota, "fetch_usage", fake_fetch)
+    quota.poll_quotas(ctx)
+    assert calls == ["acc1", "acc2"]

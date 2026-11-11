@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 
 import httpx
@@ -19,6 +20,17 @@ class QuotaWindow:
     resets_at: int | None
 
 
+def _pct(v: object) -> float | None:
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    f = float(v)
+    return f if math.isfinite(f) and 0 <= f <= 100 else None
+
+
+def _nonneg_int(v: object) -> int | None:
+    return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None
+
+
 def parse_usage(body: dict, now: int) -> list[QuotaWindow]:
     """解析 ChatGPT 后端 /wham/usage 响应（非官方接口，格式见 docs/server-validation.md）。"""
     rate_limit = body.get("rate_limit") if isinstance(body, dict) else None
@@ -27,20 +39,17 @@ def parse_usage(body: dict, now: int) -> list[QuotaWindow]:
     out = []
     for win, key in (("primary", "primary_window"), ("secondary", "secondary_window")):
         w = rate_limit.get(key)
-        if not isinstance(w, dict) or w.get("used_percent") is None:
+        if not isinstance(w, dict):
             continue
-        seconds = w.get("limit_window_seconds")
-        resets = w.get("reset_at")
-        if resets is None and w.get("reset_after_seconds") is not None:
-            resets = now + int(w["reset_after_seconds"])
-        out.append(
-            QuotaWindow(
-                win,
-                float(w["used_percent"]),
-                int(seconds) // 60 if seconds else None,
-                int(resets) if resets is not None else None,
-            )
-        )
+        pct = _pct(w.get("used_percent"))
+        if pct is None:
+            continue
+        seconds = _nonneg_int(w.get("limit_window_seconds"))
+        resets = _nonneg_int(w.get("reset_at"))
+        after = _nonneg_int(w.get("reset_after_seconds"))
+        if resets is None and after is not None:
+            resets = now + after
+        out.append(QuotaWindow(win, pct, seconds // 60 if seconds else None, resets))
     return out
 
 
@@ -48,19 +57,13 @@ def windows_from_rate_limits(rate_limits: dict) -> list[QuotaWindow]:
     """解析会话日志 token_count 事件里的 rate_limits（降级来源）。"""
     out = []
     for win in ("primary", "secondary"):
-        w = rate_limits.get(win)
-        if not isinstance(w, dict) or w.get("used_percent") is None:
+        w = rate_limits.get(win) if isinstance(rate_limits, dict) else None
+        if not isinstance(w, dict):
             continue
-        minutes = w.get("window_minutes")
-        resets = w.get("resets_at")
-        out.append(
-            QuotaWindow(
-                win,
-                float(w["used_percent"]),
-                int(minutes) if minutes is not None else None,
-                int(resets) if resets is not None else None,
-            )
-        )
+        pct = _pct(w.get("used_percent"))
+        if pct is None:
+            continue
+        out.append(QuotaWindow(win, pct, _nonneg_int(w.get("window_minutes")), _nonneg_int(w.get("resets_at"))))
     return out
 
 
@@ -70,10 +73,10 @@ def record(ctx: Context, account_pk: int, ts: int, windows: list[QuotaWindow], s
 
 
 def evaluate_thresholds(ctx: Context, acc: repo.Account) -> None:
-    rows = repo.latest_quota(ctx.conn, acc.id)
+    now = ctx.now()
+    rows = repo.latest_quota(ctx.conn, acc.id, api_fresh_since=now - 600)
     if not rows:
         return
-    now = ctx.now()
     worst = max(r["used_percent"] for r in rows)
     if worst >= ctx.settings.quota_crit_percent:
         events.raise_alert(ctx.conn, "critical", "quota_high", acc.label, f"额度已用 {worst:.0f}%", now=now)
@@ -99,8 +102,9 @@ def poll_quotas(ctx: Context) -> None:
             continue
         try:
             windows = fetch_usage(ctx, acc)
+            record(ctx, acc.id, ctx.now(), windows, "api")
+            evaluate_thresholds(ctx, acc)
         except (httpx.HTTPError, ValueError) as e:
             log.warning("额度接口请求失败 %s：%s", acc.label, e)
-            continue
-        record(ctx, acc.id, ctx.now(), windows, "api")
-        evaluate_thresholds(ctx, acc)
+        except Exception as e:  # 单个账号出错不能影响其他账号
+            log.warning("额度轮询异常 %s：%r", acc.label, e)
