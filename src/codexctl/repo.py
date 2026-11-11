@@ -104,3 +104,64 @@ def mark_retry(conn: sqlite3.Connection, pk: int, error: str, next_retry_at: int
         "UPDATE accounts SET retry_count = retry_count + 1, last_error = ?, next_retry_at = ? WHERE id = ?",
         (error, next_retry_at, pk),
     )
+
+@dataclass(frozen=True)
+class Assignment:
+    id: int
+    username: str
+    account_pk: int
+    started_at: int
+    ended_at: int | None
+
+
+def active_assignment(conn: sqlite3.Connection, username: str) -> Assignment | None:
+    row = conn.execute(
+        "SELECT * FROM assignments WHERE username = ? AND ended_at IS NULL", (username,)
+    ).fetchone()
+    return Assignment(**dict(row)) if row is not None else None
+
+
+def all_active(conn: sqlite3.Connection) -> list[Assignment]:
+    return [
+        Assignment(**dict(r))
+        for r in conn.execute("SELECT * FROM assignments WHERE ended_at IS NULL ORDER BY username")
+    ]
+
+
+def active_usernames(conn: sqlite3.Connection, account_pk: int) -> list[str]:
+    return [
+        r[0]
+        for r in conn.execute(
+            "SELECT username FROM assignments WHERE account_pk = ? AND ended_at IS NULL ORDER BY username",
+            (account_pk,),
+        )
+    ]
+
+
+def start_assignment(conn: sqlite3.Connection, username: str, account_pk: int, now: int) -> None:
+    conn.execute(
+        "INSERT INTO assignments(username, account_pk, started_at) VALUES (?, ?, ?)", (username, account_pk, now)
+    )
+
+
+def end_assignment(conn: sqlite3.Connection, username: str, now: int) -> None:
+    conn.execute("UPDATE assignments SET ended_at = ? WHERE username = ? AND ended_at IS NULL", (now, username))
+
+
+def account_at(conn: sqlite3.Connection, username: str, ts: int) -> int | None:
+    row = conn.execute(
+        "SELECT account_pk FROM assignments WHERE username = ? AND started_at <= ? "
+        "AND (ended_at IS NULL OR ended_at > ?) ORDER BY started_at DESC LIMIT 1",
+        (username, ts, ts),
+    ).fetchone()
+    return int(row[0]) if row is not None else None
+
+
+def users_with_recent_assignments(conn: sqlite3.Connection, since: int) -> list[str]:
+    return [
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT username FROM assignments WHERE ended_at IS NULL OR ended_at >= ? ORDER BY username",
+            (since,),
+        )
+    ]
