@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sqlite3
 import sys
 import time
+import tomllib
 from pathlib import Path
 from typing import Callable
 
@@ -20,7 +22,7 @@ DEFAULT_CONFIG = Path("/etc/codexctl/config.toml")
 ACTOR = "cli"
 _HANDLED = (
     accounts.AccountError, assignments.AssignError, UserError, AuthFileError,
-    PublishError, VaultError, CommandError, locks.LockBusy, OSError,
+    PublishError, VaultError, CommandError, locks.LockBusy, OSError, sqlite3.Error, LookupError,
 )
 
 
@@ -28,9 +30,16 @@ def _safe(s: object) -> str:
     return "".join(ch if ch.isprintable() else "?" for ch in str(s))
 
 
+def _positive_int(v: str) -> int:
+    n = int(v)
+    if n < 1:
+        raise argparse.ArgumentTypeError("必须 >= 1")
+    return n
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="codexctl", description="Codex 账号集中管理")
-    p.add_argument("-c", "--config", type=Path, default=DEFAULT_CONFIG)
+    p.add_argument("-c", "--config", type=Path, default=None)
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init", help="初始化目录、主密钥和数据库")
     sub.add_parser("selfcheck", help="检查运行环境")
@@ -61,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("users", help="列出系统用户及其分配")
     sub.add_parser("quota", help="显示各账号最新额度")
     a = sub.add_parser("usage", help="按用户汇总用量")
-    a.add_argument("--days", type=int, default=7)
+    a.add_argument("--days", type=_positive_int, default=7)
     sub.add_parser("check", help="运行一次巡检")
     sub.add_parser("daemon", help="运行后台定时任务")
     return p
@@ -70,16 +79,20 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None, context_factory: Callable[[Settings], Context] = open_context) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    settings = load_settings(args.config)
-    if args.cmd == "init":
-        return cmd_init(settings)
-    if args.cmd == "selfcheck":
-        return report(selfcheck.selfcheck(settings))
     try:
+        if args.config is not None and not args.config.exists():
+            print(f"错误：配置文件不存在：{args.config}", file=sys.stderr)
+            return 1
+        config = args.config if args.config is not None else (DEFAULT_CONFIG if DEFAULT_CONFIG.exists() else None)
+        settings = load_settings(config)
+        if args.cmd == "init":
+            return cmd_init(settings)
+        if args.cmd == "selfcheck":
+            return report(selfcheck.selfcheck(settings))
         ctx = context_factory(settings)
         return dispatch(ctx, args)
-    except _HANDLED as e:
-        print(f"错误：{e}", file=sys.stderr)
+    except (*_HANDLED, tomllib.TOMLDecodeError, ValueError) as e:
+        print(f"错误：{_safe(e)}", file=sys.stderr)
         return 1
 
 
@@ -124,22 +137,25 @@ def fmt_ts(ts: int | None) -> str:
 def dispatch(ctx: Context, args: argparse.Namespace) -> int:
     if args.cmd == "account":
         return account_cmd(ctx, args)
-    if args.cmd == "assign":
+    if args.cmd in ("assign", "unassign", "fix"):
+        failed = False
         for name in args.users:
-            backup = assignments.assign(ctx, name, args.account, ACTOR)
-            print(f"{name} -> {args.account}" + (f"（原 auth.json 已备份为 {backup}）" if backup else ""))
-        print("提示：用户需重启正在运行的 codex 才会使用新账号")
-        return 0
-    if args.cmd == "unassign":
-        for name in args.users:
-            done = assignments.unassign(ctx, name, ACTOR)
-            print(f"{name}: {'已回收' if done else '没有生效的分配'}")
-        return 0
-    if args.cmd == "fix":
-        for name in args.users:
-            assignments.reconcile_user(ctx, name, ACTOR)
-            print(f"{name}: 已按记录修复")
-        return 0
+            try:
+                if args.cmd == "assign":
+                    backup = assignments.assign(ctx, name, args.account, ACTOR)
+                    print(_safe(f"{name} -> {args.account}" + (f"（原 auth.json 已备份为 {backup}）" if backup else "")))
+                elif args.cmd == "unassign":
+                    done = assignments.unassign(ctx, name, ACTOR)
+                    print(_safe(f"{name}: {'已回收' if done else '没有生效的分配'}"))
+                else:
+                    assignments.reconcile_user(ctx, name, ACTOR)
+                    print(_safe(f"{name}: 已按记录修复"))
+            except _HANDLED as e:
+                failed = True
+                print(_safe(f"错误：{name}: {e}"), file=sys.stderr)
+        if args.cmd == "assign" and not failed:
+            print("提示：用户需重启正在运行的 codex 才会使用新账号")
+        return 1 if failed else 0
     if args.cmd == "users":
         for user in ctx.list_users(ctx.settings.min_uid):
             a = repo.active_assignment(ctx.conn, user.name)
@@ -158,7 +174,7 @@ def dispatch(ctx: Context, args: argparse.Namespace) -> int:
     if args.cmd == "usage":
         for r in repo.usage_summary(ctx.conn, ctx.now() - args.days * 86400):
             print(
-                f"{r['username']:<20} {r['label'] or '-':<12} total={r['total']} "
+                f"{_safe(r['username']):<20} {_safe(r['label'] or '-'):<12} total={r['total']} "
                 f"input={r['input']} output={r['output']} turns={r['turns']}"
             )
         return 0
@@ -180,18 +196,18 @@ def account_cmd(ctx: Context, args: argparse.Namespace) -> int:
         for acc in repo.list_accounts(ctx.conn):
             users = len(repo.active_usernames(ctx.conn, acc.id))
             line = (
-                f"{acc.label:<12} {acc.email or '-':<28} {acc.plan_type or '-':<6} {acc.status:<14} "
+                f"{_safe(acc.label):<12} {_safe(acc.email or '-'):<28} {acc.plan_type or '-':<6} {acc.status:<14} "
                 f"用户数={users} 上次刷新={fmt_ts(acc.last_refresh)} token到期={fmt_ts(acc.access_expires_at)}"
             )
-            print(line + (f" 错误={acc.last_error}" if acc.last_error else ""))
+            print(line + (_safe(f" 错误={acc.last_error}") if acc.last_error else ""))
         return 0
     if c == "add":
         acc = accounts.import_account(ctx, args.label, accounts.device_login(ctx, args.label), ACTOR)
-        print(f"已添加 {acc.label}（{acc.email}）")
+        print(_safe(f"已添加 {acc.label}（{acc.email}）"))
         return 0
     if c == "import":
         acc = accounts.import_account(ctx, args.label, args.file.read_bytes(), ACTOR)
-        print(f"已导入 {acc.label}（{acc.email}）")
+        print(_safe(f"已导入 {acc.label}（{acc.email}）"))
         return 0
     if c == "relogin":
         data = args.file.read_bytes() if args.file else accounts.device_login(ctx, args.label)
@@ -204,7 +220,7 @@ def account_cmd(ctx: Context, args: argparse.Namespace) -> int:
         except locks.LockBusy:
             print(f"错误：账号 {args.label} 正在被刷新，请稍后再试", file=sys.stderr)
             return 1
-        print("刷新成功" if ok else f"刷新失败：{repo.get_account(ctx.conn, args.label).last_error}")
+        print("刷新成功" if ok else _safe(f"刷新失败：{repo.get_account(ctx.conn, args.label).last_error}"))
         return 0 if ok else 1
     if c in ("disable", "enable"):
         accounts.set_disabled(ctx, args.label, c == "disable", ACTOR)
