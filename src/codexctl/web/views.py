@@ -162,6 +162,7 @@ def _card(acc, history: list[dict], latest, now: int, settings) -> dict:
         samples.append((h["ts"], 100 - _used(w)))
     card["chart"] = week_trend_chart(
         samples, window_start=start, window_end=resets, now=now, gap=3 * settings.quota_poll_seconds,
+        width=360, height=150, pad_left=34, pad_bottom=20, pad_top=10, pad_right=10,
     )
     card["current"] = remaining
     return card
