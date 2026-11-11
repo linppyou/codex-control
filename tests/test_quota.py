@@ -118,3 +118,8 @@ def test_poll_quotas_continues_after_account_exception(ctx, monkeypatch):
     monkeypatch.setattr(quota, "fetch_usage", fake_fetch)
     quota.poll_quotas(ctx)
     assert calls == ["acc1", "acc2"]
+
+
+def test_huge_integers_are_dropped_not_overflowing():
+    rl = {"primary": {"used_percent": 10.0, "window_minutes": 2**70, "resets_at": 2**64}}
+    assert quota.windows_from_rate_limits(rl) == [QuotaWindow("primary", 10.0, None, None)]

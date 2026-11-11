@@ -28,7 +28,8 @@ def _pct(v: object) -> float | None:
 
 
 def _nonneg_int(v: object) -> int | None:
-    return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None
+    # 上限与 logscan.MAX_COUNTER 一致，避免超大值写入 SQLite 时 OverflowError 卡住扫描
+    return v if isinstance(v, int) and not isinstance(v, bool) and 0 <= v < 2**53 else None
 
 
 def parse_usage(body: dict, now: int) -> list[QuotaWindow]:
