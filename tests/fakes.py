@@ -40,3 +40,18 @@ def make_auth_json(
             },
         }
     ).encode()
+
+
+class FakeRunner:
+    """记录命令调用；按命令名返回预设输出；设置 fail_with 时抛出该异常。"""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+        self.outputs: dict[str, str] = {}
+        self.fail_with: Exception | None = None
+
+    def __call__(self, args: list[str], input: bytes | None = None, timeout: float = 30) -> str:
+        self.calls.append(list(args))
+        if self.fail_with is not None:
+            raise self.fail_with
+        return self.outputs.get(args[0], "")
