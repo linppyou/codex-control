@@ -64,3 +64,53 @@ def test_rfc3339_roundtrip():
     assert parse_rfc3339(format_rfc3339(T0 + 7)) == T0 + 7
     assert parse_rfc3339("2026-11-10T14:01:42.571000000Z") == 1794319302
     assert parse_rfc3339("2026-11-11T05:44:28.201Z") == 1794375868
+
+
+def _mutated(mutate):
+    raw = json.loads(make_auth_json())
+    mutate(raw)
+    return json.dumps(raw).encode()
+
+
+def test_rejects_string_auth_claim():
+    tok = make_jwt({"email": "a@example.com", "https://api.openai.com/auth": "oops", "exp": T0})
+
+    def m(raw):
+        raw["tokens"]["id_token"] = tok
+        del raw["tokens"]["account_id"]
+
+    with pytest.raises(AuthFileError):
+        AuthBundle.from_bytes(_mutated(m))
+
+
+def test_rejects_non_string_account_id():
+    with pytest.raises(AuthFileError):
+        AuthBundle.from_bytes(_mutated(lambda r: r["tokens"].__setitem__("account_id", 5)))
+
+
+def test_rejects_garbage_id_token():
+    with pytest.raises(AuthFileError):
+        AuthBundle.from_bytes(_mutated(lambda r: r["tokens"].__setitem__("id_token", "garbage")))
+
+
+def test_rejects_infinite_exp():
+    tok = make_jwt({"client_id": "app_test", "exp": float("inf")})
+    with pytest.raises(AuthFileError):
+        AuthBundle.from_bytes(_mutated(lambda r: r["tokens"].__setitem__("access_token", tok)))
+
+
+def test_rejects_bool_exp():
+    tok = make_jwt({"client_id": "app_test", "exp": True})
+    with pytest.raises(AuthFileError):
+        AuthBundle.from_bytes(_mutated(lambda r: r["tokens"].__setitem__("access_token", tok)))
+
+
+def test_rejects_bad_last_refresh():
+    with pytest.raises(AuthFileError, match="时间格式"):
+        AuthBundle.from_bytes(_mutated(lambda r: r.__setitem__("last_refresh", "bad")))
+
+
+def test_client_id_none_unless_nonempty_str():
+    tok = make_jwt({"client_id": 7, "exp": T0 + 100})
+    b = AuthBundle.from_bytes(_mutated(lambda r: r["tokens"].__setitem__("access_token", tok)))
+    assert b.client_id is None

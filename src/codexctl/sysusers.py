@@ -26,7 +26,7 @@ def _from_pw(pw: pwd.struct_passwd) -> SysUser:
 
 
 def lookup_user(name: str, min_uid: int) -> SysUser:
-    if not _NAME_RE.match(name):
+    if not _NAME_RE.fullmatch(name):
         raise UserError(f"非法用户名：{name!r}")
     try:
         pw = pwd.getpwnam(name)
@@ -41,6 +41,6 @@ def list_users(min_uid: int) -> list[SysUser]:
     users = [
         _from_pw(pw)
         for pw in pwd.getpwall()
-        if pw.pw_uid >= min_uid and pw.pw_uid != _NOBODY_UID and _NAME_RE.match(pw.pw_name)
+        if pw.pw_uid >= min_uid and pw.pw_uid != _NOBODY_UID and _NAME_RE.fullmatch(pw.pw_name)
     ]
     return sorted(users, key=lambda u: u.name)

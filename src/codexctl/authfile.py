@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import copy
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -31,7 +32,10 @@ def format_rfc3339(ts: float) -> str:
 
 
 def parse_rfc3339(value: str) -> int:
-    dt = datetime.strptime(value[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+    try:
+        dt = datetime.strptime(value[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError) as e:
+        raise AuthFileError(f"时间格式无效：{value!r}") from e
     return int(dt.timestamp())
 
 
@@ -54,9 +58,11 @@ class AuthBundle:
             if not isinstance(tokens.get(key), str) or not tokens[key]:
                 raise AuthFileError(f"auth.json 缺少 tokens.{key}")
         bundle = cls(raw)
-        if not bundle.account_id:
+        bundle._id_claims()  # 校验 id_token 可解析
+        if not isinstance(bundle.account_id, str) or not bundle.account_id:
             raise AuthFileError("无法确定 ChatGPT account_id")
         bundle.access_expires_at  # 校验 access_token 可解析且含 exp
+        bundle.last_refresh  # 校验时间格式
         return bundle
 
     @property
@@ -78,9 +84,13 @@ class AuthBundle:
     def _id_claims(self) -> dict:
         return jwt_claims(self.id_token)
 
+    def _auth_claim(self) -> dict:
+        claim = self._id_claims().get(AUTH_CLAIM)
+        return claim if isinstance(claim, dict) else {}
+
     @property
     def account_id(self) -> str:
-        return self.tokens.get("account_id") or self._id_claims().get(AUTH_CLAIM, {}).get("chatgpt_account_id") or ""
+        return self.tokens.get("account_id") or self._auth_claim().get("chatgpt_account_id") or ""
 
     @property
     def email(self) -> str | None:
@@ -88,18 +98,19 @@ class AuthBundle:
 
     @property
     def plan_type(self) -> str | None:
-        return self._id_claims().get(AUTH_CLAIM, {}).get("chatgpt_plan_type")
+        return self._auth_claim().get("chatgpt_plan_type")
 
     @property
     def access_expires_at(self) -> int:
         exp = jwt_claims(self.access_token).get("exp")
-        if not isinstance(exp, (int, float)):
+        if isinstance(exp, bool) or not isinstance(exp, (int, float)) or not math.isfinite(exp):
             raise AuthFileError("access_token 缺少 exp")
         return int(exp)
 
     @property
     def client_id(self) -> str | None:
-        return jwt_claims(self.access_token).get("client_id")
+        cid = jwt_claims(self.access_token).get("client_id")
+        return cid if isinstance(cid, str) and cid else None
 
     @property
     def last_refresh(self) -> int:
