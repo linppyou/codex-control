@@ -4,6 +4,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -11,12 +12,29 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
 from .config import Settings
 from .publisher import LABEL_RE
 
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))")
 _URL_RE = re.compile(r"https://\S+")
+_ENV_KEYS = (
+    "PATH HOME LANG LC_ALL LC_CTYPE TERM http_proxy https_proxy HTTP_PROXY HTTPS_PROXY "
+    "NO_PROXY no_proxy SSL_CERT_FILE SSL_CERT_DIR"
+).split()
+
+
+def _openai_url(text: str) -> str | None:
+    for m in _URL_RE.finditer(text):
+        url = m.group(0).rstrip(".,;:)]}'\"")
+        try:
+            host = urlparse(url).hostname or ""
+        except ValueError:
+            continue
+        if host == "openai.com" or host.endswith(".openai.com"):
+            return url
+    return None
 _CODE_RE = re.compile(r"\b[A-Z0-9]{4}-[A-Z0-9]{4,6}\b")
 
 LOGIN_TIMEOUT = 15 * 60
@@ -46,12 +64,24 @@ class DeviceLoginManager:
         self._clock = clock
         self._lock = threading.Lock()
         self._logins: dict[str, _Login] = {}
+        # 管理器每个 web 进程只建一次，staging 下残留的都来自上次崩溃的进程
+        staging = settings.staging_dir
+        if staging.is_dir():
+            for entry in staging.iterdir():
+                if entry.is_dir() and not entry.is_symlink():
+                    shutil.rmtree(entry, ignore_errors=True)
+                else:
+                    try:
+                        entry.unlink()
+                    except OSError:
+                        pass
 
     def start(self, label: str, mode: str) -> str:
         if mode not in ("add", "relogin"):
             raise ValueError("mode 只能是 add 或 relogin")
         if not LABEL_RE.fullmatch(label):
             raise ValueError("账号标签格式不合法")
+        self.sweep()
         with self._lock:
             if any(l.label == label and l.state in _ACTIVE for l in self._logins.values()):
                 raise ValueError("该账号已有进行中的登录")
@@ -62,11 +92,13 @@ class DeviceLoginManager:
             try:
                 proc = subprocess.Popen(
                     [str(self._settings.codex_bin), "login", "--device-auth"],
-                    env={**os.environ, "CODEX_HOME": str(home)},
+                    env={**{k: os.environ[k] for k in _ENV_KEYS if k in os.environ}, "CODEX_HOME": str(home)},
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
-                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    start_new_session=True,
                 )
             except OSError as e:
                 shutil.rmtree(home, ignore_errors=True)
@@ -83,31 +115,36 @@ class DeviceLoginManager:
                 line = _ANSI_RE.sub("", raw).rstrip("\r\n")
                 with self._lock:
                     login.lines.append(line)
-                    if login.url is None and (m := _URL_RE.search(line)):
-                        login.url = m.group(0)
+                    if login.url is None:
+                        login.url = _openai_url(line)
                     if login.code is None and (m := _CODE_RE.search(line)):
                         login.code = m.group(0)
                     if login.state == "pending" and login.url and login.code:
                         login.state = "waiting"
-        except (ValueError, OSError):
+        except Exception:
             pass
-        rc = login.proc.wait()
-        try:
-            login.proc.stdout.close()
-        except OSError:
-            pass
-        with self._lock:
-            if login.state not in _ACTIVE:
-                return  # 已被取消/过期
-            login.finished_at = self._clock()
-            if rc == 0 and (login.home / "auth.json").exists():
-                login.state = "succeeded"
-            else:
-                login.state = "failed"
-                login.error = f"codex login 退出码 {rc}"
-                shutil.rmtree(login.home, ignore_errors=True)
+        finally:
+            rc = -1
+            try:
+                rc = login.proc.wait()
+            except Exception:
+                pass
+            try:
+                login.proc.stdout.close()
+            except Exception:
+                pass
+            with self._lock:
+                if login.state in _ACTIVE:  # 未被取消/过期
+                    login.finished_at = self._clock()
+                    if rc == 0 and (login.home / "auth.json").exists():
+                        login.state = "succeeded"
+                    else:
+                        login.state = "failed"
+                        login.error = f"codex login 退出码 {rc}"
+                        shutil.rmtree(login.home, ignore_errors=True)
 
     def status(self, login_id: str) -> dict | None:
+        self.sweep()
         with self._lock:
             l = self._logins.get(login_id)
             if l is None:
@@ -130,19 +167,34 @@ class DeviceLoginManager:
             l.taken = True
             try:
                 return (l.home / "auth.json").read_bytes()
+            except OSError as e:
+                raise ValueError("登录结果文件不可读") from e
             finally:
                 shutil.rmtree(l.home, ignore_errors=True)
+
+    @staticmethod
+    def _signal(l: _Login, sig: int) -> None:
+        try:
+            os.killpg(l.proc.pid, sig)
+        except ProcessLookupError:
+            pass
+
+    def close(self) -> None:
+        with self._lock:
+            for l in self._logins.values():
+                if l.state in _ACTIVE:
+                    self._stop(l, "cancelled")
 
     def _stop(self, l: _Login, state: str) -> None:
         """终止进程并清理目录（调用方持锁）。"""
         l.state = state
         l.finished_at = self._clock()
         if l.proc.poll() is None:
-            l.proc.terminate()
+            self._signal(l, signal.SIGTERM)
             try:
                 l.proc.wait(timeout=2)
             except subprocess.TimeoutExpired:
-                l.proc.kill()
+                self._signal(l, signal.SIGKILL)
                 l.proc.wait()
         shutil.rmtree(l.home, ignore_errors=True)
 

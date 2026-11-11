@@ -122,3 +122,82 @@ def test_ansi_codes(mgr_factory):
     st = m.status(lid)
     assert st["code"] == "BRMV-AA1D3"
     assert st["url"] == "https://auth.openai.com/codex/device"
+
+
+def test_osc8_and_csi_private(mgr_factory):
+    u = "https://auth.openai.com/codex/device"
+    m, _ = mgr_factory(
+        r"printf '\033[?25h\033]8;;" + u + r"\033\\" + u + r"\033]8;;\033\\\n\033[1mBRMV-AA1D3\033[0m\n'" + "\nsleep 30\n"
+    )
+    lid = m.start("hana", "add")
+    assert wait_for(lambda: m.status(lid)["state"] == "waiting")
+    assert m.status(lid)["url"] == "https://auth.openai.com/codex/device"
+
+
+def test_non_openai_url_ignored_and_trailing_punct(mgr_factory):
+    m, _ = mgr_factory(
+        'printf "see https://evil.example.com/x\\nhttps://notopenai.com/a\\nopen (https://auth.openai.com/codex/device).\\nBRMV-AA1D3\\n"\nsleep 30\n'
+    )
+    lid = m.start("ivan", "add")
+    assert wait_for(lambda: m.status(lid)["state"] == "waiting")
+    assert m.status(lid)["url"] == "https://auth.openai.com/codex/device"
+
+
+def test_popen_failure_no_leftover(tmp_path):
+    s = Settings(state_dir=tmp_path / "state", key_file=tmp_path / "k", codex_bin=tmp_path / "missing")
+    s.state_dir.mkdir()
+    m = DeviceLoginManager(s)
+    with pytest.raises(ValueError):
+        m.start("jack", "add")
+    assert list(s.staging_dir.iterdir()) == []
+
+
+def test_take_result_before_success(mgr_factory):
+    m, _ = mgr_factory("sleep 30\n")
+    lid = m.start("kate", "add")
+    with pytest.raises(ValueError):
+        m.take_result(lid)
+
+
+def test_failed_removes_dir(mgr_factory):
+    m, _ = mgr_factory("exit 1\n")
+    lid = m.start("leo", "add")
+    assert wait_for(lambda: m.status(lid)["state"] == "failed")
+    assert not m._logins[lid].home.exists()
+
+
+def test_startup_purges_staging(tmp_path):
+    s = Settings(state_dir=tmp_path / "state", key_file=tmp_path / "k", codex_bin=tmp_path / "codex")
+    (s.staging_dir / "old-abc").mkdir(parents=True)
+    (s.staging_dir / "old-abc" / "auth.json").write_text("x")
+    (s.staging_dir / "stray").write_text("x")
+    DeviceLoginManager(s)
+    assert list(s.staging_dir.iterdir()) == []
+
+
+def test_close_cancels_all_and_kills_group(mgr_factory):
+    m, _ = mgr_factory("sleep 30 &\nsleep 30\n")
+    ids = [m.start("mia", "add"), m.start("nina", "add")]
+    logins = [m._logins[i] for i in ids]
+    m.close()
+    for i, l in zip(ids, logins):
+        assert m.status(i)["state"] == "cancelled"
+        assert l.proc.poll() is not None and not l.home.exists()
+
+
+def test_status_sweeps(mgr_factory):
+    t = [0.0]
+    m, _ = mgr_factory("sleep 30\n", clock=lambda: t[0])
+    lid = m.start("omar", "add")
+    t[0] += 16 * 60
+    assert m.status(lid)["state"] == "expired"
+
+
+def test_env_allowlist(mgr_factory, tmp_path, monkeypatch):
+    monkeypatch.setenv("SECRET_TOKEN", "zzz")
+    out = tmp_path / "env.txt"
+    m, _ = mgr_factory(f'env > {out}\nexit 1\n')
+    lid = m.start("pia", "add")
+    assert wait_for(lambda: m.status(lid)["state"] == "failed")
+    text = out.read_text()
+    assert "CODEX_HOME=" in text and "SECRET_TOKEN" not in text
