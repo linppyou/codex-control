@@ -173,3 +173,32 @@ def users_with_recent_assignments(conn: sqlite3.Connection, since: int) -> list[
             (since,),
         )
     ]
+def insert_quota_sample(
+    conn: sqlite3.Connection,
+    account_pk: int,
+    ts: int,
+    win: str,
+    used_percent: float,
+    window_minutes: int | None,
+    resets_at: int | None,
+    source: str,
+) -> None:
+    conn.execute(
+        "INSERT INTO quota_samples(account_pk, ts, win, used_percent, window_minutes, resets_at, source) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (account_pk, ts, win, used_percent, window_minutes, resets_at, source),
+    )
+
+
+def latest_quota(conn: sqlite3.Connection, account_pk: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT q.* FROM quota_samples q
+        JOIN (SELECT win, MAX(ts) AS ts FROM quota_samples WHERE account_pk = ? GROUP BY win) m
+          ON q.win = m.win AND q.ts = m.ts
+        WHERE q.account_pk = ?
+        GROUP BY q.win
+        ORDER BY q.win
+        """,
+        (account_pk, account_pk),
+    ).fetchall()
