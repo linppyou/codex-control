@@ -15,6 +15,26 @@ def fmt_md_hm(ts: int) -> str:
     return f"{t.tm_mon}/{t.tm_mday} {t.tm_hour:02d}:{t.tm_min:02d}"
 
 
+TOKEN_UNITS = ("", "K", "M", "B", "T")
+
+
+def fmt_tokens(n: int | float | None) -> str:
+    """把 token 数量格式化为带单位的短字符串：999、1.23K、45.6M、789B，保留 3 位有效数字。"""
+    v = float(n or 0)
+    sign = "-" if v < 0 else ""
+    v = abs(v)
+    i = 0
+    while i < len(TOKEN_UNITS) - 1 and round(v, 2 if v < 10 else 1 if v < 100 else 0) >= 1000:
+        v /= 1000
+        i += 1
+    if i == 0:
+        return f"{sign}{int(round(v))}"
+    text = f"{v:.2f}" if v < 10 else f"{v:.1f}" if v < 100 else f"{v:.0f}"
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return f"{sign}{text}{TOKEN_UNITS[i]}"
+
+
 def quota_chart(
     points: list[tuple[int, float]], *, width: int = 720, height: int = 240, pad: int = 40, gap: int | None = None
 ) -> dict | None:

@@ -217,14 +217,62 @@ def test_csv_and_usage(c, ctx):
     d["total_tokens"] = 7
     for name in ("=cmd", "+x", "-y", "@z", "alice"):
         repo.insert_usage(ctx.conn, name, None, ctx.now() - 10, d, "f")
-    r = c.get("/usage.csv?days=7")
+    r = c.get("/usage.csv")
     assert r.status_code == 200 and "attachment" in r.headers["content-disposition"]
     lines = r.text.splitlines()
+    assert lines[0] == "username,model,today_tokens,7d_tokens,total_tokens,turns"
     for bad in ("'=cmd", "'+x", "'-y", "'@z"):
         assert any(l.startswith(bad + ",") for l in lines), bad
     assert any(l.startswith("alice,") for l in lines)
-    assert "alice" in c.get("/usage?days=30").text
-    assert "<strong>7 天</strong>" in c.get("/usage?days=5").text
+    assert "alice" in c.get("/usage").text
+
+
+def test_usage_page_periods_and_models(c, ctx):
+    def add(ts, total, model):
+        d = {f: 0 for f in repo.USAGE_FIELDS}
+        d["total_tokens"] = d["input_tokens"] = total
+        repo.insert_usage(ctx.conn, "alice", None, ts, d, "f", model)
+
+    now = ctx.now()
+    add(now - 10, 1_500_000, "gpt-a")
+    add(now - 3 * 86400, 2_000_000_000, "gpt-b")
+    add(now - 30 * 86400, 40_000, None)
+    add(now - 30 * 86400, 5_000, "<b>m</b>")
+    t = c.get("/usage").text
+    assert "今天" in t and "近 7 天" in t and "全部" in t
+    assert "1.5M" in t and "2B" in t and "2B" in t and "45K" not in t
+    assert "gpt-a" in t and "gpt-b" in t and "未知模型" in t
+    assert "<b>m</b>" not in t and "&lt;b&gt;m&lt;/b&gt;" in t
+    assert "2,001,545,000" in t  # 全部总量的精确值放在 title 里
+    csv_lines = sorted(l for l in c.get("/usage.csv").text.splitlines() if l.startswith("alice,"))
+    assert csv_lines == [
+        "alice,,0,0,40000,1",
+        "alice,<b>m</b>,0,0,5000,1",
+        "alice,gpt-a,1500000,1500000,1500000,1",
+        "alice,gpt-b,0,2000000000,2000000000,1",
+    ]
+
+
+def test_usage_page_per_user_models(c, ctx):
+    def add(user, ts, total, model):
+        d = {f: 0 for f in repo.USAGE_FIELDS}
+        d["total_tokens"] = total
+        repo.insert_usage(ctx.conn, user, None, ts, d, "f", model)
+
+    now = ctx.now()
+    add("alice", now - 10, 1_000, "gpt-a")
+    add("alice", now - 10, 2_000, "gpt-a")
+    add("alice", now - 3 * 86400, 7_000_000, "gpt-b")
+    add("bob", now - 40 * 86400, 3_300_000_000, "gpt-a")
+    t = c.get("/usage").text
+    table = t[t.index("按用户"):]
+    # alice 近 7 天更多，排在 bob 前面；每个用户下有各自模型的子行
+    assert table.index("alice") < table.index("bob")
+    alice = table[table.index("alice"):table.index("bob")]
+    assert alice.count('class="model-sub"') == 2 and "gpt-a" in alice and "gpt-b" in alice
+    assert "3K" in alice and "7M" in alice and "7.0M" not in alice
+    bob = table[table.index("bob"):]
+    assert bob.count('class="model-sub"') == 1 and "3.3B" in bob
 
 
 def test_audit_and_xss(c, ctx):

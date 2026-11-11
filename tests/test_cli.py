@@ -201,3 +201,8 @@ def test_account_name(ctx, tmp_path, capsys):
     assert "主力" in capsys.readouterr().out
     assert run_cli(ctx, "account", "name", "acc1") == 0
     assert "已清除" in capsys.readouterr().out
+
+
+def test_backfill_models_command(ctx, capsys):
+    assert run_cli(ctx, "backfill-models") == 0
+    assert "已补全 0 条用量的模型名" in capsys.readouterr().out

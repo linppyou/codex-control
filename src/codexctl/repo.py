@@ -243,12 +243,13 @@ USAGE_FIELDS = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoni
 
 
 def insert_usage(
-    conn: sqlite3.Connection, username: str, account_pk: int | None, ts: int, delta: dict[str, int], session_file: str
+    conn: sqlite3.Connection, username: str, account_pk: int | None, ts: int, delta: dict[str, int], session_file: str,
+    model: str | None = None,
 ) -> None:
     conn.execute(
         "INSERT INTO usage_events(username, account_pk, ts, input_tokens, cached_input_tokens, output_tokens, "
-        "reasoning_output_tokens, total_tokens, session_file) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (username, account_pk, ts, *(delta[f] for f in USAGE_FIELDS), session_file),
+        "reasoning_output_tokens, total_tokens, session_file, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (username, account_pk, ts, *(delta[f] for f in USAGE_FIELDS), session_file, model),
     )
 
 
@@ -256,14 +257,16 @@ def get_offset(conn: sqlite3.Connection, path: str) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM log_offsets WHERE path = ?", (path,)).fetchone()
 
 
-def set_offset(conn: sqlite3.Connection, path: str, inode: int, offset: int, last_totals: str | None) -> None:
+def set_offset(
+    conn: sqlite3.Connection, path: str, inode: int, offset: int, last_totals: str | None, last_model: str | None = None
+) -> None:
     conn.execute(
         """
-        INSERT INTO log_offsets(path, inode, offset, last_totals) VALUES (?, ?, ?, ?)
+        INSERT INTO log_offsets(path, inode, offset, last_totals, last_model) VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(path) DO UPDATE SET inode = excluded.inode, offset = excluded.offset,
-            last_totals = excluded.last_totals
+            last_totals = excluded.last_totals, last_model = excluded.last_model
         """,
-        (path, inode, offset, last_totals),
+        (path, inode, offset, last_totals, last_model),
     )
 
 
@@ -288,6 +291,69 @@ def usage_by_user(conn: sqlite3.Connection, since: int) -> dict[str, int]:
             "SELECT username, SUM(total_tokens) FROM usage_events WHERE ts >= ? GROUP BY username", (since,)
         )
     }
+
+
+def usage_files_missing_model(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+    """有模型为空的用量记录的 (用户, 会话文件)。"""
+    return [
+        (r[0], r[1]) for r in conn.execute(
+            "SELECT DISTINCT username, session_file FROM usage_events WHERE model IS NULL ORDER BY username, session_file"
+        )
+    ]
+
+
+def fill_usage_models(conn: sqlite3.Connection, username: str, session_file: str, pairs: list[tuple[str, int]]) -> int:
+    """按 (模型, 时间戳) 给该会话文件中模型为空的用量补上模型名，返回更新条数。"""
+    before = conn.total_changes
+    conn.executemany(
+        "UPDATE usage_events SET model = ? WHERE username = ? AND session_file = ? AND ts = ? AND model IS NULL",
+        [(m, username, session_file, ts) for m, ts in pairs],
+    )
+    return conn.total_changes - before
+
+
+def set_offset_model(conn: sqlite3.Connection, path: str, model: str) -> None:
+    conn.execute("UPDATE log_offsets SET last_model = ? WHERE path = ?", (model, path))
+
+
+def usage_by_model(conn: sqlite3.Connection, since: int) -> list[sqlite3.Row]:
+    """按模型汇总 since 之后的用量，未知模型归为 NULL，按总量降序。"""
+    return conn.execute(
+        """
+        SELECT model, SUM(total_tokens) AS total, SUM(input_tokens) AS input,
+               SUM(cached_input_tokens) AS cached, SUM(output_tokens) AS output, COUNT(*) AS turns
+        FROM usage_events WHERE ts >= ?
+        GROUP BY model ORDER BY total DESC
+        """,
+        (since,),
+    ).fetchall()
+
+
+def usage_by_user_model_windows(conn: sqlite3.Connection, today: int, week: int) -> list[sqlite3.Row]:
+    """按用户+模型汇总：今天、近 7 天与全部的总 tokens，以及全部次数；未知模型为 NULL。"""
+    return conn.execute(
+        """
+        SELECT username, model,
+               SUM(CASE WHEN ts >= ? THEN total_tokens ELSE 0 END) AS today,
+               SUM(CASE WHEN ts >= ? THEN total_tokens ELSE 0 END) AS week,
+               SUM(total_tokens) AS total, COUNT(*) AS turns
+        FROM usage_events
+        GROUP BY username, model
+        ORDER BY username, week DESC, total DESC
+        """,
+        (today, week),
+    ).fetchall()
+
+
+def usage_user_accounts(conn: sqlite3.Connection) -> dict[str, list[str]]:
+    """每个用户产生过用量的账号标签（按标签排序，不含未关联账号的用量）。"""
+    out: dict[str, list[str]] = {}
+    for r in conn.execute(
+        "SELECT DISTINCT u.username, a.label FROM usage_events u JOIN accounts a ON a.id = u.account_pk "
+        "ORDER BY u.username, a.label"
+    ):
+        out.setdefault(r[0], []).append(r[1])
+    return out
 
 
 def recent_audit(conn: sqlite3.Connection, limit: int) -> list[sqlite3.Row]:

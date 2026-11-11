@@ -20,6 +20,7 @@ CHUNK_SIZE = 8 * 1024 * 1024
 MAX_LINE = 1024 * 1024
 MAX_COUNTER = 2**53
 FUTURE_SLACK = 300
+MAX_MODEL = 64
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,22 @@ def parse_line(line: str) -> TokenCount | None:
     return TokenCount(ts, totals, rate_limits if isinstance(rate_limits, dict) else None)
 
 
+def parse_model(line: str) -> str | None:
+    """从 turn_context 事件中取出当前模型名；不是该事件或字段无效时返回 None。"""
+    try:
+        d = json.loads(line)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(d, dict) or d.get("type") != "turn_context":
+        return None
+    payload = d.get("payload")
+    model = payload.get("model") if isinstance(payload, dict) else None
+    if not isinstance(model, str):
+        return None
+    model = model.strip()
+    return model[:MAX_MODEL] if model and model.isprintable() else None
+
+
 def usage_delta(prev: dict[str, int] | None, cur: dict[str, int]) -> dict[str, int]:
     if prev is None or cur["total_tokens"] < prev.get("total_tokens", 0):
         return dict(cur)
@@ -82,10 +99,11 @@ def scan_file(ctx: Context, username: str, path: Path) -> int:
         if not stat.S_ISREG(st.st_mode) or st.st_uid != uid:
             return 0
         row = repo.get_offset(ctx.conn, str(path))
-        offset, prev = 0, None
+        offset, prev, model = 0, None, None
         if row is not None and row["inode"] == st.st_ino and row["offset"] <= st.st_size:
             offset = row["offset"]
             prev = json.loads(row["last_totals"]) if row["last_totals"] else None
+            model = row["last_model"]
         now = ctx.now()
         lo, hi = now - ctx.settings.log_lookback_days * 86400, now + FUTURE_SLACK
         while True:
@@ -99,13 +117,17 @@ def scan_file(ctx: Context, username: str, path: Path) -> int:
                     log.warning("跳过无换行的超长数据 %s（%d 字节）", path, len(chunk))
                     with transaction(ctx.conn):
                         repo.set_offset(ctx.conn, str(path), st.st_ino, offset + len(chunk),
-                                        json.dumps(prev) if prev is not None else None)
+                                        json.dumps(prev) if prev is not None else None, model)
                     offset += len(chunk)
                     continue
                 break
             with transaction(ctx.conn):
                 for raw in chunk[: end + 1].splitlines():
-                    tc = parse_line(raw.decode("utf-8", errors="replace"))
+                    text = raw.decode("utf-8", errors="replace")
+                    if b'"turn_context"' in raw:
+                        model = parse_model(text) or model
+                        continue
+                    tc = parse_line(text)
                     if tc is None or not lo <= tc.ts <= hi:
                         continue
                     account_pk = repo.account_at(ctx.conn, username, tc.ts)
@@ -113,7 +135,7 @@ def scan_file(ctx: Context, username: str, path: Path) -> int:
                         delta = usage_delta(prev, tc.totals)
                         prev = tc.totals
                         if delta["total_tokens"] > 0:
-                            repo.insert_usage(ctx.conn, username, account_pk, tc.ts, delta, str(path))
+                            repo.insert_usage(ctx.conn, username, account_pk, tc.ts, delta, str(path), model)
                             count += 1
                     if tc.rate_limits and account_pk is not None:
                         for w in quota.windows_from_rate_limits(tc.rate_limits):
@@ -122,8 +144,71 @@ def scan_file(ctx: Context, username: str, path: Path) -> int:
                                 w.resets_at, "log",
                             )
                 offset += end + 1
-                repo.set_offset(ctx.conn, str(path), st.st_ino, offset, json.dumps(prev) if prev is not None else None)
+                repo.set_offset(
+                    ctx.conn, str(path), st.st_ino, offset, json.dumps(prev) if prev is not None else None, model
+                )
     return count
+
+
+def _scanned_lines(f, limit: int):
+    """逐行产出文件前 limit 字节中以换行结尾的完整行；无换行的超长数据整块跳过。"""
+    offset, buf = 0, b""
+    while offset < limit:
+        chunk = f.read(min(CHUNK_SIZE, limit - offset))
+        if not chunk:
+            return
+        offset += len(chunk)
+        buf += chunk
+        end = buf.rfind(b"\n")
+        if end < 0:
+            if len(buf) >= CHUNK_SIZE:
+                buf = b""
+            continue
+        yield from buf[: end + 1].splitlines()
+        buf = buf[end + 1:]
+
+
+def backfill_file_models(ctx: Context, username: str, path: Path) -> int:
+    """重读一个会话文件中已扫描过的部分，按 turn_context 给缺模型的用量补上模型名，返回更新条数。"""
+    try:
+        uid = ctx.lookup_user(username, ctx.settings.min_uid).uid
+    except UserError:
+        return 0
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY)
+    except OSError:
+        return 0
+    with os.fdopen(fd, "rb") as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != uid:
+            return 0
+        row = repo.get_offset(ctx.conn, str(path))
+        same = row is not None and row["inode"] == st.st_ino and row["offset"] <= st.st_size
+        limit = row["offset"] if same else st.st_size
+        model, pairs = None, []
+        for raw in _scanned_lines(f, limit):
+            if b'"turn_context"' in raw:
+                model = parse_model(raw.decode("utf-8", errors="replace")) or model
+            elif model and b'"token_count"' in raw:
+                tc = parse_line(raw.decode("utf-8", errors="replace"))
+                if tc is not None and tc.totals is not None:
+                    pairs.append((model, tc.ts))
+    with transaction(ctx.conn):
+        count = repo.fill_usage_models(ctx.conn, username, str(path), pairs)
+        if same and model and row["last_model"] is None:
+            repo.set_offset_model(ctx.conn, str(path), model)
+    return count
+
+
+def backfill_models(ctx: Context) -> int:
+    """给加入模型统计之前入库的用量补上模型名（只改模型为空的记录），返回更新条数。"""
+    total = 0
+    for username, path in repo.usage_files_missing_model(ctx.conn):
+        try:
+            total += backfill_file_models(ctx, username, Path(path))
+        except Exception as e:  # 单个文件出错不能影响其他文件
+            log.warning("回填模型失败 %s：%r", path, e)
+    return total
 
 
 def _safe_dir(p: Path, uid: int | None) -> bool:

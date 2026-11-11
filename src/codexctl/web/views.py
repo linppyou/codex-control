@@ -220,14 +220,6 @@ def _safe_next(value: str) -> str:
     return value if ok else "/accounts"
 
 
-def _usage_days(request: Request) -> int:
-    try:
-        days = int(request.query_params.get("days", "7"))
-    except ValueError:
-        return 7
-    return days if days in (1, 7, 30) else 7
-
-
 def _finish_login_import(ctx, devlogins, login_id: str, label: str, mode: str, actor: str) -> tuple[str, str]:
     """取走一次登录结果并导入；返回 (msg, err)。调用方须持有全局锁。"""
     try:
@@ -601,37 +593,79 @@ def register(app) -> None:
                 return _redirect("/users", err=str(e))
         return _redirect("/users", msg=f"已修复 {clean_text(name, 32)}")
 
-    def usage_rows(days: int) -> list[sqlite3.Row]:
+    def usage_windows() -> tuple[int, int]:
+        """返回 (今天零点, 7 天前) 的时间戳；今天按服务器本地时区计算。"""
+        now = ctx.now()
+        t = time.localtime(now)
+        today = int(time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 0, 0, 0, 0, 0, -1)))
+        return today, now - 7 * 86400
+
+    def usage_user_rows() -> list[sqlite3.Row]:
+        today, week = usage_windows()
         with lock:
             devlogins.sweep()
-            return repo.usage_summary(ctx.conn, ctx.now() - days * 86400)
+            return repo.usage_by_user_model_windows(ctx.conn, today, week)
+
+    def group_users(rows: list[sqlite3.Row], labels: dict[str, list[str]]) -> list[dict]:
+        """把 (用户, 模型) 行聚合成每个用户一项，内含按近 7 天降序的模型明细。"""
+        users: dict[str, dict] = {}
+        for r in rows:
+            u = users.setdefault(r["username"], {
+                "username": clean_text(r["username"]),
+                "labels": [clean_text(x) for x in labels.get(r["username"], [])],
+                "today": 0, "week": 0, "total": 0, "turns": 0, "models": [],
+            })
+            m = {
+                "name": clean_text(r["model"]) if r["model"] else "未知模型", "known": bool(r["model"]),
+                "today": r["today"] or 0, "week": r["week"] or 0, "total": r["total"] or 0, "turns": r["turns"],
+            }
+            u["models"].append(m)
+            for k in ("today", "week", "total", "turns"):
+                u[k] += m[k]
+        return sorted(users.values(), key=lambda u: (-u["week"], -u["total"], u["username"]))
 
     @app.get("/usage", response_class=HTMLResponse)
     def usage_page(request: Request, admin: tuple[str, str] = Depends(current_admin)):
-        days = _usage_days(request)
-        rows = [
-            {
-                "username": clean_text(r["username"]), "label": clean_text(r["label"] or "-"),
-                "total": r["total"], "input": r["input"], "output": r["output"], "turns": r["turns"],
-            }
-            for r in usage_rows(days)
-        ]
-        return render(request, "usage.html", admin=admin[0], csrf=admin[1], rows=rows, days=days)
+        today, week = usage_windows()
+        with lock:
+            devlogins.sweep()
+            periods = []
+            for key, title, since in (("today", "今天", today), ("week", "近 7 天", week), ("all", "全部", 0)):
+                models = [
+                    {
+                        "name": clean_text(r["model"]) if r["model"] else "未知模型", "known": bool(r["model"]),
+                        "total": r["total"] or 0, "input": r["input"] or 0, "cached": r["cached"] or 0,
+                        "output": r["output"] or 0, "turns": r["turns"],
+                    }
+                    for r in repo.usage_by_model(ctx.conn, since)
+                ]
+                total = sum(m["total"] for m in models)
+                for m in models:
+                    m["pct"] = round(m["total"] * 100 / total, 1) if total else 0
+                periods.append({
+                    "key": key, "title": title, "models": models, "total": total,
+                    "input": sum(m["input"] for m in models), "cached": sum(m["cached"] for m in models),
+                    "output": sum(m["output"] for m in models), "turns": sum(m["turns"] for m in models),
+                })
+            users = group_users(
+                repo.usage_by_user_model_windows(ctx.conn, today, week), repo.usage_user_accounts(ctx.conn)
+            )
+        return render(request, "usage.html", admin=admin[0], csrf=admin[1], periods=periods, users=users)
 
     @app.get("/usage.csv")
     def usage_csv(request: Request, admin: tuple[str, str] = Depends(current_admin)):
-        days = _usage_days(request)
         buf = io.StringIO()
         w = csv.writer(buf)
-        w.writerow(["username", "account", "total_tokens", "input_tokens", "output_tokens", "turns"])
-        for r in usage_rows(days):
+        w.writerow(["username", "model", "today_tokens", "7d_tokens", "total_tokens", "turns"])
+        for r in usage_user_rows():
             w.writerow([
-                _csv_cell(r["username"]), _csv_cell(r["label"] or ""), r["total"], r["input"], r["output"], r["turns"],
+                _csv_cell(r["username"]), _csv_cell(r["model"] or ""),
+                r["today"] or 0, r["week"] or 0, r["total"] or 0, r["turns"],
             ])
         return Response(
             buf.getvalue(),
             media_type="text/csv; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="usage-{days}d.csv"'},
+            headers={"Content-Disposition": 'attachment; filename="usage.csv"'},
         )
 
     @app.get("/audit", response_class=HTMLResponse)

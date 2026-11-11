@@ -16,6 +16,7 @@ from fastapi.templating import Jinja2Templates
 
 from .. import events, webauth
 from ..context import Context
+from .charts import fmt_tokens
 from ..devicelogin import DeviceLoginManager
 from ..webauth import (
     MAX_LOGIN_USERNAME_LEN,
@@ -146,6 +147,7 @@ def create_app(
     app.state.limiter = limiter if limiter is not None else LoginRateLimiter()
     app.state.user_limiter = LoginRateLimiter(max_failures=30, window=900)
     app.state.templates = Jinja2Templates(directory=str(base / "templates"))
+    app.state.templates.env.filters["tokens"] = fmt_tokens
     app.mount("/static", StaticFiles(directory=str(base / "static")), name="static")
 
     @app.get("/favicon.ico", include_in_schema=False)

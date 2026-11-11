@@ -77,3 +77,23 @@ def test_migrates_old_accounts_table(tmp_path):
     conn = db.connect(path)
     assert conn.execute("SELECT display_name FROM accounts WHERE label = 'a'").fetchone()[0] is None
     db.connect(path)  # 再次连接不应重复加列
+
+
+def test_migrates_old_usage_tables(tmp_path):
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.execute(
+        "CREATE TABLE usage_events (id INTEGER PRIMARY KEY, username TEXT NOT NULL, account_pk INTEGER, "
+        "ts INTEGER NOT NULL, input_tokens INTEGER NOT NULL, cached_input_tokens INTEGER NOT NULL, "
+        "output_tokens INTEGER NOT NULL, reasoning_output_tokens INTEGER NOT NULL, total_tokens INTEGER NOT NULL, "
+        "session_file TEXT NOT NULL)"
+    )
+    old.execute("CREATE TABLE log_offsets (path TEXT PRIMARY KEY, inode INTEGER NOT NULL, offset INTEGER NOT NULL, last_totals TEXT)")
+    old.execute("INSERT INTO usage_events VALUES (1, 'u', NULL, 1, 1, 0, 0, 0, 1, 'f')")
+    old.execute("INSERT INTO log_offsets VALUES ('p', 1, 10, NULL)")
+    old.commit()
+    old.close()
+    conn = db.connect(path)
+    assert conn.execute("SELECT model FROM usage_events").fetchone()[0] is None
+    assert conn.execute("SELECT last_model FROM log_offsets").fetchone()[0] is None
+    db.connect(path)

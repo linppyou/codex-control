@@ -173,3 +173,56 @@ def test_scan_all_survives_file_exception(setup, monkeypatch):
     write(path, event(T0 + 10, 100))
     monkeypatch.setattr(logscan, "scan_file", lambda *a, **k: 1 / 0)
     assert logscan.scan_all(ctx) == 0
+
+
+def turn_context(model):
+    return json.dumps({"timestamp": format_rfc3339(T0), "type": "turn_context", "payload": {"model": model}}) + "\n"
+
+
+def test_scan_records_model_and_keeps_it_across_scans(setup):
+    ctx, _, path = setup
+    write(path, event(T0 + 5, 50) + turn_context("gpt-a") + event(T0 + 10, 100))
+    logscan.scan_file(ctx, "alice", path)
+    write(path, event(T0 + 20, 250) + turn_context("gpt-b") + event(T0 + 30, 300))
+    logscan.scan_file(ctx, "alice", path)
+    models = [r[0] for r in ctx.conn.execute("SELECT model FROM usage_events ORDER BY id")]
+    assert models == [None, "gpt-a", "gpt-a", "gpt-b"]
+    by_model = {r["model"]: r["total"] for r in repo.usage_by_model(ctx.conn, since=0)}
+    assert by_model == {None: 50, "gpt-a": 200, "gpt-b": 50}
+
+
+def test_parse_model_rejects_invalid():
+    assert logscan.parse_model(turn_context("gpt-x")) == "gpt-x"
+    assert logscan.parse_model(turn_context("")) is None
+    assert logscan.parse_model(turn_context(123)) is None
+    assert logscan.parse_model(turn_context("a\x1bb")) is None
+    assert logscan.parse_model(turn_context("m" * 100)) == "m" * 64
+    assert logscan.parse_model(event(T0, 1)) is None
+
+
+def test_backfill_models_fills_old_rows_and_offset(setup):
+    ctx, _, path = setup
+    write(path, event(T0 + 5, 50) + turn_context("gpt-a") + event(T0 + 10, 100) + turn_context("gpt-b"))
+    logscan.scan_file(ctx, "alice", path)
+    ctx.conn.execute("UPDATE usage_events SET model = NULL")
+    ctx.conn.execute("UPDATE log_offsets SET last_model = NULL")
+    write(path, event(T0 + 20, 250))  # 尚未扫描的部分不参与回填
+    assert logscan.backfill_models(ctx) == 1
+    models = [r[0] for r in ctx.conn.execute("SELECT model FROM usage_events ORDER BY id")]
+    assert models == [None, "gpt-a"]
+    assert repo.get_offset(ctx.conn, str(path))["last_model"] == "gpt-b"
+    logscan.scan_file(ctx, "alice", path)
+    models = [r[0] for r in ctx.conn.execute("SELECT model FROM usage_events ORDER BY id")]
+    assert models == [None, "gpt-a", "gpt-b"]
+    assert logscan.backfill_models(ctx) == 0
+
+
+def test_backfill_models_keeps_existing_and_skips_foreign_files(setup):
+    ctx, _, path = setup
+    write(path, turn_context("gpt-a") + event(T0 + 10, 100))
+    logscan.scan_file(ctx, "alice", path)
+    ctx.conn.execute("UPDATE usage_events SET model = 'keep'")
+    assert logscan.backfill_models(ctx) == 0
+    assert ctx.conn.execute("SELECT model FROM usage_events").fetchone()[0] == "keep"
+    ctx.conn.execute("UPDATE usage_events SET model = NULL, username = 'nobody'")
+    assert logscan.backfill_models(ctx) == 0

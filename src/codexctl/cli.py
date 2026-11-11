@@ -10,7 +10,7 @@ import tomllib
 from pathlib import Path
 from typing import Callable
 
-from . import accounts, assignments, daemon, db, locks, refresher, repo, selfcheck, watcher, webauth
+from . import accounts, assignments, daemon, db, locks, logscan, refresher, repo, selfcheck, watcher, webauth
 from .authfile import AuthFileError
 from .config import Settings, load_settings
 from .context import Context, open_context
@@ -75,6 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("quota", help="显示各账号最新额度")
     a = sub.add_parser("usage", help="按用户汇总用量")
     a.add_argument("--days", type=_positive_int, default=7)
+    sub.add_parser("backfill-models", help="根据会话日志给历史用量补上模型名")
     sub.add_parser("check", help="运行一次巡检")
     sub.add_parser("daemon", help="运行后台定时任务")
     sub.add_parser("web", help="运行 Web 面板")
@@ -217,6 +218,9 @@ def dispatch(ctx: Context, args: argparse.Namespace) -> int:
                 f"{_safe(r['username']):<20} {_safe(r['label'] or '-'):<12} total={r['total']} "
                 f"input={r['input']} output={r['output']} turns={r['turns']}"
             )
+        return 0
+    if args.cmd == "backfill-models":
+        print(f"已补全 {logscan.backfill_models(ctx)} 条用量的模型名")
         return 0
     if args.cmd == "check":
         findings = watcher.run_checks(ctx)

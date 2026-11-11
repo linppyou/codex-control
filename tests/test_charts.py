@@ -23,3 +23,11 @@ def test_gap_splits_segments():
     assert c["path"].count("M") == 2 and c["path"].count("L") == 2
     assert quota_chart([(0, 90.0), (5000, 70.0)])["path"].count("M") == 1
     assert "剩余 90%" in c["dots"][0][2]
+
+
+def test_fmt_tokens_units():
+    from codexctl.web.charts import fmt_tokens
+    cases = {0: "0", None: "0", 999: "999", 1000: "1K", 1234: "1.23K", 12345: "12.3K", 999_499: "999K",
+             999_500: "1M", 12_340_000: "12.3M", 5_678_900_000: "5.68B", 2 * 10**12: "2T"}
+    for n, want in cases.items():
+        assert fmt_tokens(n) == want, n

@@ -2,22 +2,63 @@
 {% block title %}用量 - codexctl{% endblock %}
 {% block content %}
 <div class="page-head">
-  <div><h1>用量</h1><div class="sub">按用户与账号汇总的 token 用量</div></div>
-  <div class="toolbar">
-    <span class="seg">{% for d in (1, 7, 30) %}{% if d == days %}<strong>{{ d }} 天</strong>{% else %}<a href="/usage?days={{ d }}">{{ d }} 天</a>{% endif %}{% endfor %}</span>
-    <a class="btn" href="/usage.csv?days={{ days }}">导出 CSV</a>
+  <div><h1>用量</h1><div class="sub">今天、近 7 天与全部的 token 用量，按模型和用户汇总</div></div>
+  <div class="toolbar"><a class="btn" href="/usage.csv">导出 CSV</a></div>
+</div>
+<div class="usage-grid">
+  {% for p in periods %}
+  <div class="card usage-card">
+    <div class="usage-head">
+      <span class="section-title"><span class="section-mark"></span>{{ p.title }}</span>
+      <span class="muted">{{ p.turns }} 次</span>
+    </div>
+    <div class="usage-total" title="{{ '{:,}'.format(p.total) }} tokens">{{ p.total|tokens }}<small>tokens</small></div>
+    <div class="usage-split muted">
+      <span title="{{ '{:,}'.format(p.input) }}">输入 {{ p.input|tokens }}</span>
+      <span title="{{ '{:,}'.format(p.cached) }}">缓存 {{ p.cached|tokens }}</span>
+      <span title="{{ '{:,}'.format(p.output) }}">输出 {{ p.output|tokens }}</span>
+    </div>
+    {% if p.models %}
+    <ul class="model-list">
+      {% for m in p.models %}
+      <li>
+        <div class="model-row">
+          <span class="model-name{% if not m.known %} muted{% endif %}">{{ m.name }}</span>
+          <span class="model-val" title="{{ '{:,}'.format(m.total) }} tokens · {{ m.turns }} 次">{{ m.total|tokens }} <span class="muted">{{ m.pct }}%</span></span>
+        </div>
+        <div class="model-bar"><span style="width: {{ m.pct }}%"></span></div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="empty-state">没有数据</div>
+    {% endif %}
   </div>
+  {% endfor %}
 </div>
 <div class="panel flush">
-<div class="table-wrap"><table>
-  <thead><tr><th>用户</th><th>账号</th><th class="num">总 tokens</th><th class="num">输入</th><th class="num">输出</th><th class="num">次数</th></tr></thead>
-  <tbody>
-  {% for r in rows %}
-  <tr><td><b>{{ r.username }}</b></td><td><span class="tag">{{ r.label }}</span></td><td class="num">{{ r.total }}</td><td class="num">{{ r.input }}</td><td class="num">{{ r.output }}</td><td class="num">{{ r.turns }}</td></tr>
-  {% else %}
-  <tr><td colspan="6" class="empty">没有数据</td></tr>
-  {% endfor %}
-  </tbody>
-</table></div>
+  <div class="panel-head"><h2><span class="section-mark"></span>按用户</h2><span class="hint">每个用户下列出各模型在三个时间段的用量</span></div>
+  <div class="table-wrap"><table class="usage-users">
+    <thead><tr><th>用户 / 模型</th><th>账号</th><th class="num">今天</th><th class="num">近 7 天</th><th class="num">全部</th><th class="num">次数</th></tr></thead>
+    {% for u in users %}
+    <tbody>
+    <tr class="user-row"><td><b>{{ u.username }}</b></td>
+      <td>{% for l in u.labels %}<span class="tag">{{ l }}</span> {% else %}<span class="muted">-</span>{% endfor %}</td>
+      <td class="num" title="{{ '{:,}'.format(u.today) }}">{{ u.today|tokens }}</td>
+      <td class="num" title="{{ '{:,}'.format(u.week) }}">{{ u.week|tokens }}</td>
+      <td class="num" title="{{ '{:,}'.format(u.total) }}">{{ u.total|tokens }}</td>
+      <td class="num">{{ u.turns }}</td></tr>
+    {% for m in u.models %}
+    <tr class="model-sub"><td colspan="2"><span class="model-name{% if not m.known %} muted{% endif %}">{{ m.name }}</span></td>
+      <td class="num{% if not m.today %} muted{% endif %}" title="{{ '{:,}'.format(m.today) }}">{{ m.today|tokens }}</td>
+      <td class="num{% if not m.week %} muted{% endif %}" title="{{ '{:,}'.format(m.week) }}">{{ m.week|tokens }}</td>
+      <td class="num" title="{{ '{:,}'.format(m.total) }}">{{ m.total|tokens }}</td>
+      <td class="num">{{ m.turns }}</td></tr>
+    {% endfor %}
+    </tbody>
+    {% else %}
+    <tbody><tr><td colspan="6" class="empty">没有数据</td></tr></tbody>
+    {% endfor %}
+  </table></div>
 </div>
 {% endblock %}
