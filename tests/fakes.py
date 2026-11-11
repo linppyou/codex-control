@@ -55,3 +55,40 @@ class FakeRunner:
         if self.fail_with is not None:
             raise self.fail_with
         return self.outputs.get(args[0], "")
+
+import os
+from pathlib import Path
+
+from codexctl.sysusers import SysUser, UserError
+
+
+class FakeClock:
+    def __init__(self, t: int = T0) -> None:
+        self.t = t
+
+    def __call__(self) -> float:
+        return self.t
+
+
+class FakeUsers:
+    """假系统用户表：所有用户的 uid/gid 都是当前进程的，home 在临时目录下。"""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.names: set[str] = set()
+
+    def add(self, name: str) -> SysUser:
+        (self.root / name).mkdir(parents=True, exist_ok=True)
+        self.names.add(name)
+        return self.get(name)
+
+    def get(self, name: str) -> SysUser:
+        return SysUser(name, os.getuid(), os.getgid(), self.root / name)
+
+    def lookup(self, name: str, min_uid: int) -> SysUser:
+        if name not in self.names:
+            raise UserError(f"系统中不存在用户：{name}")
+        return self.get(name)
+
+    def list(self, min_uid: int) -> list[SysUser]:
+        return [self.get(n) for n in sorted(self.names)]
