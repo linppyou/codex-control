@@ -60,3 +60,20 @@ def test_db_file_mode_0600_regardless_of_umask(tmp_path):
 def test_busy_timeout_set(tmp_path):
     conn = db.connect(tmp_path / "x.db")
     assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 30000
+
+
+def test_migrates_old_accounts_table(tmp_path):
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.execute(
+        "CREATE TABLE accounts (id INTEGER PRIMARY KEY, label TEXT NOT NULL UNIQUE, email TEXT, "
+        "account_id TEXT NOT NULL UNIQUE, plan_type TEXT, status TEXT NOT NULL DEFAULT 'active', "
+        "last_refresh INTEGER NOT NULL, access_expires_at INTEGER NOT NULL, last_error TEXT, "
+        "retry_count INTEGER NOT NULL DEFAULT 0, next_retry_at INTEGER, created_at INTEGER NOT NULL)"
+    )
+    old.execute("INSERT INTO accounts(label, account_id, last_refresh, access_expires_at, created_at) VALUES ('a', 'x', 1, 2, 3)")
+    old.commit()
+    old.close()
+    conn = db.connect(path)
+    assert conn.execute("SELECT display_name FROM accounts WHERE label = 'a'").fetchone()[0] is None
+    db.connect(path)  # 再次连接不应重复加列

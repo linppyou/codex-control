@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import unicodedata
 from pathlib import Path
 
 from .locks import account_lock
@@ -119,6 +120,27 @@ def relogin_account(ctx: Context, label: str, data: bytes, actor: str) -> repo.A
         acc = require_account(ctx, label)
         publish_account(ctx, acc, bundle)
     return acc
+
+
+DISPLAY_NAME_MAX = 32
+
+
+def set_display_name(ctx: Context, label: str, name: str, actor: str) -> str | None:
+    """设置账号的备注名（只用于展示，不影响标签、凭证路径和用户链接）；空字符串表示清除。"""
+    acc = require_account(ctx, label)
+    name = " ".join(name.split())
+    if len(name) > DISPLAY_NAME_MAX:
+        raise AccountError(f"名称不能超过 {DISPLAY_NAME_MAX} 个字符")
+    if any(unicodedata.category(c)[0] == "C" for c in name):
+        raise AccountError("名称不能包含控制字符")
+    value = name or None
+    if value == acc.display_name:
+        return value
+    now = ctx.now()
+    with transaction(ctx.conn):
+        repo.set_display_name(ctx.conn, acc.id, value)
+        events.audit(ctx.conn, actor, "account.rename", label, f"{acc.display_name or '-'} -> {value or '-'}", now=now)
+    return value
 
 
 def set_disabled(ctx: Context, label: str, disabled: bool, actor: str) -> None:

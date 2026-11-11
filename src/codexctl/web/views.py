@@ -126,7 +126,8 @@ def _card(acc, history: list[dict], latest, now: int, settings) -> dict:
     other = next((q for q in rows if q is not week), None)
     api_ts = [q["ts"] for q in rows if q["source"] == "api"]
     card = {
-        "label": clean_text(acc.label), "email": _mask_email(clean_text(acc.email or "", 128)),
+        "label": clean_text(acc.label), "name": clean_text(getattr(acc, "display_name", None) or acc.label),
+        "renamed": bool(getattr(acc, "display_name", None)), "email": _mask_email(clean_text(acc.email or "", 128)),
         "plan": clean_text(acc.plan_type or "-").upper(), "status": acc.status,
         "status_text": {"needs_relogin": "需重新登录", "disabled": "已停用"}.get(acc.status, "") if acc.status != "active" else "",
         "has_quota": False, "synced": fmt_md_hm(max(api_ts)) if api_ts else "-",
@@ -175,6 +176,34 @@ def _account_rows(ctx) -> list[dict]:
         latest = repo.latest_quota(ctx.conn, acc.id, api_fresh_since=now - 2 * ctx.settings.quota_poll_seconds)
         history = repo.quota_history(ctx.conn, acc.id, now - 7 * 86400)
         rows.append(_card(acc, history, latest, now, ctx.settings))
+    return rows
+
+
+def _account_table(ctx) -> list[dict]:
+    """账号管理页的表格行：比首页卡片多出邮箱、用户数、错误与 token 到期等管理信息。"""
+    now = ctx.now()
+    counts: dict[int, int] = {}
+    for a in repo.all_active(ctx.conn):
+        counts[a.account_pk] = counts.get(a.account_pk, 0) + 1
+    rows = []
+    for acc in repo.list_accounts(ctx.conn):
+        quotas = [
+            _quota_view(q, now)
+            for q in repo.latest_quota(ctx.conn, acc.id, api_fresh_since=now - 2 * ctx.settings.quota_poll_seconds)
+        ]
+        rows.append({
+            "label": acc.label,
+            "name": clean_text(acc.name),
+            "display_name": clean_text(acc.display_name or ""),
+            "email": clean_text(acc.email or "-", 128),
+            "plan": clean_text(acc.plan_type or "-"),
+            "status": acc.status,
+            "last_error": clean_text(acc.last_error or "", 200),
+            "users": counts.get(acc.id, 0),
+            "last_refresh": fmt_ts(acc.last_refresh),
+            "expires": fmt_ts(acc.access_expires_at),
+            "quota": quotas,
+        })
     return rows
 
 
@@ -272,7 +301,7 @@ def register(app) -> None:
         with lock:
             devlogins.sweep()
             msg, err = _complete_finished_logins(app, admin)
-            rows = _account_rows(ctx)
+            rows = _account_table(ctx)
         return render(request, "accounts.html", admin=admin[0], csrf=admin[1], rows=rows, **_flash(msg, err))
 
     def account_action(label: str, admin, fn, ok_msg: str) -> RedirectResponse:
@@ -283,6 +312,16 @@ def register(app) -> None:
             except HANDLED as e:
                 return _redirect("/accounts", err=str(e))
         return _redirect("/accounts", msg=ok_msg)
+
+    @app.post("/accounts/{label}/name")
+    def account_name(label: str, name: str = Form(""), admin: tuple[str, str] = Depends(current_admin)):
+        with lock:
+            devlogins.sweep()
+            try:
+                value = accounts.set_display_name(ctx, label, name, actor_of(admin))
+            except HANDLED as e:
+                return _redirect("/accounts", err=str(e))
+        return _redirect("/accounts", msg=f"{label} 的名称已改为 {value}" if value else f"{label} 的名称已清除")
 
     @app.post("/accounts/{label}/quota-refresh")
     def quota_refresh(
@@ -337,6 +376,9 @@ def register(app) -> None:
         if got is None:
             return _redirect("/accounts", err="账号不存在")
         history, latest, names = got
+        with lock:
+            acc = repo.get_account(ctx.conn, label)
+        title = clean_text(acc.name if acc else label)
         rows = []
         for h in history:
             p, s = _cell(h["primary"]), _cell(h["secondary"])
@@ -352,7 +394,7 @@ def register(app) -> None:
         ]
         chart = quota_chart(points, width=1100, height=280, gap=3 * ctx.settings.quota_poll_seconds)
         return render(
-            request, "account_quota.html", admin=admin[0], csrf=admin[1], label=clean_text(label),
+            request, "account_quota.html", admin=admin[0], csrf=admin[1], label=clean_text(label), title=title,
             rows=rows, latest=latest, names=names, days=days, chart=chart,
         )
 
@@ -499,7 +541,10 @@ def register(app) -> None:
                     "t24": u1.get(u.name, 0),
                     "t7": u7.get(u.name, 0),
                 })
-            choices = [a.label for a in repo.list_accounts(ctx.conn) if a.status != "disabled"]
+            choices = [
+                {"label": a.label, "name": clean_text(a.name)}
+                for a in repo.list_accounts(ctx.conn) if a.status != "disabled"
+            ]
         return render(
             request, "users.html", admin=admin[0], csrf=admin[1], rows=rows, choices=choices, show_all=show_all
         )

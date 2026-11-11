@@ -126,3 +126,33 @@ def test_republish_account_rereads_under_lock(ctx):
         with pytest.raises(locks.LockBusy):
             with locks.account_lock(ctx.settings.state_dir, "acc1", blocking=False):
                 pass
+
+
+def test_set_display_name_only_changes_display(ctx):
+    acc = accounts.import_account(ctx, "acc1", make_auth_json(), "test")
+    published = ctx.publisher.account_file("acc1").read_bytes()
+    assert acc.name == "acc1"
+    assert accounts.set_display_name(ctx, "acc1", "  主力   账号 ", "test") == "主力 账号"
+    acc = accounts.require_account(ctx, "acc1")
+    assert (acc.label, acc.display_name, acc.name) == ("acc1", "主力 账号", "主力 账号")
+    # 标签、凭证与发布文件都不受影响
+    assert accounts.load_bundle(ctx, acc).refresh_token == "rt-1"
+    assert ctx.publisher.account_file("acc1").read_bytes() == published
+    assert accounts.set_display_name(ctx, "acc1", "", "test") is None
+    assert accounts.require_account(ctx, "acc1").name == "acc1"
+    audit = ctx.conn.execute("SELECT detail FROM audit_log WHERE action = 'account.rename'").fetchall()
+    assert [r[0] for r in audit] == ["- -> 主力 账号", "主力 账号 -> -"]
+
+
+def test_set_display_name_validation(ctx):
+    accounts.import_account(ctx, "acc1", make_auth_json(), "test")
+    with pytest.raises(accounts.AccountError, match="不能超过"):
+        accounts.set_display_name(ctx, "acc1", "x" * 33, "test")
+    with pytest.raises(accounts.AccountError, match="控制字符"):
+        accounts.set_display_name(ctx, "acc1", "a​b", "test")
+    with pytest.raises(accounts.AccountError, match="不存在"):
+        accounts.set_display_name(ctx, "nope", "x", "test")
+    # 名称不变时不重复记审计
+    accounts.set_display_name(ctx, "acc1", "x", "test")
+    accounts.set_display_name(ctx, "acc1", "x", "test")
+    assert ctx.conn.execute("SELECT COUNT(*) FROM audit_log WHERE action = 'account.rename'").fetchone()[0] == 1

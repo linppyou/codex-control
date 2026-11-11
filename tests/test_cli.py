@@ -190,3 +190,14 @@ def test_web_command_calls_serve(ctx, monkeypatch):
     monkeypatch.setattr("codexctl.web.server.serve", lambda c: called.append(c))
     assert cli.main(["web"], context_factory=lambda s: ctx) == 0
     assert called == [ctx]
+
+
+def test_account_name(ctx, tmp_path, capsys):
+    f = tmp_path / "auth.json"
+    f.write_bytes(make_auth_json())
+    run_cli(ctx, "account", "import", "acc1", str(f))
+    assert run_cli(ctx, "account", "name", "acc1", "主力") == 0
+    assert run_cli(ctx, "account", "list") == 0
+    assert "主力" in capsys.readouterr().out
+    assert run_cli(ctx, "account", "name", "acc1") == 0
+    assert "已清除" in capsys.readouterr().out

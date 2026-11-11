@@ -166,3 +166,14 @@ progress.bad::-moz-progress-bar { background: var(--red); }
 .acard-foot { display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--line); padding-top: 10px; margin-top: auto; font-size: 12px; }
 .acard-actions { display: inline-flex; align-items: center; gap: 10px; }
 .acard-actions a { color: var(--text-2); }
+
+/* 账号名称编辑 */
+.name-cell { min-width: 140px; }
+.rename summary { list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.rename summary::-webkit-details-marker { display: none; }
+.rename .acc-name { font-weight: 600; }
+.rename .edit-hint { font-size: 11px; color: var(--text-2); opacity: 0; transition: opacity .15s; }
+.rename summary:hover .edit-hint, .rename summary:focus-visible .edit-hint, .rename[open] .edit-hint { opacity: 1; }
+.rename-form { display: flex; gap: 6px; margin-top: 6px; }
+.rename-form input[type=text] { width: 150px; }
+.rename .hint { margin-top: 4px; white-space: normal; max-width: 240px; }

@@ -55,6 +55,9 @@ def build_parser() -> argparse.ArgumentParser:
     a = acc.add_parser("relogin", help="重新登录已有账号（不改用户链接）")
     a.add_argument("label")
     a.add_argument("--file", type=Path, help="从文件导入，而不是运行 device-auth")
+    a = acc.add_parser("name", help="设置账号的备注名（只用于展示，留空则清除）")
+    a.add_argument("label")
+    a.add_argument("name", nargs="?", default="")
     for name, help_text in (
         ("refresh", "立即刷新 token"), ("disable", "停用"), ("enable", "启用"), ("republish", "按保险库重新发布凭证文件"),
     ):
@@ -233,7 +236,7 @@ def account_cmd(ctx: Context, args: argparse.Namespace) -> int:
         for acc in repo.list_accounts(ctx.conn):
             users = len(repo.active_usernames(ctx.conn, acc.id))
             line = (
-                f"{_safe(acc.label):<12} {_safe(acc.email or '-'):<28} {acc.plan_type or '-':<6} {acc.status:<14} "
+                f"{_safe(acc.label):<12} {_safe(acc.display_name or '-'):<12} {_safe(acc.email or '-'):<28} {acc.plan_type or '-':<6} {acc.status:<14} "
                 f"用户数={users} 上次刷新={fmt_ts(acc.last_refresh)} token到期={fmt_ts(acc.access_expires_at)}"
             )
             print(line + (_safe(f" 错误={acc.last_error}") if acc.last_error else ""))
@@ -264,6 +267,10 @@ def account_cmd(ctx: Context, args: argparse.Namespace) -> int:
     if c in ("disable", "enable"):
         accounts.set_disabled(ctx, args.label, c == "disable", ACTOR)
         print(f"{args.label} 已{'停用' if c == 'disable' else '启用'}")
+        return 0
+    if c == "name":
+        value = accounts.set_display_name(ctx, args.label, args.name, ACTOR)
+        print(_safe(f"{args.label} 的名称已设为 {value}") if value else f"{args.label} 的名称已清除")
         return 0
     if c == "republish":
         accounts.republish_account(ctx, args.label)

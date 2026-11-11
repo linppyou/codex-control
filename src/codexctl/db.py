@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS accounts (
     last_error TEXT,
     retry_count INTEGER NOT NULL DEFAULT 0,
     next_retry_at INTEGER,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    display_name TEXT
 );
 CREATE TABLE IF NOT EXISTS account_secrets (
     account_pk INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
@@ -112,7 +113,15 @@ def connect(path: Path | str) -> sqlite3.Connection:
     if str(path) != ":memory:":
         conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """给旧数据库补齐后来新增的列。"""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(accounts)")}
+    if "display_name" not in cols:
+        conn.execute("ALTER TABLE accounts ADD COLUMN display_name TEXT")
 
 
 @contextmanager

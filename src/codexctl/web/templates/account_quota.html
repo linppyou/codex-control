@@ -1,8 +1,8 @@
 {% extends "base.html" %}
-{% block title %}{{ label }} 额度记录 - codexctl{% endblock %}
+{% block title %}{{ title }} 额度记录 - codexctl{% endblock %}
 {% block content %}
 <div class="page-head">
-  <div><div class="crumb"><a href="/accounts">账号</a> / {{ label }}</div><h1>{{ label }} 额度记录</h1></div>
+  <div><div class="crumb"><a href="/accounts">账号</a> / {{ title }}</div><h1>{{ title }} 额度记录</h1></div>
   <div class="toolbar">
     <span class="seg">{% for d, text in ((1, "1 天"), (7, "7 天"), (30, "30 天")) %}{% if d == days %}<strong>{{ text }}</strong>{% else %}<a href="/accounts/{{ label }}/quota?days={{ d }}">{{ text }}</a>{% endif %}{% endfor %}</span>
     <a class="btn" href="/accounts/{{ label }}/quota.csv?days={{ days }}">导出 CSV</a>
@@ -37,7 +37,7 @@
 {% if chart %}
 <div class="panel">
   <div class="section-head"><span class="section-title"><span class="section-mark"></span>7天剩余额度趋势</span></div>
-  <svg class="chart" viewBox="0 0 {{ chart.width }} {{ chart.height }}" role="img" aria-label="{{ label }} 7 天剩余额度趋势">
+  <svg class="chart" viewBox="0 0 {{ chart.width }} {{ chart.height }}" role="img" aria-label="{{ title }} 7 天剩余额度趋势">
     {% for y, text in chart.y_ticks %}
     <line class="chart-grid" x1="{{ chart.pad }}" x2="{{ chart.width - chart.pad }}" y1="{{ y }}" y2="{{ y }}"/>
     <text class="chart-label" x="{{ chart.pad - 6 }}" y="{{ y + 4 }}" text-anchor="end">{{ text }}</text>

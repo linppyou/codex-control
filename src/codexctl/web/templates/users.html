@@ -11,7 +11,7 @@
   <div class="form-row">
     <label>账号
     <select name="account">
-      {% for c in choices %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+      {% for c in choices %}<option value="{{ c.label }}">{{ c.name }}{% if c.name != c.label %}（{{ c.label }}）{% endif %}</option>{% endfor %}
     </select></label>
     <button class="btn primary" formaction="/users/assign">分配 / 切换到所选账号</button>
     <button class="btn danger" formaction="/users/unassign">回收</button>

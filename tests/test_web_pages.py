@@ -477,3 +477,20 @@ def test_dashboard_card(c, ctx):
     assert "本周剩余" in dash and "63%" in dash and "<svg" in dash and 'style=' not in dash
     assert 'class="remain-bar good"' in dash and 'value="63"' in dash
     assert "额度记录" in dash and 'name="next" value="/"' in dash
+
+
+def test_account_rename(c, ctx):
+    add_acc(ctx)
+    page = c.get("/accounts").text
+    assert "a@example.com" in page and "/accounts/acc1/name" in page
+    path, q = qs(post(c, "/accounts/acc1/name", name="主力号"))
+    assert path == "/accounts" and "主力号" in q["msg"]
+    assert repo.get_account(ctx.conn, "acc1").display_name == "主力号"
+    assert "主力号" in c.get("/accounts").text
+    assert "主力号" in c.get("/").text
+    assert "主力号（acc1）" in c.get("/users").text
+    assert "主力号 额度记录" in c.get("/accounts/acc1/quota").text
+    assert "err" in qs(post(c, "/accounts/acc1/name", name="x" * 40))[1]
+    assert "err" in qs(post(c, "/accounts/nope/name", name="x"))[1]
+    assert "已清除" in qs(post(c, "/accounts/acc1/name", name=""))[1]["msg"]
+    assert repo.get_account(ctx.conn, "acc1").display_name is None

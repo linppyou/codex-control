@@ -18,6 +18,12 @@ class Account:
     retry_count: int
     next_retry_at: int | None
     created_at: int
+    display_name: str | None = None
+
+    @property
+    def name(self) -> str:
+        """页面上展示的名称：设置了备注名用备注名，否则用标签。"""
+        return self.display_name or self.label
 
 
 def _account(row: sqlite3.Row | None) -> Account | None:
@@ -57,6 +63,10 @@ def find_by_account_id(conn: sqlite3.Connection, account_id: str) -> Account | N
 
 def list_accounts(conn: sqlite3.Connection) -> list[Account]:
     return [Account(**dict(r)) for r in conn.execute("SELECT * FROM accounts ORDER BY label")]
+
+
+def set_display_name(conn: sqlite3.Connection, pk: int, name: str | None) -> None:
+    conn.execute("UPDATE accounts SET display_name = ? WHERE id = ?", (name, pk))
 
 
 def store_secret(conn: sqlite3.Connection, account_pk: int, blob: bytes, now: int) -> None:

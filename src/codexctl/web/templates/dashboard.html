@@ -9,7 +9,7 @@
   <div class="acard-head">
     <span class="acard-email">{{ c.email }}</span>
     <span class="acard-badges">
-      <span class="tag">{{ c.label }}</span><span class="tag">{{ c.plan }}</span>
+      <span class="tag"{% if c.renamed %} title="标签：{{ c.label }}"{% endif %}>{{ c.name }}</span><span class="tag">{{ c.plan }}</span>
       {% if c.status_text %}<span class="badge {{ c.status }}">{{ c.status_text }}</span>{% endif %}
     </span>
   </div>
@@ -21,7 +21,7 @@
   <div class="trend-head"><span class="remain-label">走势</span><span class="muted">{{ c.projection }}</span></div>
   {% if c.chart %}
   {% set ch = c.chart %}
-  <svg class="trend" viewBox="0 0 {{ ch.width }} {{ ch.height }}" role="img" aria-label="{{ c.label }} 本周剩余额度走势">
+  <svg class="trend" viewBox="0 0 {{ ch.width }} {{ ch.height }}" role="img" aria-label="{{ c.name }} 本周剩余额度走势">
     {% for y, text in ch.y_ticks %}
     <line class="trend-grid" x1="{{ ch.box[0] }}" x2="{{ ch.box[1] }}" y1="{{ y }}" y2="{{ y }}"/>
     <text class="trend-label" x="{{ ch.box[0] - 5 }}" y="{{ y + 3.5 }}" text-anchor="end">{{ text }}</text>
