@@ -90,3 +90,25 @@ def test_device_login_failure(ctx):
     with pytest.raises(accounts.AccountError, match="退出码 1"):
         accounts.device_login(ctx, "acc1")
     assert list(ctx.settings.staging_dir.iterdir()) == []
+
+
+def test_relogin_keeps_disabled_status(ctx):
+    accounts.import_account(ctx, "acc1", make_auth_json(), "test")
+    accounts.set_disabled(ctx, "acc1", True, "test")
+    acc = accounts.relogin_account(ctx, "acc1", make_auth_json(refresh_token="rt-9"), "test")
+    assert acc.status == "disabled"
+
+
+def test_enable_keeps_needs_relogin(ctx):
+    acc = accounts.import_account(ctx, "acc1", make_auth_json(), "test")
+    repo.set_status(ctx.conn, acc.id, "needs_relogin", "reused")
+    accounts.set_disabled(ctx, "acc1", False, "test")
+    acc = repo.get_account(ctx.conn, "acc1")
+    assert (acc.status, acc.last_error) == ("needs_relogin", "reused")
+    assert ctx.conn.execute("SELECT count(*) FROM audit_log WHERE action = 'account.enable'").fetchone()[0] == 1
+
+
+def test_device_login_missing_binary(ctx):
+    with pytest.raises(accounts.AccountError, match="无法运行 codex"):
+        accounts.device_login(ctx, "acc1")
+    assert list(ctx.settings.staging_dir.iterdir()) == []

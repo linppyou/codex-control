@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
+from pathlib import Path
 
 from . import events, repo
 from .authfile import AuthBundle
@@ -107,7 +109,10 @@ def set_disabled(ctx: Context, label: str, disabled: bool, actor: str) -> None:
     acc = require_account(ctx, label)
     now = ctx.now()
     with transaction(ctx.conn):
-        repo.set_status(ctx.conn, acc.id, "disabled" if disabled else "active")
+        if disabled:
+            repo.set_status(ctx.conn, acc.id, "disabled")
+        elif acc.status == "disabled":
+            repo.set_status(ctx.conn, acc.id, "active")
         events.audit(ctx.conn, actor, "account.disable" if disabled else "account.enable", label, now=now)
 
 
@@ -115,11 +120,14 @@ def device_login(ctx: Context, label: str) -> bytes:
     """在临时 CODEX_HOME 中运行真实 codex 的 device-auth 登录（交互：验证码打印在终端），返回生成的 auth.json。"""
     _check_label(label)
     ctx.settings.staging_dir.mkdir(parents=True, exist_ok=True)
-    home = ctx.settings.staging_dir / f"{label}-{ctx.now()}"
-    home.mkdir(mode=0o700)
+    ctx.settings.staging_dir.chmod(0o700)
+    home = Path(tempfile.mkdtemp(prefix=f"{label}-", dir=ctx.settings.staging_dir))
     try:
         env = {**os.environ, "CODEX_HOME": str(home)}
-        result = subprocess.run([str(ctx.settings.codex_bin), "login", "--device-auth"], env=env, check=False)
+        try:
+            result = subprocess.run([str(ctx.settings.codex_bin), "login", "--device-auth"], env=env, check=False)
+        except OSError as e:
+            raise AccountError(f"无法运行 codex：{e}") from e
         if result.returncode != 0:
             raise AccountError(f"codex login 失败，退出码 {result.returncode}")
         auth = home / "auth.json"

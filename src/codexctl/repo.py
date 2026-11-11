@@ -90,7 +90,7 @@ def update_token_meta(
 ) -> None:
     conn.execute(
         "UPDATE accounts SET email = ?, plan_type = ?, last_refresh = ?, access_expires_at = ?, "
-        "status = 'active', last_error = NULL, retry_count = 0, next_retry_at = NULL WHERE id = ?",
+        "status = CASE WHEN status = 'disabled' THEN 'disabled' ELSE 'active' END, last_error = NULL, retry_count = 0, next_retry_at = NULL WHERE id = ?",
         (email, plan_type, last_refresh, access_expires_at, pk),
     )
 
