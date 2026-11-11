@@ -1,17 +1,23 @@
 {% extends "base.html" %}
 {% block title %}用量 - codexctl{% endblock %}
 {% block content %}
-<h1>用量</h1>
-<p>
-  {% for d in (1, 7, 30) %}{% if d == days %}<strong>{{ d }} 天</strong>{% else %}<a href="/usage?days={{ d }}">{{ d }} 天</a>{% endif %} {% endfor %}
-  · <a href="/usage.csv?days={{ days }}">导出 CSV</a>
-</p>
-<table>
-  <tr><th>用户</th><th>账号</th><th>总 tokens</th><th>输入</th><th>输出</th><th>次数</th></tr>
+<div class="page-head">
+  <div><h1>用量</h1><div class="sub">按用户与账号汇总的 token 用量</div></div>
+  <div class="toolbar">
+    <span class="seg">{% for d in (1, 7, 30) %}{% if d == days %}<strong>{{ d }} 天</strong>{% else %}<a href="/usage?days={{ d }}">{{ d }} 天</a>{% endif %}{% endfor %}</span>
+    <a class="btn" href="/usage.csv?days={{ days }}">导出 CSV</a>
+  </div>
+</div>
+<div class="panel flush">
+<div class="table-wrap"><table>
+  <thead><tr><th>用户</th><th>账号</th><th class="num">总 tokens</th><th class="num">输入</th><th class="num">输出</th><th class="num">次数</th></tr></thead>
+  <tbody>
   {% for r in rows %}
-  <tr><td>{{ r.username }}</td><td>{{ r.label }}</td><td>{{ r.total }}</td><td>{{ r.input }}</td><td>{{ r.output }}</td><td>{{ r.turns }}</td></tr>
+  <tr><td><b>{{ r.username }}</b></td><td><span class="tag">{{ r.label }}</span></td><td class="num">{{ r.total }}</td><td class="num">{{ r.input }}</td><td class="num">{{ r.output }}</td><td class="num">{{ r.turns }}</td></tr>
   {% else %}
-  <tr><td colspan="6" class="muted">没有数据</td></tr>
+  <tr><td colspan="6" class="empty">没有数据</td></tr>
   {% endfor %}
-</table>
+  </tbody>
+</table></div>
+</div>
 {% endblock %}

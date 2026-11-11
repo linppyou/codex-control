@@ -1,8 +1,9 @@
 {% extends "base.html" %}
 {% block title %}登录 - codexctl{% endblock %}
 {% block content %}
+<div class="login-wrap">
 <div class="card login">
-  <h1>codexctl 登录</h1>
+  <div class="login-logo"><img src="/static/favicon.svg" alt=""><h1>codexctl 登录</h1></div>
   {% if login_err %}<div class="flash bad">{{ login_err }}</div>{% endif %}
   <form method="post" action="/login">
     <input type="hidden" name="csrf" value="{{ prelogin }}">
@@ -10,5 +11,6 @@
     <label>密码 <input type="password" name="password" maxlength="1024" autocomplete="current-password" required></label>
     <button type="submit" class="btn primary">登录</button>
   </form>
+</div>
 </div>
 {% endblock %}

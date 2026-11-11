@@ -1,19 +1,31 @@
 {% extends "base.html" %}
 {% block title %}审计 - codexctl{% endblock %}
 {% block content %}
-<h1>审计</h1>
-<h2>最近操作</h2>
-<table>
-  <tr><th>时间</th><th>操作者</th><th>动作</th><th>对象</th><th>详情</th></tr>
+<div class="page-head"><div><h1>审计</h1><div class="sub">管理操作与告警历史</div></div></div>
+<div class="section-head"><span class="section-title"><span class="section-mark"></span>最近操作</span><span class="muted mono">{{ audit|length }} 条</span></div>
+<div class="panel flush">
+<div class="table-wrap"><table>
+  <thead><tr><th>时间</th><th>操作者</th><th>动作</th><th>对象</th><th>详情</th></tr></thead>
+  <tbody>
   {% for r in audit %}
-  <tr><td>{{ r.ts }}</td><td>{{ r.actor }}</td><td>{{ r.action }}</td><td>{{ r.target }}</td><td>{{ r.detail }}</td></tr>
+  <tr><td class="mono nowrap">{{ r.ts }}</td><td>{{ r.actor }}</td><td class="mono">{{ r.action }}</td><td>{{ r.target }}</td><td class="muted">{{ r.detail }}</td></tr>
+  {% else %}
+  <tr><td colspan="5" class="empty">暂无操作记录</td></tr>
   {% endfor %}
-</table>
-<h2>最近告警</h2>
-<table>
-  <tr><th>时间</th><th>级别</th><th>类型</th><th>对象</th><th>消息</th><th>解决时间</th></tr>
+  </tbody>
+</table></div>
+</div>
+<div class="section-head"><span class="section-title"><span class="section-mark red"></span>最近告警</span><span class="muted mono">{{ alerts|length }} 条</span></div>
+<div class="panel flush">
+<div class="table-wrap"><table>
+  <thead><tr><th>时间</th><th>级别</th><th>类型</th><th>对象</th><th>消息</th><th>解决时间</th></tr></thead>
+  <tbody>
   {% for r in alerts %}
-  <tr><td>{{ r.ts }}</td><td>{{ r.level }}</td><td>{{ r.kind }}</td><td>{{ r.target }}</td><td>{{ r.message }}</td><td>{{ r.resolved or "未解决" }}</td></tr>
+  <tr><td class="mono nowrap">{{ r.ts }}</td><td><span class="badge {{ r.level }}">{{ r.level }}</span></td><td class="mono">{{ r.kind }}</td><td>{{ r.target }}</td><td>{{ r.message }}</td><td class="mono nowrap">{% if r.resolved %}{{ r.resolved }}{% else %}<span class="badge bad">未解决</span>{% endif %}</td></tr>
+  {% else %}
+  <tr><td colspan="6" class="empty">暂无告警</td></tr>
   {% endfor %}
-</table>
+  </tbody>
+</table></div>
+</div>
 {% endblock %}

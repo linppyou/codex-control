@@ -1,36 +1,43 @@
 {% extends "base.html" %}
 {% block title %}账号 - codexctl{% endblock %}
 {% block content %}
-<h1>账号</h1>
-<table>
-  <tr><th>标签</th><th>邮箱</th><th>套餐</th><th>状态</th><th>额度</th><th>last_error</th><th>用户数</th><th>上次刷新</th><th>token 到期</th><th>操作</th></tr>
+<div class="page-head"><div><h1>账号</h1><div class="sub">共 {{ rows|length }} 个账号</div></div></div>
+<div class="panel flush">
+<div class="table-wrap"><table>
+  <thead><tr><th>标签</th><th>邮箱</th><th>套餐</th><th>状态</th><th>额度</th><th>last_error</th><th class="num">用户数</th><th>上次刷新</th><th>token 到期</th><th>操作</th></tr></thead>
+  <tbody>
   {% for r in rows %}
   <tr>
-    <td>{{ r.label }}</td><td>{{ r.email }}</td><td>{{ r.plan }}</td>
+    <td><span class="tag">{{ r.label }}</span></td><td>{{ r.email }}</td><td class="mono">{{ r.plan }}</td>
     <td><span class="badge {{ r.status }}">{{ r.status }}</span></td>
-    <td>{% for q in r.quota %}{{ q.name }} {{ "未知" if q.percent is none else q.percent ~ "%" }}{% if not loop.last %} / {% endif %}{% else %}<span class="muted">-</span>{% endfor %} <a href="/accounts/{{ r.label }}/quota">记录</a></td>
-    <td>{{ r.last_error }}</td><td>{{ r.users }}</td><td>{{ r.last_refresh }}</td><td>{{ r.expires }}</td>
-    <td>
+    <td class="nowrap mono">{% for q in r.quota %}{{ q.name }} {{ "未知" if q.percent is none else q.percent ~ "%" }}{% if not loop.last %} / {% endif %}{% else %}<span class="muted">-</span>{% endfor %} <a href="/accounts/{{ r.label }}/quota">记录</a></td>
+    <td class="muted">{{ r.last_error }}</td><td class="num">{{ r.users }}</td><td class="mono nowrap">{{ r.last_refresh }}</td><td class="mono nowrap">{{ r.expires }}</td>
+    <td class="ops">
       {% for act, text in (("refresh", "刷新"), ("republish", "重新发布")) %}
-      <form method="post" action="/accounts/{{ r.label }}/{{ act }}" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn">{{ text }}</button></form>
+      <form method="post" action="/accounts/{{ r.label }}/{{ act }}" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn small">{{ text }}</button></form>
       {% endfor %}
-      <form method="post" action="/accounts/login" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="label" value="{{ r.label }}"><input type="hidden" name="mode" value="relogin"><button class="btn">重新登录</button></form>
+      <form method="post" action="/accounts/login" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="label" value="{{ r.label }}"><input type="hidden" name="mode" value="relogin"><button class="btn small">重新登录</button></form>
       {% if r.status == "disabled" %}
-      <form method="post" action="/accounts/{{ r.label }}/enable" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn">启用</button></form>
+      <form method="post" action="/accounts/{{ r.label }}/enable" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn small">启用</button></form>
       {% else %}
-      <form method="post" action="/accounts/{{ r.label }}/disable" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn danger">停用</button></form>
+      <form method="post" action="/accounts/{{ r.label }}/disable" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn small danger">停用</button></form>
       {% endif %}
     </td>
   </tr>
+  {% else %}
+  <tr><td colspan="10" class="empty">还没有账号</td></tr>
   {% endfor %}
-</table>
-<div class="card">
-  <h2>添加账号</h2>
-  <form method="post" action="/accounts/login">
+  </tbody>
+</table></div>
+</div>
+<div class="panel">
+  <div class="section-head"><span class="section-title"><span class="section-mark"></span>添加账号</span></div>
+  <form method="post" action="/accounts/login" class="form-row">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <input type="hidden" name="mode" value="add">
-    <label>标签 <input type="text" name="label" maxlength="32" pattern="[a-z0-9][a-z0-9_-]*" required></label>
+    <label>标签 <input type="text" name="label" maxlength="32" pattern="[a-z0-9][a-z0-9_-]*" placeholder="如 acc-01" required></label>
     <button class="btn primary">开始登录</button>
+    <span class="hint">小写字母、数字、- 或 _，提交后按提示完成设备登录</span>
   </form>
 </div>
 {% endblock %}

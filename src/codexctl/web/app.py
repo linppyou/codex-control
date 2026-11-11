@@ -148,6 +148,10 @@ def create_app(
     app.state.templates = Jinja2Templates(directory=str(base / "templates"))
     app.mount("/static", StaticFiles(directory=str(base / "static")), name="static")
 
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon() -> RedirectResponse:
+        return RedirectResponse("/static/favicon.svg", status_code=301)
+
     @app.exception_handler(Exception)
     async def unhandled(request: Request, exc: Exception):
         log.exception("unhandled error: %s %s", request.method, request.url.path, exc_info=exc)

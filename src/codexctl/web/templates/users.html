@@ -1,26 +1,37 @@
 {% extends "base.html" %}
 {% block title %}用户 - codexctl{% endblock %}
 {% block content %}
-<h1>用户</h1>
-<p>{% if show_all %}<a href="/users">隐藏内置用户</a>{% else %}<a href="/users?all=1">显示全部用户</a>{% endif %}</p>
-<form method="post" id="bulk" class="card">
+<div class="page-head">
+  <div><h1>用户</h1><div class="sub">{{ rows|length }} 个系统用户 · 勾选后批量分配或回收</div></div>
+  <span class="seg">{% if show_all %}<a href="/users">隐藏内置用户</a><strong>显示全部</strong>{% else %}<strong>常规用户</strong><a href="/users?all=1">显示全部用户</a>{% endif %}</span>
+</div>
+<div class="panel flush">
+<form method="post" id="bulk" class="panel-head">
   <input type="hidden" name="csrf" value="{{ csrf }}">
-  <select name="account">
-    {% for c in choices %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
-  </select>
-  <button class="btn primary" formaction="/users/assign">分配 / 切换到所选账号</button>
-  <button class="btn danger" formaction="/users/unassign">回收</button>
+  <div class="form-row">
+    <label>账号
+    <select name="account">
+      {% for c in choices %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+    </select></label>
+    <button class="btn primary" formaction="/users/assign">分配 / 切换到所选账号</button>
+    <button class="btn danger" formaction="/users/unassign">回收</button>
+  </div>
 </form>
-<table>
-  <tr><th></th><th>用户名</th><th>当前账号</th><th>链接</th><th>24 小时 tokens</th><th>7 天 tokens</th><th>操作</th></tr>
+<div class="table-wrap"><table>
+  <thead><tr><th class="sel"></th><th>用户名</th><th>当前账号</th><th>链接</th><th class="num">24 小时 tokens</th><th class="num">7 天 tokens</th><th>操作</th></tr></thead>
+  <tbody>
   {% for r in rows %}
   <tr>
-    <td><input type="checkbox" name="users" value="{{ r.name }}" form="bulk"></td>
-    <td>{{ r.name }}</td><td>{{ r.account or "-" }}</td>
-    <td>{{ r.link }}{% if r.target %} <span class="muted">{{ r.target }}</span>{% endif %}</td>
-    <td>{{ r.t24 }}</td><td>{{ r.t7 }}</td>
-    <td><form method="post" action="/users/{{ r.name }}/fix" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn">修复</button></form></td>
+    <td class="sel"><input type="checkbox" name="users" value="{{ r.name }}" form="bulk"></td>
+    <td><b>{{ r.name }}</b></td><td>{% if r.account %}<span class="tag">{{ r.account }}</span>{% else %}<span class="muted">-</span>{% endif %}</td>
+    <td class="mono">{{ r.link }}{% if r.target %} <span class="muted">{{ r.target }}</span>{% endif %}</td>
+    <td class="num">{{ r.t24 }}</td><td class="num">{{ r.t7 }}</td>
+    <td class="ops"><form method="post" action="/users/{{ r.name }}/fix" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn small">修复</button></form></td>
   </tr>
+  {% else %}
+  <tr><td colspan="7" class="empty">没有用户</td></tr>
   {% endfor %}
-</table>
+  </tbody>
+</table></div>
+</div>
 {% endblock %}

@@ -200,3 +200,11 @@ def test_user_limiter_threshold_is_30(ctx):
 def test_failure_detail_truncated(client, ctx):
     do_login(client, username="a" * 60)
     assert ("web", "web.login_failed", "testclient", "a" * 32) in audits(ctx)
+
+
+def test_favicon_public(client):
+    r = client.get("/favicon.ico", follow_redirects=False)
+    assert r.status_code == 301 and r.headers["location"] == "/static/favicon.svg"
+    svg = client.get("/static/favicon.svg")
+    assert svg.status_code == 200 and "image/svg+xml" in svg.headers["content-type"]
+    assert 'rel="icon"' in client.get("/login").text

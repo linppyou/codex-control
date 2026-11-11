@@ -350,7 +350,7 @@ def register(app) -> None:
         points = [
             (h["ts"], 100 - _week_window(h)["used_percent"]) for h in history if _week_window(h) is not None
         ]
-        chart = quota_chart(points, gap=3 * ctx.settings.quota_poll_seconds)
+        chart = quota_chart(points, width=1100, height=280, gap=3 * ctx.settings.quota_poll_seconds)
         return render(
             request, "account_quota.html", admin=admin[0], csrf=admin[1], label=clean_text(label),
             rows=rows, latest=latest, names=names, days=days, chart=chart,
