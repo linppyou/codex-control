@@ -173,6 +173,8 @@ def users_with_recent_assignments(conn: sqlite3.Connection, since: int) -> list[
             (since,),
         )
     ]
+
+
 def insert_quota_sample(
     conn: sqlite3.Connection,
     account_pk: int,
@@ -201,4 +203,46 @@ def latest_quota(conn: sqlite3.Connection, account_pk: int) -> list[sqlite3.Row]
         ORDER BY q.win
         """,
         (account_pk, account_pk),
+    ).fetchall()
+
+
+USAGE_FIELDS = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens")
+
+
+def insert_usage(
+    conn: sqlite3.Connection, username: str, account_pk: int | None, ts: int, delta: dict[str, int], session_file: str
+) -> None:
+    conn.execute(
+        "INSERT INTO usage_events(username, account_pk, ts, input_tokens, cached_input_tokens, output_tokens, "
+        "reasoning_output_tokens, total_tokens, session_file) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (username, account_pk, ts, *(delta[f] for f in USAGE_FIELDS), session_file),
+    )
+
+
+def get_offset(conn: sqlite3.Connection, path: str) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM log_offsets WHERE path = ?", (path,)).fetchone()
+
+
+def set_offset(conn: sqlite3.Connection, path: str, inode: int, offset: int, last_totals: str | None) -> None:
+    conn.execute(
+        """
+        INSERT INTO log_offsets(path, inode, offset, last_totals) VALUES (?, ?, ?, ?)
+        ON CONFLICT(path) DO UPDATE SET inode = excluded.inode, offset = excluded.offset,
+            last_totals = excluded.last_totals
+        """,
+        (path, inode, offset, last_totals),
+    )
+
+
+def usage_summary(conn: sqlite3.Connection, since: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT u.username, a.label, SUM(u.total_tokens) AS total, SUM(u.input_tokens) AS input,
+               SUM(u.output_tokens) AS output, COUNT(*) AS turns
+        FROM usage_events u LEFT JOIN accounts a ON a.id = u.account_pk
+        WHERE u.ts >= ?
+        GROUP BY u.username, a.label
+        ORDER BY total DESC
+        """,
+        (since,),
     ).fetchall()
