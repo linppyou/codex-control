@@ -141,3 +141,47 @@ def test_switch_revokes_old_acl_even_if_link_raises(setup, monkeypatch):
         assignments.assign(ctx, "alice", "acc2", "t")
     calls = ctx.test_runner.calls
     assert calls[-1] == ["setfacl", "--set", BASE_ACL, str(ctx.publisher.account_file("acc1"))]
+
+
+def test_reconcile_heals_failed_revocation(setup, monkeypatch):
+    ctx = setup
+    assignments.assign(ctx, "alice", "acc1", "t")
+    orig = ctx.publisher.set_readers
+
+    def boom(*a, **k):
+        raise RuntimeError("setfacl failed")
+
+    monkeypatch.setattr(ctx.publisher, "set_readers", boom)
+    with pytest.raises(RuntimeError):
+        assignments.unassign(ctx, "alice", "t")
+    monkeypatch.setattr(ctx.publisher, "set_readers", orig)
+    ctx.test_runner.calls.clear()
+    assignments.reconcile_user(ctx, "alice", "t")
+    assert ["setfacl", "--set", BASE_ACL, str(ctx.publisher.account_file("acc1"))] in ctx.test_runner.calls
+
+
+def test_switch_revokes_old_acl_even_if_new_grant_fails(setup, monkeypatch):
+    ctx = setup
+    assignments.assign(ctx, "alice", "acc1", "t")
+    ctx.test_runner.calls.clear()
+    orig = ctx.publisher.set_readers
+    new_file = ctx.publisher.account_file("acc2")
+
+    def flaky(label, readers):
+        if label == "acc2":
+            raise RuntimeError("grant failed")
+        return orig(label, readers)
+
+    monkeypatch.setattr(ctx.publisher, "set_readers", flaky)
+    with pytest.raises(RuntimeError, match="grant failed"):
+        assignments.assign(ctx, "alice", "acc2", "t")
+    assert ["setfacl", "--set", BASE_ACL, str(ctx.publisher.account_file("acc1"))] in ctx.test_runner.calls
+
+
+def test_reconcile_ignores_dotdot_target(setup):
+    ctx = setup
+    link = link_of(ctx, "bob")
+    link.parent.mkdir(exist_ok=True)
+    link.symlink_to(str(ctx.publisher.accounts_dir) + "/../../x")
+    assignments.reconcile_user(ctx, "bob", "t")
+    assert os.path.lexists(link)

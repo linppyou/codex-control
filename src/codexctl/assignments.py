@@ -37,8 +37,8 @@ def assign(ctx: Context, username: str, label: str, actor: str) -> Path | None:
                 repo.end_assignment(ctx.conn, username, now)
             repo.start_assignment(ctx.conn, username, acc.id, now)
             events.audit(ctx.conn, actor, "assign", username, f"{old_label} -> {label}", now=now)
-    _sync_acl(ctx, acc.id)
     try:
+        _sync_acl(ctx, acc.id)
         backup = ctx.publisher.link_user(user, label, now)
     finally:
         if switching:
@@ -75,14 +75,19 @@ def reconcile_user(ctx: Context, username: str, actor: str) -> None:
     user = ctx.lookup_user(username, ctx.settings.min_uid)
     current = repo.active_assignment(ctx.conn, username)
     now = ctx.now()
+    # 同步全部账号的 ACL，修复此前 setfacl 失败遗留的撤销
+    for a in repo.list_accounts(ctx.conn):
+        _sync_acl(ctx, a.id)
     if current is not None:
         acc = repo.get_account_by_pk(ctx.conn, current.account_pk)
-        _sync_acl(ctx, acc.id)
         ctx.publisher.link_user(user, acc.label, now)
     else:
         state = ctx.publisher.read_link(user)
         prefix = str(ctx.publisher.accounts_dir) + os.sep
-        if state.kind == "symlink" and (state.target or "").startswith(prefix):
+        target = state.target or ""
+        if os.path.isabs(target):
+            target = os.path.normpath(target)
+        if state.kind == "symlink" and os.path.isabs(target) and target.startswith(prefix):
             ctx.publisher.unlink_user(user)
     with transaction(ctx.conn):
         events.audit(ctx.conn, actor, "fix", username, now=now)
