@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}用量 - codexctl{% endblock %}
+{% block content %}
+<h1>用量</h1>
+<p>
+  {% for d in (1, 7, 30) %}{% if d == days %}<strong>{{ d }} 天</strong>{% else %}<a href="/usage?days={{ d }}">{{ d }} 天</a>{% endif %} {% endfor %}
+  · <a href="/usage.csv?days={{ days }}">导出 CSV</a>
+</p>
+<table>
+  <tr><th>用户</th><th>账号</th><th>总 tokens</th><th>输入</th><th>输出</th><th>次数</th></tr>
+  {% for r in rows %}
+  <tr><td>{{ r.username }}</td><td>{{ r.label }}</td><td>{{ r.total }}</td><td>{{ r.input }}</td><td>{{ r.output }}</td><td>{{ r.turns }}</td></tr>
+  {% else %}
+  <tr><td colspan="6" class="muted">没有数据</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

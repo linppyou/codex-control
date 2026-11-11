@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}设备登录 - codexctl{% endblock %}
+{% block content %}
+<h1>{{ "重新登录" if login.mode == "relogin" else "添加账号" }}：{{ login.label }}</h1>
+<div class="card">
+  <p>状态：<span id="state">{{ login.state }}</span> <span id="error" class="muted">{{ login.error }}</span></p>
+  <p>1. 打开 <a id="url" href="{{ login.url }}" target="_blank" rel="noopener">{{ login.url }}</a></p>
+  <p>2. 输入验证码（15 分钟内有效）</p>
+  <div class="code" id="code">{{ login.code }}</div>
+  {% if login.active %}
+  <form method="post" action="/accounts/login/{{ login.id }}/cancel">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button class="btn danger">取消</button>
+  </form>
+  {% else %}
+  <p><a href="/accounts">返回账号列表</a></p>
+  {% endif %}
+</div>
+{% if login.active %}
+<script>
+(function () {
+  var id = {{ login.id|tojson }};
+  var initial = {{ login.state|tojson }};
+  function tick() {
+    fetch("/accounts/login/" + encodeURIComponent(id) + "/status", {credentials: "same-origin"})
+      .then(function (r) { return r.json(); })
+      .then(function (s) {
+        document.getElementById("state").textContent = s.state;
+        document.getElementById("code").textContent = s.code;
+        document.getElementById("error").textContent = s.error;
+        var a = document.getElementById("url");
+        if (s.url && a.textContent !== s.url) { a.textContent = s.url; a.href = s.url; }
+        if (["succeeded", "failed", "cancelled", "expired"].indexOf(s.state) >= 0) { location.reload(); }
+      })
+      .catch(function () {});
+  }
+  setInterval(tick, 3000);
+})();
+</script>
+{% endif %}
+{% endblock %}

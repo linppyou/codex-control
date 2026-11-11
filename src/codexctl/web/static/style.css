@@ -26,3 +26,4 @@ th { background: #f0f2f5; font-weight: 600; }
 progress { width: 160px; height: 10px; vertical-align: middle; }
 .code { font: 600 32px/1.4 ui-monospace, monospace; letter-spacing: 4px; }
 .muted { color: #7b8794; }
+.inline { display: inline; }

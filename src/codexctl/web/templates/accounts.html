@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}账号 - codexctl{% endblock %}
+{% block content %}
+<h1>账号</h1>
+<table>
+  <tr><th>标签</th><th>邮箱</th><th>套餐</th><th>状态</th><th>last_error</th><th>用户数</th><th>上次刷新</th><th>token 到期</th><th>操作</th></tr>
+  {% for r in rows %}
+  <tr>
+    <td>{{ r.label }}</td><td>{{ r.email }}</td><td>{{ r.plan }}</td>
+    <td><span class="badge {{ r.status }}">{{ r.status }}</span></td>
+    <td>{{ r.last_error }}</td><td>{{ r.users }}</td><td>{{ r.last_refresh }}</td><td>{{ r.expires }}</td>
+    <td>
+      {% for act, text in (("refresh", "刷新"), ("republish", "重新发布")) %}
+      <form method="post" action="/accounts/{{ r.label }}/{{ act }}" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn">{{ text }}</button></form>
+      {% endfor %}
+      <form method="post" action="/accounts/login" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="label" value="{{ r.label }}"><input type="hidden" name="mode" value="relogin"><button class="btn">重新登录</button></form>
+      {% if r.status == "disabled" %}
+      <form method="post" action="/accounts/{{ r.label }}/enable" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn">启用</button></form>
+      {% else %}
+      <form method="post" action="/accounts/{{ r.label }}/disable" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn danger">停用</button></form>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+<div class="card">
+  <h2>添加账号</h2>
+  <form method="post" action="/accounts/login">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="mode" value="add">
+    <label>标签 <input type="text" name="label" maxlength="32" pattern="[a-z0-9][a-z0-9_-]*" required></label>
+    <button class="btn primary">开始登录</button>
+  </form>
+</div>
+{% endblock %}

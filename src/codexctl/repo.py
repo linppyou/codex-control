@@ -248,3 +248,20 @@ def usage_summary(conn: sqlite3.Connection, since: int) -> list[sqlite3.Row]:
         """,
         (since,),
     ).fetchall()
+
+
+def usage_by_user(conn: sqlite3.Connection, since: int) -> dict[str, int]:
+    return {
+        r[0]: int(r[1])
+        for r in conn.execute(
+            "SELECT username, SUM(total_tokens) FROM usage_events WHERE ts >= ? GROUP BY username", (since,)
+        )
+    }
+
+
+def recent_audit(conn: sqlite3.Connection, limit: int) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM audit_log ORDER BY ts DESC, id DESC LIMIT ?", (limit,)).fetchall()
+
+
+def recent_alerts(conn: sqlite3.Connection, limit: int) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM alerts ORDER BY ts DESC, id DESC LIMIT ?", (limit,)).fetchall()

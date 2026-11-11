@@ -2,4 +2,26 @@
 {% block title %}总览 - codexctl{% endblock %}
 {% block content %}
 <h1>总览</h1>
+{% for c in cards %}
+<div class="card">
+  <h2>{{ c.label }} <span class="badge {{ c.status }}">{{ c.status }}</span></h2>
+  <p>{{ c.email }} · 套餐 {{ c.plan }} · {{ c.users }} 位用户 · 上次刷新 {{ c.last_refresh }} · token 到期 {{ c.expires }}</p>
+  {% for q in c.quota %}
+  <div>{{ q.name }} <progress max="100" value="{{ q.percent }}"></progress> {{ q.percent }}% · {{ q.reset }} <span class="muted">({{ q.source }})</span></div>
+  {% else %}
+  <div class="muted">暂无额度数据</div>
+  {% endfor %}
+</div>
+{% else %}
+<p class="muted">还没有账号</p>
+{% endfor %}
+<h2>未解决告警</h2>
+{% if alerts %}
+<table>
+  <tr><th>级别</th><th>类型</th><th>对象</th><th>消息</th><th>时间</th></tr>
+  {% for a in alerts %}
+  <tr><td>{{ a.level }}</td><td>{{ a.kind }}</td><td>{{ a.target }}</td><td>{{ a.message }}</td><td>{{ a.ts }}</td></tr>
+  {% endfor %}
+</table>
+{% else %}<p class="muted">没有未解决的告警</p>{% endif %}
 {% endblock %}

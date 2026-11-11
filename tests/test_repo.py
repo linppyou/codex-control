@@ -49,3 +49,24 @@ def test_set_status(ctx):
     repo.set_status(ctx.conn, pk, "needs_relogin", "reused")
     acc = repo.get_account(ctx.conn, "acc1")
     assert (acc.status, acc.last_error) == ("needs_relogin", "reused")
+
+
+def test_usage_by_user_and_recent_lists(ctx):
+    from codexctl import events
+
+    d = {f: 1 for f in repo.USAGE_FIELDS}
+    d["total_tokens"] = 5
+    repo.insert_usage(ctx.conn, "alice", None, 100, d, "f")
+    repo.insert_usage(ctx.conn, "alice", None, 200, d, "f")
+    repo.insert_usage(ctx.conn, "bob", None, 50, d, "f")
+    assert repo.usage_by_user(ctx.conn, 100) == {"alice": 10}
+    assert repo.usage_by_user(ctx.conn, 0) == {"alice": 10, "bob": 5}
+    assert repo.usage_by_user(ctx.conn, 999) == {}
+    for i in range(3):
+        events.audit(ctx.conn, "a", f"act{i}", "t", now=i)
+        events.raise_alert(ctx.conn, "warning", f"k{i}", "t", "m", now=i)
+    events.resolve_alert(ctx.conn, "k0", "t", now=9)
+    assert [r["action"] for r in repo.recent_audit(ctx.conn, 2)] == ["act2", "act1"]
+    alerts = repo.recent_alerts(ctx.conn, 10)
+    assert [r["kind"] for r in alerts] == ["k2", "k1", "k0"]
+    assert len(repo.recent_alerts(ctx.conn, 1)) == 1

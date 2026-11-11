@@ -6,6 +6,7 @@ import logging
 import secrets
 import threading
 import unicodedata
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
@@ -126,11 +127,22 @@ def create_app(
     devlogins: DeviceLoginManager | None = None,
     limiter: LoginRateLimiter | None = None,
 ) -> FastAPI:
-    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, dependencies=[Depends(csrf_guard)])
+    manager = devlogins if devlogins is not None else DeviceLoginManager(ctx.settings, clock=ctx.clock)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        try:
+            yield
+        finally:
+            manager.close()  # 关闭时取消所有进行中的 device-auth 登录
+
+    app = FastAPI(
+        docs_url=None, redoc_url=None, openapi_url=None, dependencies=[Depends(csrf_guard)], lifespan=lifespan
+    )
     base = Path(__file__).parent
     app.state.ctx = ctx
     app.state.lock = threading.Lock()
-    app.state.devlogins = devlogins if devlogins is not None else DeviceLoginManager(ctx.settings, clock=ctx.clock)
+    app.state.devlogins = manager
     app.state.limiter = limiter if limiter is not None else LoginRateLimiter()
     app.state.user_limiter = LoginRateLimiter(max_failures=30, window=900)
     app.state.templates = Jinja2Templates(directory=str(base / "templates"))
@@ -213,9 +225,8 @@ def create_app(
         resp.delete_cookie(SESSION_COOKIE, **cookie_attrs())
         return resp
 
-    @app.get("/", response_class=HTMLResponse)
-    def index(request: Request, admin: tuple[str, str] = Depends(current_admin)):
-        return render(request, "dashboard.html", admin=admin[0], csrf=admin[1])
+    from . import views
 
+    views.register(app)
     app.add_middleware(SecurityHeadersMiddleware)
     return app

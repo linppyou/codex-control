@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}用户 - codexctl{% endblock %}
+{% block content %}
+<h1>用户</h1>
+<p>{% if show_all %}<a href="/users">隐藏内置用户</a>{% else %}<a href="/users?all=1">显示全部用户</a>{% endif %}</p>
+<form method="post" id="bulk" class="card">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <select name="account">
+    {% for c in choices %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+  </select>
+  <button class="btn primary" formaction="/users/assign">分配 / 切换到所选账号</button>
+  <button class="btn danger" formaction="/users/unassign">回收</button>
+</form>
+<table>
+  <tr><th></th><th>用户名</th><th>当前账号</th><th>链接</th><th>24 小时 tokens</th><th>7 天 tokens</th><th>操作</th></tr>
+  {% for r in rows %}
+  <tr>
+    <td><input type="checkbox" name="users" value="{{ r.name }}" form="bulk"></td>
+    <td>{{ r.name }}</td><td>{{ r.account or "-" }}</td>
+    <td>{{ r.link }}{% if r.target %} <span class="muted">{{ r.target }}</span>{% endif %}</td>
+    <td>{{ r.t24 }}</td><td>{{ r.t7 }}</td>
+    <td><form method="post" action="/users/{{ r.name }}/fix" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn">修复</button></form></td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}

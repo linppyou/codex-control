@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}审计 - codexctl{% endblock %}
+{% block content %}
+<h1>审计</h1>
+<h2>最近操作</h2>
+<table>
+  <tr><th>时间</th><th>操作者</th><th>动作</th><th>对象</th><th>详情</th></tr>
+  {% for r in audit %}
+  <tr><td>{{ r.ts }}</td><td>{{ r.actor }}</td><td>{{ r.action }}</td><td>{{ r.target }}</td><td>{{ r.detail }}</td></tr>
+  {% endfor %}
+</table>
+<h2>最近告警</h2>
+<table>
+  <tr><th>时间</th><th>级别</th><th>类型</th><th>对象</th><th>消息</th><th>解决时间</th></tr>
+  {% for r in alerts %}
+  <tr><td>{{ r.ts }}</td><td>{{ r.level }}</td><td>{{ r.kind }}</td><td>{{ r.target }}</td><td>{{ r.message }}</td><td>{{ r.resolved or "未解决" }}</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}
