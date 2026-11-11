@@ -4,6 +4,7 @@ import csv
 import io
 import math
 import sqlite3
+import time
 from urllib.parse import urlencode
 
 from fastapi import Depends, Form, HTTPException, Request
@@ -18,7 +19,7 @@ from ..publisher import PublishError
 from ..runner import CommandError
 from ..sysusers import UserError
 from .app import clean_text, current_admin
-from .charts import quota_chart
+from .charts import fmt_md, fmt_md_hm, quota_chart, week_trend_chart
 
 HANDLED = (
     accounts.AccountError, assignments.AssignError, UserError, AuthFileError,
@@ -81,12 +82,6 @@ def _quota_view(q, now: int) -> dict:
             "source": clean_text(q["source"])}
 
 
-def _week_remaining(quotas: list[dict]) -> int | None:
-    """7 天窗口（10080 分钟）的剩余百分比；没有则取最后一个窗口。"""
-    pick = next((q for q in quotas if q["minutes"] == 10080), quotas[-1] if quotas else None)
-    return None if pick is None or pick["percent"] is None else 100 - pick["percent"]
-
-
 def _week_window(h: dict) -> dict | None:
     for key in ("primary", "secondary"):
         if h[key] is not None and h[key]["window_minutes"] == 10080:
@@ -94,29 +89,91 @@ def _week_window(h: dict) -> dict | None:
     return h["secondary"]
 
 
+def _mask_email(email: str | None) -> str:
+    if not email:
+        return "-"
+    local, sep, domain = email.partition("@")
+    return local[:4] + "****" + (sep + domain if sep else "")
+
+
+def _tone(remaining: int) -> str:
+    return "good" if remaining >= 30 else "warn" if remaining >= 10 else "bad"
+
+
+def _used(w: dict) -> float | None:
+    v = w["used_percent"]
+    return float(v) if isinstance(v, (int, float)) and math.isfinite(v) else None
+
+
+def _projection(used: float, window_start: int, resets_at: int, now: int) -> str:
+    if used <= 0:
+        return "本周尚未使用"
+    elapsed = now - window_start
+    if elapsed <= 0:
+        return ""
+    exhaust = window_start + elapsed * 100 / used
+    if exhaust >= resets_at:
+        return "按此速度，重置前不会用完"
+    return f"按此速度，预计 {fmt_md_hm(int(exhaust))} 用完"
+
+
+def _card(acc, history: list[dict], latest, now: int, settings) -> dict:
+    """首页账号卡片的纯计算：latest 为 repo.latest_quota 行，history 为 repo.quota_history（新到旧）。"""
+    rows = [dict(q) for q in latest]
+    week = next((q for q in rows if q["window_minutes"] == 10080), None)
+    if week is None:
+        week = next((q for q in rows if q["win"] == "secondary"), rows[-1] if rows else None)
+    other = next((q for q in rows if q is not week), None)
+    api_ts = [q["ts"] for q in rows if q["source"] == "api"]
+    card = {
+        "label": clean_text(acc.label), "email": _mask_email(clean_text(acc.email or "", 128)),
+        "plan": clean_text(acc.plan_type or "-").upper(), "status": acc.status,
+        "status_text": {"needs_relogin": "需重新登录", "disabled": "已停用"}.get(acc.status, "") if acc.status != "active" else "",
+        "has_quota": False, "synced": fmt_md_hm(max(api_ts)) if api_ts else "-",
+    }
+    used = _used(week) if week else None
+    if used is None:
+        return card
+    resets = week["resets_at"]
+    expired = resets is not None and resets <= now
+    if expired:
+        used = 0.0
+    remaining = max(0, min(100, 100 - round(used)))
+    card.update(
+        has_quota=True, remaining=remaining, used=100 - remaining, tone=_tone(remaining),
+        reset="已重置（待更新）" if expired else ("-" if resets is None else fmt_md_hm(resets)),
+        week_name=window_name(week["window_minutes"]), chart=None, projection="", other=None,
+    )
+    if other is not None and _used(other) is not None:
+        ot = other["resets_at"]
+        card["other"] = {
+            "name": window_name(other["window_minutes"]), "used": max(0, min(100, round(_used(other)))),
+            "reset": "-" if ot is None else time.strftime("%H:%M", time.localtime(ot)),
+        }
+    if resets is None or expired:
+        return card
+    start = resets - 7 * 86400
+    card["projection"] = _projection(min(100.0, max(0.0, used)), start, resets, now)
+    samples = []
+    for h in history:
+        w = _week_window(h)
+        if w is None or w["resets_at"] is None or abs(w["resets_at"] - resets) > 3600 or _used(w) is None:
+            continue
+        samples.append((h["ts"], 100 - _used(w)))
+    card["chart"] = week_trend_chart(
+        samples, window_start=start, window_end=resets, now=now, gap=3 * settings.quota_poll_seconds,
+    )
+    card["current"] = remaining
+    return card
+
+
 def _account_rows(ctx) -> list[dict]:
     now = ctx.now()
-    counts = {}
-    for a in repo.all_active(ctx.conn):
-        counts[a.account_pk] = counts.get(a.account_pk, 0) + 1
     rows = []
     for acc in repo.list_accounts(ctx.conn):
-        quotas = [
-            _quota_view(q, now)
-            for q in repo.latest_quota(ctx.conn, acc.id, api_fresh_since=now - 2 * ctx.settings.quota_poll_seconds)
-        ]
-        rows.append({
-            "label": acc.label,
-            "week_remaining": _week_remaining(quotas),
-            "email": clean_text(acc.email or "-", 128),
-            "plan": clean_text(acc.plan_type or "-"),
-            "status": acc.status,
-            "last_error": clean_text(acc.last_error or "", 200),
-            "users": counts.get(acc.id, 0),
-            "last_refresh": fmt_ts(acc.last_refresh),
-            "expires": fmt_ts(acc.access_expires_at),
-            "quota": quotas,
-        })
+        latest = repo.latest_quota(ctx.conn, acc.id, api_fresh_since=now - 2 * ctx.settings.quota_poll_seconds)
+        history = repo.quota_history(ctx.conn, acc.id, now - 7 * 86400)
+        rows.append(_card(acc, history, latest, now, ctx.settings))
     return rows
 
 

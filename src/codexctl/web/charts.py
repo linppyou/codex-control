@@ -1,6 +1,18 @@
 from __future__ import annotations
 
+import time
+
 from ..cli import fmt_ts
+
+
+def fmt_md(ts: int) -> str:
+    t = time.localtime(ts)
+    return f"{t.tm_mon}/{t.tm_mday}"
+
+
+def fmt_md_hm(ts: int) -> str:
+    t = time.localtime(ts)
+    return f"{t.tm_mon}/{t.tm_mday} {t.tm_hour:02d}:{t.tm_min:02d}"
 
 
 def quota_chart(
@@ -37,4 +49,45 @@ def quota_chart(
         "y_ticks": [(round(py(v), 1), f"{v}%") for v in (0, 25, 50, 75, 100)],
         "x_ticks": [(round(px(t), 1), fmt_ts(t)) for t in ticks],
         "width": width, "height": height, "pad": pad,
+    }
+
+
+def week_trend_chart(
+    samples: list[tuple[int, float]], *, window_start: int, window_end: int, now: int, gap: int,
+    width: int = 430, height: int = 130, pad_left: int = 36, pad_bottom: int = 18, pad_top: int = 8, pad_right: int = 8,
+) -> dict:
+    """本周窗口走势：x 轴为整个 [window_start, window_end]，y 轴 0–100% 剩余额度。
+
+    窗口外的样本忽略；相邻样本间隔超过 gap 秒就另起一段（M）。
+    """
+    left, right = pad_left, width - pad_right
+    top, bottom = pad_top, height - pad_bottom
+    span = max(1, window_end - window_start)
+
+    def px(ts: float) -> float:
+        return left + (right - left) * (ts - window_start) / span
+
+    def py(v: float) -> float:
+        return top + (bottom - top) * (1 - max(0.0, min(100.0, v)) / 100)
+
+    pts = sorted((ts, v) for ts, v in samples if window_start <= ts <= window_end)
+    path, prev = [], None
+    for ts, v in pts:
+        cmd = "M" if prev is None or ts - prev > gap else "L"
+        path.append(f"{cmd} {px(ts):.1f} {py(v):.1f}")
+        prev = ts
+    last = None
+    if pts:
+        ts, v = pts[-1]
+        last = (round(px(ts), 1), round(py(v), 1), f"{fmt_md_hm(ts)} 剩余 {max(0, min(100, round(v)))}%")
+    return {
+        "path": " ".join(path),
+        "last": last,
+        "pace": (round(px(window_start), 1), round(py(100), 1), round(px(window_end), 1), round(py(0), 1)),
+        "now_x": round(px(now), 1) if window_start <= now <= window_end else None,
+        "y_ticks": [(round(py(v), 1), f"{v}%") for v in (100, 50, 0)],
+        "x_ticks": [(round(px(window_start), 1), fmt_md(window_start), "start"),
+                    (round(px(window_end), 1), fmt_md(window_end), "end")],
+        "box": (left, right, top, bottom),
+        "width": width, "height": height,
     }

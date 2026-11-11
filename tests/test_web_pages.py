@@ -69,8 +69,8 @@ def test_pages_render(c, ctx):
         r = c.get(p)
         assert r.status_code == 200 and 'style="' not in r.text, p
     dash = c.get("/").text
-    assert "acc1" in dash and "a@example.com" in dash and "5小时" in dash and 'value="42"' in dash
-    assert "2 小时 13 分后重置" in dash
+    assert "acc1" in dash and "a@example****" not in dash
+    assert "a@example.com" not in dash and "a****@example.com" in dash
     assert "acc1" in c.get("/accounts").text
 
 
@@ -277,11 +277,12 @@ def test_auto_import_error_shown(c, ctx, mgr):
 def test_quota_reset_passed_and_nonfinite(c, ctx):
     add_acc(ctx)
     now = ctx.now()
-    repo.insert_quota_sample(ctx.conn, 1, now, "primary", 88.0, 300, now - 5, "api")
-    repo.insert_quota_sample(ctx.conn, 1, now, "secondary", float("inf"), 10080, now + 5000, "api")
+    repo.insert_quota_sample(ctx.conn, 1, now, "secondary", 88.0, 10080, now - 5, "api")
     t = c.get("/").text
-    assert "已重置（待更新）" in t and 'value="0"' in t and "88%" not in t
-    assert "未知" in t and "inf" not in t.lower()
+    assert "已重置（待更新）" in t and 'value="100"' in t and "88%" not in t
+    repo.insert_quota_sample(ctx.conn, 1, now + 1, "secondary", float("inf"), 10080, now + 5000, "api")
+    t = c.get("/").text
+    assert "暂无额度数据" in t and "inf" not in t.lower()
 
 
 def test_csp_and_no_inline_script(c, mgr):
@@ -454,7 +455,7 @@ def test_quota_page_chart_svg_and_week_remaining(c, ctx):
     assert '<svg' in t and 'role="img"' in t and "acc1 7 天剩余额度趋势" in t
     assert re.search(r'<path[^>]*class="chart-line"[^>]*d="M [\d.]+ [\d.]+ L', t)
     assert "<title>" in t and "剩余 97%" in t and "7天剩余" in t and "style=" not in t
-    assert "7天剩余 97%" in c.get("/").text
+    assert "本周剩余" in c.get("/").text and "97%" in c.get("/").text
     c2 = c.get("/accounts/acc1/quota?days=30").text
     assert "style=" not in c2
 
@@ -463,3 +464,16 @@ def test_quota_page_no_chart_when_empty(c, ctx):
     add_acc(ctx)
     t = c.get("/accounts/acc1/quota").text
     assert "<svg" not in t and "暂无记录" in t
+
+
+def test_dashboard_card(c, ctx):
+    add_acc(ctx, email="alice.long@example.com")
+    now = ctx.now()
+    reset = now + 3 * 86400
+    for i, used in enumerate((10, 30, 37)):
+        repo.insert_quota_sample(ctx.conn, 1, now - (2 - i) * 600, "secondary", used, 10080, reset, "api")
+    dash = c.get("/").text
+    assert "alic****@example.com" in dash and "alice.long@example.com" not in dash
+    assert "本周剩余" in dash and "63%" in dash and "<svg" in dash and 'style=' not in dash
+    assert 'class="remain-bar good"' in dash and 'value="63"' in dash
+    assert "额度记录" in dash and 'name="next" value="/"' in dash
