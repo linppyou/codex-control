@@ -1,4 +1,6 @@
+import os
 import sqlite3
+import stat
 
 import pytest
 
@@ -44,3 +46,12 @@ def test_only_one_active_assignment_per_user():
 def test_file_database_uses_wal(tmp_path):
     conn = db.connect(tmp_path / "x.db")
     assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+
+
+def test_db_file_mode_0600_regardless_of_umask(tmp_path):
+    old = os.umask(0o022)
+    try:
+        db.connect(tmp_path / "x.db")
+    finally:
+        os.umask(old)
+    assert stat.S_IMODE((tmp_path / "x.db").stat().st_mode) == 0o600

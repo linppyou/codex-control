@@ -1,3 +1,4 @@
+import os
 import stat
 
 import pytest
@@ -54,3 +55,28 @@ def test_load_key_rejects_wrong_length(tmp_path):
     path.chmod(0o400)
     with pytest.raises(VaultError, match="32 字节"):
         load_key(path)
+
+
+def test_load_key_rejects_symlink(tmp_path):
+    real = tmp_path / "real.key"
+    real.write_bytes(b"x" * 32)
+    real.chmod(0o400)
+    link = tmp_path / "link.key"
+    link.symlink_to(real)
+    with pytest.raises(VaultError):
+        load_key(link)
+
+
+def test_load_key_rejects_owner_mismatch(tmp_path, monkeypatch):
+    path = tmp_path / "master.key"
+    path.write_bytes(b"x" * 32)
+    path.chmod(0o400)
+    monkeypatch.setattr(os, "geteuid", lambda: os.getuid() + 1)
+    with pytest.raises(VaultError, match="属主"):
+        load_key(path)
+
+
+def test_decrypt_short_blob_raises_vault_error():
+    v = Vault(AESGCM.generate_key(bit_length=256))
+    with pytest.raises(VaultError):
+        v.decrypt(b"short", b"a")
