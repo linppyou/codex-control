@@ -1,0 +1,106 @@
+# codexctl 部署与运维
+
+## 前提
+
+- Ubuntu 22.04（自带 Python 3.10）或更新版本，root 权限。codexctl 需要 Python ≥ 3.11，见下文用 `uv` 安装。
+- 已完成 `docs/server-validation.md` 中的前置验证且全部通过。
+- 部署后还需处理的账号事项见 [docs/server-validation.md 的「账号清单」](server-validation.md#账号清单部署-codexctl-后处理)。
+
+## 安装
+
+```bash
+sudo -i
+apt-get install -y acl
+```
+
+### 1. Python 3.11+ 环境（uv）
+
+服务器自带 Python 3.10，不满足要求，用 `uv` 创建 3.12 虚拟环境：
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+. ~/.local/bin/env   # 或重新登录，使 uv 进入 PATH
+uv venv --python 3.12 /opt/codexctl/venv
+uv pip install --python /opt/codexctl/venv/bin/python /path/to/codex_control
+```
+
+备选：加 deadsnakes PPA 安装 `python3.12 python3.12-venv`，再 `python3.12 -m venv /opt/codexctl/venv && /opt/codexctl/venv/bin/pip install /path/to/codex_control`。
+
+### 2. codex 二进制与包装脚本
+
+服务器上 codex 已作为静态二进制安装在 `/usr/local/bin/codex`（v0.167.0，非 npm 安装）。**必须先把真实二进制挪到 `/opt/codex/bin/`，再用包装脚本覆盖 `/usr/local/bin/codex`**：
+
+```bash
+install -D -m 755 /usr/local/bin/codex /opt/codex/bin/codex
+/opt/codex/bin/codex --version
+install -m 755 deploy/codex-wrapper.sh /usr/local/bin/codex
+install -d -m 755 /etc/codex && install -m 644 deploy/requirements.toml /etc/codex/requirements.toml
+```
+
+备选（全新服务器，尚未安装 codex）：
+
+```bash
+apt-get install -y nodejs npm
+npm install -g --prefix /opt/codex @openai/codex
+```
+
+### 3. 配置与启动
+
+```bash
+install -d -m 700 /etc/codexctl && install -m 600 deploy/config.example.toml /etc/codexctl/config.toml
+/opt/codexctl/venv/bin/codexctl init
+install -m 644 deploy/codexctl.service /etc/systemd/system/codexctl.service
+systemctl daemon-reload && systemctl enable --now codexctl
+```
+
+确认 `/usr/local/bin` 在用户 `PATH` 中排在其它 codex 安装位置之前：`sudo -u <user> -i which codex` 应输出 `/usr/local/bin/codex`。
+
+systemd 单元设置了 `TimeoutStopSec=120` 与 `KillMode=mixed`：`systemctl stop` 时给进行中的 token 刷新最多 120 秒完成，避免刷新到一半被杀导致 refresh token 作废。
+
+## 迁移现有登录
+
+服务器上 linpp、zdy（以及 root）已经各自在 `~/.codex` 登录过。接入 codexctl 时：
+
+- `codexctl assign` 分配账号给用户时，会把该用户已有的普通 `~/.codex/auth.json` 备份为 `auth.json.bak.<时间戳>`，再换成指向发布文件的软链接。
+- **正在运行的 codex 进程仍持有内存中的旧 token，分配后必须重启**。例如 zdy 常驻的 `codex app-server` 需要重启后才会使用新账号。
+- **永远不要**执行 `codex logout` 来「清理」旧登录：logout 会在服务端吊销 token，若该 token 与某个共享账号相同，会让所有共用者掉线。直接让 codexctl 备份并替换即可。
+- 备份文件含旧凭证，确认迁移无误后由管理员自行决定是否删除。
+
+## 日常操作（`codexctl` 即 `/opt/codexctl/venv/bin/codexctl`）
+
+| 操作 | 命令 |
+|---|---|
+| 添加账号（终端显示验证码，在浏览器批准） | `codexctl account add acc1` |
+| 查看账号 | `codexctl account list` |
+| 分配 / 切换（可多个用户） | `codexctl assign --account acc1 alice bob` |
+| 回收 | `codexctl unassign alice` |
+| 查看用户分配与链接状态 | `codexctl users` |
+| 查看额度 | `codexctl quota` |
+| 查看近 7 天用量 | `codexctl usage --days 7` |
+| 立即巡检 | `codexctl check` |
+| 修复某用户链接 | `codexctl fix alice` |
+| 账号显示 needs_relogin 时重新登录 | `codexctl account relogin acc1` |
+| 发布文件与保险库不一致时 | `codexctl account republish acc1` |
+| 查看服务日志 | `journalctl -u codexctl -f` |
+
+注意：服务账号 www、mysql、redis、memcached 的 uid ≥ 1000（`min_uid`），因此也会出现在 `codexctl users` 里。它们不是真实使用者，不要给它们分配账号。
+
+## 重要注意事项
+
+- **永远不要**在服务器上以任何身份对已分配账号执行 `codex logout`：会在服务端吊销 token，所有共用该账号的用户掉线，只能 `account relogin` 恢复。
+- 切换账号后，用户正在运行的 codex 进程仍使用内存中的旧 token，需重启 codex。
+- 用户可以读取自己被分配账号的凭证。怀疑泄露时对该账号执行 `account relogin`，使旧凭证作废。
+- 多人共用一个账号会平摊额度，并可能触发 OpenAI 风控。
+
+## 备份
+
+- `/var/lib/codexctl/codexctl.db`（含加密凭证）与 `/etc/codexctl/master.key` **分开**备份。
+- 丢失主密钥：所有账号需重新 `account add`（先删除数据库或使用新状态目录）。
+
+## 升级 Codex 后
+
+重新执行 `docs/server-validation.md` 中的 Step 2–4，确认软链接写入行为与额度接口格式未变。
+
+## 后续规划
+
+Web 管理面板（域名 codex-control.ppspace.xyz）属于后续计划，不在本次部署范围内。

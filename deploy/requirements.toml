@@ -1,0 +1,2 @@
+# 管理员强制配置：只允许 ChatGPT 登录方式，禁止 API key。
+allowed_login_methods = ["chatgpt"]

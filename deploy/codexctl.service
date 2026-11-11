@@ -1,0 +1,19 @@
+[Unit]
+Description=codexctl - Codex account control
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+UMask=0077
+ExecStartPre=/opt/codexctl/venv/bin/codexctl -c /etc/codexctl/config.toml selfcheck
+ExecStart=/opt/codexctl/venv/bin/codexctl -c /etc/codexctl/config.toml daemon
+Restart=on-failure
+RestartSec=10
+# 优雅停止：等待进行中的 token 刷新完成；mixed 只向主进程发 SIGTERM，超时后再 SIGKILL 全组
+TimeoutStopSec=120
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

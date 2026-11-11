@@ -1,0 +1,9 @@
+# 复制为 /etc/codexctl/config.toml，只写需要改的项
+# state_dir = "/var/lib/codexctl"
+# key_file = "/etc/codexctl/master.key"
+# codex_bin = "/opt/codex/bin/codex"
+# min_uid = 1000
+# refresh_interval_days = 4.0
+# refresh_min_validity_days = 3.0
+# quota_warn_percent = 80.0
+# quota_crit_percent = 95.0
