@@ -30,7 +30,7 @@
 |---|---|---|
 | ChatGPT 登录凭证存于 `$CODEX_HOME/auth.json`，字段：`auth_mode`、`last_refresh`、`tokens.{access_token, refresh_token, id_token, account_id}` | 本机实测 | vault 存储结构 |
 | `access_token` 有效期 240 小时；`id_token` 1 小时 | 本机解析 JWT | 刷新周期 |
-| Codex 在 `last_refresh` 超过约 8 天或请求 401 时自行刷新；401 时会先从磁盘重读 `auth.json` | OpenAI CI/CD 文档、issue 日志 | 面板必须在 8 天前刷新 |
+| Codex（0.167.0 实测）在 access_token 过期或请求被拒时自行刷新，单纯 `last_refresh` 超过 8 天不会触发；401 时会先从磁盘重读 `auth.json` | 服务器实测（docs/server-validation.md）、issue 日志 | 面板必须在 access_token 过期前刷新（每 4 天一次） |
 | refresh token 一次性使用，旋转后旧 token 失效（`refresh_token_reused`），可能导致整个 token 家族被吊销 | OpenAI 文档、多个 issue | 只能有一个刷新方：面板 |
 | Codex 写 `auth.json` 时**跟随软链接原地写入**，链接保留、目标权限不变 | 本机实测（API key 写入路径） | 软链接分配可行 |
 | 软链接目标只读时，Codex 写入报 `Permission denied`，链接与目标均不变 | 本机实测 | 用户无法通过 `codex login` 篡改共享凭证 |
@@ -38,7 +38,7 @@
 | 会话日志 `~/.codex/sessions/**/rollout-*.jsonl` 中的 `event_msg/token_count` 事件含 `info.total_token_usage`、`info.last_token_usage` 和 `rate_limits.{primary, secondary}.{used_percent, window_minutes, resets_at}`、`plan_type` | 本机实测 | 用户维度用量来源 |
 | `/etc/codex/requirements.toml` 为管理员强制配置，支持 `allowed_login_methods` | OpenAI Managed configuration 文档 | 禁止 API key 登录 |
 
-**待服务器验证（实现前必须完成）**：ChatGPT 模式下的 token 刷新写入同样跟随软链接；凭证文件只读时，正常使用期间 Codex 不触发自刷新。
+**服务器验证（2026-11-11 已通过，见 `docs/server-validation.md`）**：ChatGPT 模式下的 token 刷新写入同样跟随软链接；凭证文件只读时，正常使用期间 Codex 不写文件；额度接口响应结构与实现一致。
 
 ## 3. 总体架构
 
