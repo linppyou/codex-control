@@ -87,3 +87,22 @@ def test_vault_unreadable_is_finding_not_crash(setup, monkeypatch):
     assert [(f.kind, f.level, f.message) for f in findings] == [
         ("published_mismatch", "critical", "无法读取保险库：LookupError")
     ]
+
+
+def test_unassigned_user_link_alert_resolved(setup):
+    ctx = setup
+    (ctx.test_users.get("alice").home / ".codex" / "auth.json").unlink()
+    watcher.run_checks(ctx)
+    assert [a["kind"] for a in events.open_alerts(ctx.conn)] == ["link_mismatch"]
+    assignments.unassign(ctx, "alice", "t")
+    ctx.test_runner.outputs["getfacl"] = "user::rw-\ngroup::---\nother::---\n"
+    watcher.run_checks(ctx)
+    assert events.open_alerts(ctx.conn) == []
+
+
+def test_alert_for_vanished_account_resolved_and_others_untouched(setup):
+    ctx = setup
+    events.raise_alert(ctx.conn, "critical", "acl_mismatch", "gone", "x", now=1)
+    events.raise_alert(ctx.conn, "warning", "quota_high", "acc1", "x", now=1)
+    watcher.run_checks(ctx)
+    assert [(a["kind"], a["target"]) for a in events.open_alerts(ctx.conn)] == [("quota_high", "acc1")]

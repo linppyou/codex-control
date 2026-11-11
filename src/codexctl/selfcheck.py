@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import sqlite3
 from typing import Callable
@@ -24,6 +25,8 @@ def selfcheck(
             acl_tools = False
     if not settings.codex_bin.exists():
         problems.append(f"未找到 codex 可执行文件：{settings.codex_bin}")
+    elif not os.access(settings.codex_bin, os.X_OK):
+        problems.append(f"codex 不可执行：{settings.codex_bin}")
     try:
         load_key(settings.key_file)
     except (OSError, VaultError) as e:
@@ -36,12 +39,13 @@ def selfcheck(
     except sqlite3.Error as e:
         problems.append(f"数据库不可用：{e}")
     if acl_tools:
-        probe = settings.state_dir / ".acl-probe"
+        probe_dir = settings.accounts_dir if settings.accounts_dir.is_dir() else settings.state_dir
+        probe = probe_dir / ".acl-probe"
         try:
             probe.write_bytes(b"")
             run([settings.setfacl_bin, "-m", "u:root:r", str(probe)])
         except (OSError, CommandError) as e:
-            problems.append(f"{settings.state_dir} 所在文件系统不支持 ACL：{e}")
+            problems.append(f"{probe_dir} 所在文件系统不支持 ACL：{e}")
         finally:
             probe.unlink(missing_ok=True)
     return problems

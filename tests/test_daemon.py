@@ -13,3 +13,22 @@ def test_safe_job_swallows_and_logs_errors(caplog):
 
     safe_job("boom", boom, None)()
     assert "定时任务 boom 失败" in caplog.text
+
+
+def test_jobs_never_skip_and_are_staggered(ctx):
+    sched = build_scheduler(ctx)
+    assert sched._job_defaults["misfire_grace_time"] is None
+
+
+def test_run_installs_signal_handlers(ctx, monkeypatch):
+    import signal
+
+    from apscheduler.schedulers.blocking import BlockingScheduler
+
+    from codexctl import daemon
+
+    got = []
+    monkeypatch.setattr(signal, "signal", lambda s, h: got.append(s))
+    monkeypatch.setattr(BlockingScheduler, "start", lambda self: None)
+    daemon.run(ctx)
+    assert set(got) == {signal.SIGTERM, signal.SIGINT}

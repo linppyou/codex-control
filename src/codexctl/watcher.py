@@ -10,6 +10,9 @@ from .runner import CommandError
 from .sysusers import UserError
 
 
+WATCH_KINDS = frozenset({"link_mismatch", "stale_link", "acl_mismatch", "published_mismatch", "token_expiring"})
+
+
 @dataclass(frozen=True)
 class Finding:
     level: str
@@ -18,9 +21,8 @@ class Finding:
     message: str
 
 
-def _check_assigned_links(ctx: Context, checked: set, findings: list) -> None:
+def _check_assigned_links(ctx: Context, findings: list) -> None:
     for a in repo.all_active(ctx.conn):
-        checked.add(("link_mismatch", a.username))
         try:
             user = ctx.lookup_user(a.username, ctx.settings.min_uid)
         except UserError:
@@ -34,24 +36,21 @@ def _check_assigned_links(ctx: Context, checked: set, findings: list) -> None:
             findings.append(Finding("critical", "link_mismatch", a.username, f"应链接到 {expected}，实际为 {actual}"))
 
 
-def _check_stale_links(ctx: Context, checked: set, findings: list) -> None:
+def _check_stale_links(ctx: Context, findings: list) -> None:
     assigned = {a.username for a in repo.all_active(ctx.conn)}
     prefix = str(ctx.publisher.accounts_dir) + os.sep
     for user in ctx.list_users(ctx.settings.min_uid):
         if user.name in assigned:
             continue
-        checked.add(("stale_link", user.name))
         state = ctx.publisher.read_link(user)
         target = state.target or ""
         if state.kind == "symlink" and os.path.isabs(target) and os.path.normpath(target).startswith(prefix):
             findings.append(Finding("warning", "stale_link", user.name, f"未分配账号但仍链接到 {state.target}"))
 
 
-def _check_accounts(ctx: Context, checked: set, findings: list) -> None:
+def _check_accounts(ctx: Context, findings: list) -> None:
     now = ctx.now()
     for acc in repo.list_accounts(ctx.conn):
-        for kind in ("acl_mismatch", "published_mismatch", "token_expiring"):
-            checked.add((kind, acc.label))
         expected = {u.name for u in accounts.readers_for(ctx, acc.id)}
         try:
             actual = ctx.publisher.read_readers(acc.label)
@@ -84,16 +83,21 @@ def _check_accounts(ctx: Context, checked: set, findings: list) -> None:
 
 def run_checks(ctx: Context) -> list[Finding]:
     """执行全部巡检，只告警不修复：新问题打开告警，恢复正常的项关闭告警。"""
-    checked: set[tuple[str, str]] = set()
     findings: list[Finding] = []
-    _check_assigned_links(ctx, checked, findings)
-    _check_stale_links(ctx, checked, findings)
-    _check_accounts(ctx, checked, findings)
+    _check_assigned_links(ctx, findings)
+    _check_stale_links(ctx, findings)
+    _check_accounts(ctx, findings)
     now = ctx.now()
     problems = {(f.kind, f.target) for f in findings}
     with transaction(ctx.conn):
         for f in findings:
             events.raise_alert(ctx.conn, f.level, f.kind, f.target, f.message, now=now)
-        for kind, target in checked - problems:
-            events.resolve_alert(ctx.conn, kind, target, now=now)
+        marks = ",".join("?" * len(WATCH_KINDS))
+        rows = ctx.conn.execute(
+            f"SELECT kind, target FROM alerts WHERE resolved_at IS NULL AND kind IN ({marks})",
+            sorted(WATCH_KINDS),
+        ).fetchall()
+        for r in rows:
+            if (r["kind"], r["target"]) not in problems:
+                events.resolve_alert(ctx.conn, r["kind"], r["target"], now=now)
     return findings

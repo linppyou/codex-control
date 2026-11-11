@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+import signal
+import threading
+from datetime import datetime, timedelta
 from typing import Callable
 
 from apscheduler.executors.pool import ThreadPoolExecutor
@@ -34,8 +36,28 @@ def safe_job(name: str, fn: Callable[[Context], object], ctx: Context) -> Callab
 def build_scheduler(ctx: Context) -> BlockingScheduler:
     sched = BlockingScheduler(
         executors={"default": ThreadPoolExecutor(1)},
-        job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 60},
+        job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": None},
     )
-    for name, fn, seconds in JOBS:
-        sched.add_job(safe_job(name, fn, ctx), "interval", seconds=seconds, id=name, next_run_time=datetime.now())
+    start = datetime.now()
+    for i, (name, fn, seconds) in enumerate(JOBS):
+        sched.add_job(
+            safe_job(name, fn, ctx),
+            "interval",
+            seconds=seconds,
+            id=name,
+            next_run_time=start + timedelta(seconds=5 * i),
+        )
     return sched
+
+
+def run(ctx: Context) -> None:
+    sched = build_scheduler(ctx)
+    if threading.current_thread() is threading.main_thread():
+
+        def stop(signum, frame) -> None:
+            sched.shutdown(wait=True)
+
+        signal.signal(signal.SIGTERM, stop)
+        signal.signal(signal.SIGINT, stop)
+    log.info("codexctl daemon 启动")
+    sched.start()

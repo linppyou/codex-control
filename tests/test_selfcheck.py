@@ -12,6 +12,7 @@ def good_settings(tmp_path):
     generate_key_file(key)
     codex = tmp_path / "codex"
     codex.write_text("")
+    codex.chmod(0o755)
     return Settings(state_dir=state, key_file=key, codex_bin=codex)
 
 
@@ -36,3 +37,18 @@ def test_acl_unsupported(tmp_path):
     runner.fail_with = CommandError("Operation not supported")
     problems = selfcheck(good_settings(tmp_path), run=runner, which=lambda t: "/usr/bin/" + t)
     assert len(problems) == 1 and "不支持 ACL" in problems[0]
+
+
+def test_codex_not_executable(tmp_path):
+    s = good_settings(tmp_path)
+    s.codex_bin.chmod(0o644)
+    problems = selfcheck(s, run=FakeRunner(), which=lambda t: "/usr/bin/" + t)
+    assert problems == [f"codex 不可执行：{s.codex_bin}"]
+
+
+def test_acl_probe_uses_accounts_dir_when_present(tmp_path):
+    s = good_settings(tmp_path)
+    s.accounts_dir.mkdir()
+    runner = FakeRunner()
+    assert selfcheck(s, run=runner, which=lambda t: "/usr/bin/" + t) == []
+    assert runner.calls[0][-1].startswith(str(s.accounts_dir))
