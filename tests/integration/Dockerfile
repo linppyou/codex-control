@@ -7,5 +7,6 @@ WORKDIR /src
 COPY pyproject.toml /src/
 COPY src /src/src
 COPY tests /src/tests
+COPY deploy /src/deploy
 RUN python3 -m venv /venv && /venv/bin/pip install -q -e '.[dev]'
 CMD ["/venv/bin/pytest", "-m", "integration", "-v", "tests/integration"]
