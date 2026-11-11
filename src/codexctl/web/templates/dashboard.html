@@ -7,7 +7,7 @@
   <h2>{{ c.label }} <span class="badge {{ c.status }}">{{ c.status }}</span></h2>
   <p>{{ c.email }} · 套餐 {{ c.plan }} · {{ c.users }} 位用户 · 上次刷新 {{ c.last_refresh }} · token 到期 {{ c.expires }}</p>
   {% for q in c.quota %}
-  <div>{{ q.name }} <progress max="100" value="{{ q.percent }}"></progress> {{ q.percent }}% · {{ q.reset }} <span class="muted">({{ q.source }})</span></div>
+  <div>{{ q.name }} {% if q.percent is none %}未知{% else %}<progress max="100" value="{{ q.percent }}"></progress> {{ q.percent }}%{% endif %} · {{ q.reset }} <span class="muted">({{ q.source }})</span></div>
   {% else %}
   <div class="muted">暂无额度数据</div>
   {% endfor %}

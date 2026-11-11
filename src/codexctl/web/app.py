@@ -29,7 +29,7 @@ _LOCAL_HOSTS = {"127.0.0.1", "::1"}
 log = logging.getLogger(__name__)
 
 CSP = (
-    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self'; "
+    "default-src 'self'; script-src 'self'; style-src 'self'; "
     "img-src 'self' data:; form-action 'self'; frame-ancestors 'none'"
 )
 SECURITY_HEADERS = {
@@ -156,8 +156,8 @@ def create_app(
     def render(request: Request, name: str, status: int = 200, flash: bool = True, **context) -> HTMLResponse:
         context.setdefault("admin", None)
         context.setdefault("csrf", "")
-        context["msg"] = request.query_params.get("msg", "") if flash else ""
-        context["err"] = request.query_params.get("err", "") if flash else ""
+        context.setdefault("msg", request.query_params.get("msg", "") if flash else "")
+        context.setdefault("err", request.query_params.get("err", "") if flash else "")
         return app.state.templates.TemplateResponse(request, name, context, status_code=status)
 
     app.state.render = render

@@ -125,21 +125,19 @@ def test_assign_disabled_and_unknown_user(c, ctx):
     assert "err" in qs(post(c, "/users/assign", account="acc1"))[1]
 
 
-def test_refresh_success_failure_and_busy(c, ctx):
+def test_refresh_success_failure_and_busy(c, ctx, monkeypatch):
     add_acc(ctx)
-    import codexctl.refresher as rf
-
     calls = []
-    orig = rf.refresh_account
-    rf.refresh_account = lambda ctx_, acc, actor, blocking=True: calls.append((actor, blocking)) or True
-    try:
-        assert qs(post(c, "/accounts/acc1/refresh"))[1] == {"msg": "刷新成功"}
-        assert calls == [("web:root_admin", False)]
-        rf.refresh_account = lambda *a, **k: False
-        repo.set_status(ctx.conn, 1, "needs_relogin", "token reused")
-        assert "token reused" in qs(post(c, "/accounts/acc1/refresh"))[1]["err"]
-    finally:
-        rf.refresh_account = orig
+    monkeypatch.setattr(
+        "codexctl.refresher.refresh_account",
+        lambda ctx_, acc, actor, blocking=True: calls.append((actor, blocking)) or True,
+    )
+    assert qs(post(c, "/accounts/acc1/refresh"))[1] == {"msg": "刷新成功"}
+    assert calls == [("web:root_admin", False)]
+    monkeypatch.setattr("codexctl.refresher.refresh_account", lambda *a, **k: False)
+    repo.set_status(ctx.conn, 1, "needs_relogin", "token reused")
+    assert "token reused" in qs(post(c, "/accounts/acc1/refresh"))[1]["err"]
+    monkeypatch.undo()
     with account_lock(ctx.settings.state_dir, "acc1"):
         assert "正在刷新" in qs(post(c, "/accounts/acc1/refresh"))[1]["err"]
     assert "err" in qs(post(c, "/accounts/zzz/refresh"))[1]
@@ -169,7 +167,7 @@ def test_device_login_add_full_flow(c, ctx, mgr):
     assert repo.get_account(ctx.conn, "newacc").email == "n@example.com"
     n = ctx.conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='account.add'").fetchone()[0]
     path, q = qs(c.get(page))
-    assert path == "/accounts" and ("err" in q or "msg" in q)
+    assert path == "/accounts" and "已被取走" in q["err"]
     assert ctx.conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='account.add'").fetchone()[0] == n == 1
     assert ("web:root_admin", "account.add") in [tuple(x) for x in ctx.conn.execute("SELECT actor, action FROM audit_log")]
 
@@ -244,3 +242,86 @@ def test_writes_require_csrf(c, ctx):
         assert c.post(p, data={}).status_code == 403, p
         assert c.post(p, data={"csrf": "bad"}).status_code == 403, p
     assert repo.get_account(ctx.conn, "acc1").status == "active"
+
+
+def wait_state(mgr, lid, state):
+    end = time.time() + 5
+    while mgr.status(lid)["state"] != state and time.time() < end:
+        time.sleep(0.02)
+    assert mgr.status(lid)["state"] == state
+
+
+@pytest.mark.parametrize("path", ["/accounts", "/"])
+def test_finished_login_auto_imported_without_status_page(c, ctx, mgr, path):
+    mgr.src.write_bytes(make_auth_json(account_id="acct-7", email="z@example.com"))
+    lid = post(c, "/accounts/login", label="auto1", mode="add").headers["location"].rsplit("/", 1)[1]
+    mgr.marker.write_text("")
+    wait_state(mgr, lid, "succeeded")
+    r = c.get(path)
+    assert r.status_code == 200 and "auto1 已添加" in r.text
+    assert repo.get_account(ctx.conn, "auto1").email == "z@example.com"
+    assert "已添加" not in c.get(path).text
+    assert mgr.finished_ids() == []
+
+
+def test_auto_import_error_shown(c, ctx, mgr):
+    add_acc(ctx, "acc1", "acct-1")
+    mgr.src.write_bytes(make_auth_json(account_id="acct-1"))
+    lid = post(c, "/accounts/login", label="dup", mode="add").headers["location"].rsplit("/", 1)[1]
+    mgr.marker.write_text("")
+    wait_state(mgr, lid, "succeeded")
+    assert "已登记为 acc1" in c.get("/accounts").text
+
+
+def test_quota_reset_passed_and_nonfinite(c, ctx):
+    add_acc(ctx)
+    now = ctx.now()
+    repo.insert_quota_sample(ctx.conn, 1, now, "primary", 88.0, 300, now - 5, "api")
+    repo.insert_quota_sample(ctx.conn, 1, now, "secondary", float("inf"), 10080, now + 5000, "api")
+    t = c.get("/").text
+    assert "已重置（待更新）" in t and 'value="0"' in t and "88%" not in t
+    assert "未知" in t and "inf" not in t.lower()
+
+
+def test_csp_and_no_inline_script(c, mgr):
+    r = c.get("/accounts")
+    assert "unsafe-inline" not in r.headers["content-security-policy"]
+    page = post(c, "/accounts/login", label="zzz", mode="add").headers["location"]
+    html = c.get(page).text
+    assert 'data-login-id="' in html and '/static/login.js' in html
+    assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", html)
+    assert c.get("/static/login.js").status_code == 200
+
+
+def test_unsafe_url_not_linked(c, ctx, mgr):
+    ctx.settings.codex_bin.write_text(
+        "#!/bin/sh\nprintf 'https://auth.openai.com.evil.com/\\nABCD-EFGH12\\n'\nsleep 30\n"
+    )
+    page = post(c, "/accounts/login", label="zzz", mode="add").headers["location"]
+    lid = page.rsplit("/", 1)[1]
+    end = time.time() + 5
+    while not mgr.status(lid)["code"] and time.time() < end:
+        time.sleep(0.02)
+    html = c.get(page).text
+    assert "evil.com" not in html and "ABCD-EFGH12" in html
+
+
+def test_hidden_user_cannot_be_assigned(c, ctx):
+    add_acc(ctx)
+    ctx.test_users.add("svc")
+    ctx.test_users.add("alice")
+    r = c.post("/users/assign", data={"csrf": c.csrf, "users": ["svc", "alice"], "account": "acc1"})
+    q = qs(r)[1]
+    assert "svc" in q["err"] and "隐藏用户不可分配" in q["err"] and "1" in q["msg"]
+    assert repo.active_assignment(ctx.conn, "svc") is None
+    assert repo.active_assignment(ctx.conn, "alice") is not None
+
+
+def test_republish_and_cancel_audited(c, ctx):
+    add_acc(ctx)
+    post(c, "/accounts/acc1/republish")
+    page = post(c, "/accounts/login", label="zzz", mode="add").headers["location"]
+    post(c, page + "/cancel")
+    got = [tuple(x) for x in ctx.conn.execute("SELECT actor, action, target FROM audit_log")]
+    assert ("web:root_admin", "account.republish", "acc1") in got
+    assert ("web:root_admin", "account.login_cancel", "zzz") in got

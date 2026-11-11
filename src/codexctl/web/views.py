@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 import sqlite3
 from urllib.parse import urlencode
 
@@ -10,6 +11,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 
 from .. import accounts, assignments, events, refresher, repo
 from ..authfile import AuthFileError
+from ..devicelogin import DeviceLoginError
 from ..cli import fmt_ts, window_name
 from ..locks import LockBusy
 from ..publisher import PublishError
@@ -19,7 +21,7 @@ from .app import clean_text, current_admin
 
 HANDLED = (
     accounts.AccountError, assignments.AssignError, UserError, AuthFileError,
-    PublishError, LockBusy, CommandError, ValueError,
+    PublishError, LockBusy, CommandError, DeviceLoginError,
 )
 FRESH_API_SECONDS = 600
 _TERMINAL = ("succeeded", "failed", "cancelled", "expired")
@@ -50,10 +52,33 @@ def _countdown(resets_at: int | None, now: int) -> str:
     return f"{minutes} 分钟后重置"
 
 
+def _flash(msg: str, err: str) -> dict:
+    out = {}
+    if msg:
+        out["msg"] = msg
+    if err:
+        out["err"] = err
+    return out
+
+
 def _csv_cell(v: object) -> object:
     if isinstance(v, str) and v and v[0] in "=+-@\t\r":
         return "'" + v
     return v
+
+
+def _quota_view(q, now: int) -> dict:
+    pct = q["used_percent"]
+    expired = q["resets_at"] is not None and q["resets_at"] <= now
+    if expired:
+        percent, reset = 0, "已重置（待更新）"
+    else:
+        reset = _countdown(q["resets_at"], now)
+        percent = None
+        if isinstance(pct, (int, float)) and math.isfinite(pct):
+            percent = max(0, min(100, round(pct)))
+    return {"name": window_name(q["window_minutes"]), "percent": percent, "reset": reset,
+            "source": clean_text(q["source"])}
 
 
 def _account_rows(ctx) -> list[dict]:
@@ -73,12 +98,7 @@ def _account_rows(ctx) -> list[dict]:
             "last_refresh": fmt_ts(acc.last_refresh),
             "expires": fmt_ts(acc.access_expires_at),
             "quota": [
-                {
-                    "name": window_name(q["window_minutes"]),
-                    "percent": max(0, min(100, round(q["used_percent"]))),
-                    "reset": _countdown(q["resets_at"], now),
-                    "source": clean_text(q["source"]),
-                }
+                _quota_view(q, now)
                 for q in repo.latest_quota(ctx.conn, acc.id, api_fresh_since=now - FRESH_API_SECONDS)
             ],
         })
@@ -91,6 +111,38 @@ def _usage_days(request: Request) -> int:
     except ValueError:
         return 7
     return days if days in (1, 7, 30) else 7
+
+
+def _finish_login(ctx, devlogins, login_id: str, label: str, mode: str, actor: str) -> tuple[str, str]:
+    """取走一次登录结果并导入；返回 (msg, err)。调用方须持有全局锁。"""
+    try:
+        data = devlogins.take_result(login_id)
+    except DeviceLoginError:
+        return "", "登录结果已被取走或不可用"
+    try:
+        if mode == "relogin":
+            accounts.relogin_account(ctx, label, data, actor)
+            return f"账号 {label} 已重新登录", ""
+        accounts.import_account(ctx, label, data, actor)
+        return f"账号 {label} 已添加", ""
+    except HANDLED as e:
+        return "", str(e)
+
+
+def _complete_finished_logins(app, admin: tuple[str, str]) -> tuple[str, str]:
+    """导入所有已成功但尚未取走的登录（管理员关掉状态页也不会丢结果）。调用方须持有全局锁。"""
+    ctx, devlogins = app.state.ctx, app.state.devlogins
+    msgs, errs = [], []
+    for lid in devlogins.finished_ids():
+        st = devlogins.status(lid)
+        if st is None:
+            continue
+        m, e = _finish_login(ctx, devlogins, lid, st["label"], st["mode"], f"web:{admin[0]}")
+        if m:
+            msgs.append(m)
+        if e:
+            errs.append(f"{clean_text(st['label'], 32)}：{e}")
+    return "；".join(msgs), "；".join(errs)
 
 
 def register(app) -> None:
@@ -106,6 +158,7 @@ def register(app) -> None:
     def index(request: Request, admin: tuple[str, str] = Depends(current_admin)):
         with lock:
             devlogins.sweep()
+            msg, err = _complete_finished_logins(app, admin)
             cards = _account_rows(ctx)
             alerts = [
                 {
@@ -115,14 +168,15 @@ def register(app) -> None:
                 }
                 for a in events.open_alerts(ctx.conn)
             ]
-        return render(request, "dashboard.html", admin=admin[0], csrf=admin[1], cards=cards, alerts=alerts)
+        return render(request, "dashboard.html", admin=admin[0], csrf=admin[1], cards=cards, alerts=alerts, **_flash(msg, err))
 
     @app.get("/accounts", response_class=HTMLResponse)
     def accounts_page(request: Request, admin: tuple[str, str] = Depends(current_admin)):
         with lock:
             devlogins.sweep()
+            msg, err = _complete_finished_logins(app, admin)
             rows = _account_rows(ctx)
-        return render(request, "accounts.html", admin=admin[0], csrf=admin[1], rows=rows)
+        return render(request, "accounts.html", admin=admin[0], csrf=admin[1], rows=rows, **_flash(msg, err))
 
     def account_action(label: str, admin, fn, ok_msg: str) -> RedirectResponse:
         with lock:
@@ -145,7 +199,7 @@ def register(app) -> None:
                 elif mode == "relogin":
                     accounts.require_account(ctx, label)
                 else:
-                    raise ValueError("mode 只能是 add 或 relogin")
+                    raise DeviceLoginError("mode 只能是 add 或 relogin")
                 login_id = devlogins.start(label, mode)
             except HANDLED as e:
                 return _redirect("/accounts", err=str(e))
@@ -160,20 +214,8 @@ def register(app) -> None:
             if st is None:
                 return _redirect("/accounts", err="登录不存在或已过期")
             if st["state"] == "succeeded":
-                try:
-                    data = devlogins.take_result(login_id)
-                except ValueError:
-                    return _redirect("/accounts", err="登录结果已被取走或不可用")
-                try:
-                    if st["mode"] == "relogin":
-                        accounts.relogin_account(ctx, st["label"], data, actor_of(admin))
-                        msg = f"账号 {st['label']} 已重新登录"
-                    else:
-                        accounts.import_account(ctx, st["label"], data, actor_of(admin))
-                        msg = f"账号 {st['label']} 已添加"
-                except HANDLED as e:
-                    return _redirect("/accounts", err=str(e))
-                return _redirect("/accounts", msg=msg)
+                msg, err = _finish_login(ctx, devlogins, login_id, st["label"], st["mode"], actor_of(admin))
+                return _redirect("/accounts", msg=msg, err=err)
         view = {
             "id": login_id,
             "label": clean_text(st["label"]),
@@ -204,7 +246,10 @@ def register(app) -> None:
     def login_cancel(login_id: str, admin: tuple[str, str] = Depends(current_admin)):
         with lock:
             devlogins.sweep()
+            st = devlogins.status(login_id)
             devlogins.cancel(login_id)
+            if st is not None and st["state"] in ("pending", "waiting"):
+                events.audit(ctx.conn, actor_of(admin), "account.login_cancel", st["label"], now=ctx.now())
         return _redirect("/accounts", msg="已取消登录")
 
     @app.post("/accounts/{label}/refresh")
@@ -232,9 +277,13 @@ def register(app) -> None:
     def account_enable(label: str, admin: tuple[str, str] = Depends(current_admin)):
         return account_action(label, admin, lambda a: accounts.set_disabled(ctx, label, False, a), f"已启用 {label}")
 
+    def republish(label: str, actor: str) -> None:
+        accounts.republish_account(ctx, label)
+        events.audit(ctx.conn, actor, "account.republish", label, now=ctx.now())
+
     @app.post("/accounts/{label}/republish")
     def account_republish(label: str, admin: tuple[str, str] = Depends(current_admin)):
-        return account_action(label, admin, lambda a: accounts.republish_account(ctx, label), f"已重新发布 {label}")
+        return account_action(label, admin, lambda a: republish(label, a), f"已重新发布 {label}")
 
     @app.get("/users", response_class=HTMLResponse)
     def users_page(request: Request, admin: tuple[str, str] = Depends(current_admin)):
@@ -246,15 +295,15 @@ def register(app) -> None:
             u1 = repo.usage_by_user(ctx.conn, now - 86400)
             u7 = repo.usage_by_user(ctx.conn, now - 7 * 86400)
             labels = {a.id: a.label for a in repo.list_accounts(ctx.conn)}
+            assigned = {a.username: labels.get(a.account_pk, "?") for a in repo.all_active(ctx.conn)}
             rows = []
             for u in ctx.list_users(ctx.settings.min_uid):
                 if not show_all and u.name in hidden:
                     continue
-                cur = repo.active_assignment(ctx.conn, u.name)
                 link = ctx.publisher.read_link(u)
                 rows.append({
                     "name": u.name,
-                    "account": labels.get(cur.account_pk, "?") if cur else "",
+                    "account": assigned.get(u.name, ""),
                     "link": clean_text(link.kind),
                     "target": clean_text(link.target or "", 200),
                     "t24": u1.get(u.name, 0),
@@ -276,7 +325,11 @@ def register(app) -> None:
         ok, bad, backups = [], [], 0
         with lock:
             devlogins.sweep()
+            hidden = set(ctx.settings.hidden_users)
             for name in users:
+                if name in hidden:
+                    bad.append(f"{clean_text(name, 32)}：隐藏用户不可分配")
+                    continue
                 try:
                     if assignments.assign(ctx, name, account, actor_of(admin)) is not None:
                         backups += 1

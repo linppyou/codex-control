@@ -14,9 +14,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
+import logging
+
 from .config import Settings
 from .publisher import LABEL_RE
 
+log = logging.getLogger(__name__)
 _ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))")
 _URL_RE = re.compile(r"https://\S+")
 _ENV_KEYS = (
@@ -25,16 +28,29 @@ _ENV_KEYS = (
 ).split()
 
 
+ALLOWED_HOSTS = ("auth.openai.com",)
+
+
+class DeviceLoginError(ValueError):
+    pass
+
+
 def _openai_url(text: str) -> str | None:
     for m in _URL_RE.finditer(text):
         url = m.group(0).rstrip(".,;:)]}'\"")
+        if "\\" in url or "@" in url:
+            continue
         try:
-            host = urlparse(url).hostname or ""
+            u = urlparse(url)
+            host = u.hostname
         except ValueError:
             continue
-        if host == "openai.com" or host.endswith(".openai.com"):
-            return url
+        if u.scheme != "https" or host not in ALLOWED_HOSTS or u.port is not None:
+            continue
+        return f"https://{host}{u.path}" + (f"?{u.query}" if u.query else "")
     return None
+
+
 _CODE_RE = re.compile(r"\b[A-Z0-9]{4}-[A-Z0-9]{4,6}\b")
 
 LOGIN_TIMEOUT = 15 * 60
@@ -81,13 +97,13 @@ class DeviceLoginManager:
 
     def start(self, label: str, mode: str) -> str:
         if mode not in ("add", "relogin"):
-            raise ValueError("mode 只能是 add 或 relogin")
+            raise DeviceLoginError("mode 只能是 add 或 relogin")
         if not LABEL_RE.fullmatch(label):
-            raise ValueError("账号标签格式不合法")
+            raise DeviceLoginError("账号标签格式不合法")
         self.sweep()
         with self._lock:
             if any(l.label == label and l.state in _ACTIVE for l in self._logins.values()):
-                raise ValueError("该账号已有进行中的登录")
+                raise DeviceLoginError("该账号已有进行中的登录")
             staging = self._settings.staging_dir
             staging.mkdir(parents=True, exist_ok=True)
             staging.chmod(0o700)
@@ -105,7 +121,7 @@ class DeviceLoginManager:
                 )
             except OSError as e:
                 shutil.rmtree(home, ignore_errors=True)
-                raise ValueError(f"无法运行 codex：{e}") from e
+                raise DeviceLoginError(f"无法运行 codex：{e}") from e
             login_id = secrets.token_urlsafe(16)
             login = _Login(label=label, mode=mode, home=home, proc=proc, started_at=self._clock())
             self._logins[login_id] = login
@@ -162,16 +178,20 @@ class DeviceLoginManager:
                 "started_at": l.started_at,
             }
 
+    def finished_ids(self) -> list[str]:
+        with self._lock:
+            return [i for i, l in self._logins.items() if l.state == "succeeded" and not l.taken]
+
     def take_result(self, login_id: str) -> bytes:
         with self._lock:
             l = self._logins.get(login_id)
             if l is None or l.state != "succeeded" or l.taken:
-                raise ValueError("没有可取的登录结果")
+                raise DeviceLoginError("没有可取的登录结果")
             l.taken = True
             try:
                 return (l.home / "auth.json").read_bytes()
             except OSError as e:
-                raise ValueError("登录结果文件不可读") from e
+                raise DeviceLoginError("登录结果文件不可读") from e
             finally:
                 shutil.rmtree(l.home, ignore_errors=True)
 
@@ -216,5 +236,7 @@ class DeviceLoginManager:
                     if now - l.started_at > LOGIN_TIMEOUT:
                         self._stop(l, "expired")
                 elif l.finished_at is not None and now - l.finished_at > RECORD_TTL:
+                    if l.state == "succeeded" and not l.taken:
+                        log.warning("丢弃了未取走的登录结果：%s", l.label)
                     shutil.rmtree(l.home, ignore_errors=True)
                     del self._logins[login_id]

@@ -210,3 +210,31 @@ def test_env_allowlist(mgr_factory, tmp_path, monkeypatch):
     assert wait_for(lambda: m.status(lid)["state"] == "failed")
     text = out.read_text()
     assert "CODEX_HOME=" in text and "SECRET_TOKEN" not in text
+
+
+def test_url_allowlist_rejects_tricks(mgr_factory):
+    m, _ = mgr_factory(
+        'printf "https://evil.example\\\\\\\\@auth.openai.com/x\\nhttps://auth.openai.com.evil.com/\\n'
+        'https://user@auth.openai.com/y\\nhttps://auth.openai.com:444/z\\nBRMV-AA1D3\\n"\nsleep 30\n'
+    )
+    lid = m.start("ivy", "add")
+    assert wait_for(lambda: m.status(lid)["code"] == "BRMV-AA1D3")
+    assert m.status(lid)["url"] is None
+
+
+def test_url_rebuilt_without_fragment(mgr_factory):
+    m, _ = mgr_factory('printf "https://auth.openai.com/codex/device?a=1#frag\\nBRMV-AA1D3\\n"\nsleep 30\n')
+    lid = m.start("jan", "add")
+    assert wait_for(lambda: m.status(lid)["state"] == "waiting")
+    assert m.status(lid)["url"] == "https://auth.openai.com/codex/device?a=1"
+
+
+def test_finished_ids(mgr_factory, tmp_path):
+    m, _ = mgr_factory(PRINT + 'echo "{}" > "$CODEX_HOME/auth.json"\nexit 0\n')
+    lid = m.start("kim", "add")
+    assert wait_for(lambda: lid in m.finished_ids())
+    m.take_result(lid)
+    assert m.finished_ids() == []
+    from codexctl.devicelogin import DeviceLoginError
+    with pytest.raises(DeviceLoginError):
+        m.take_result(lid)
