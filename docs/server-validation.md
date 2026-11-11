@@ -67,11 +67,13 @@ primary 为 5 小时窗口，secondary 为 7 天窗口，与计划 Task 13 中 `
 
 ```bash
 codexctl account import acc-root /root/codexctl-import/acc-root/auth.json
+codexctl account refresh acc-root          # 手动刷新一次，验证 refresh token 是否确已失效
+# 确认 account list 显示 needs_relogin（或出现 refresh_failed / auth_rejected 告警）后再 relogin
 codexctl account relogin acc-root          # device-auth，需要在浏览器批准
 codexctl account add <标签>                # linpp227@gmail.com，需要在浏览器批准
 ```
 
-`acc-root` 导入后，即使暂时不执行 relogin，第一次定时刷新也会因为 refresh token 已被吊销而失败，系统会自动把它标记为 `needs_relogin` 并发出 critical 告警，不会被误当成可用账号。relogin 成功后：
+定时刷新只在 token 临近到期时才会触发，因此导入后不一定马上失败，请按上面的步骤手动执行 `account refresh`。刷新因 refresh token 已被吊销而失败时，系统会把账号标记为 `needs_relogin` 并发出 critical 告警；额度接口返回 401/403 时会有 `auth_rejected` 告警。relogin 成功后：
 
 - 把 root 的链接改为由 codexctl 管理（如果 root 也要用这个账号，执行 `codexctl assign`）；
 - 删除 `/root/codexctl-import/acc-root/`。

@@ -11,6 +11,7 @@
 ```bash
 sudo -i
 apt-get install -y acl
+cd /path/to/codex_control   # 服务器上的仓库检出目录；下文 deploy/... 相对路径均基于此目录
 ```
 
 ### 1. Python 3.11+ 环境（uv）
@@ -20,6 +21,7 @@ apt-get install -y acl
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 . ~/.local/bin/env   # 或重新登录，使 uv 进入 PATH
+export UV_PYTHON_INSTALL_DIR=/opt/codexctl/python   # 解释器装到 /opt 下，避免虚拟环境依赖 /root/.local
 uv venv --python 3.12 /opt/codexctl/venv
 uv pip install --python /opt/codexctl/venv/bin/python /path/to/codex_control
 ```
@@ -28,26 +30,26 @@ uv pip install --python /opt/codexctl/venv/bin/python /path/to/codex_control
 
 ### 2. codex 二进制与包装脚本
 
-服务器上 codex 已作为静态二进制安装在 `/usr/local/bin/codex`（v0.167.0，非 npm 安装）。**必须先把真实二进制挪到 `/opt/codex/bin/`，再用包装脚本覆盖 `/usr/local/bin/codex`**：
+服务器上 codex 已作为静态二进制安装在 `/usr/local/bin/codex`（v0.167.0，非 npm 安装）。**必须先把真实二进制挪到 `/opt/codex/bin/`，再用包装脚本覆盖 `/usr/local/bin/codex`**。第一行只在第一次执行（已存在 `/opt/codex/bin/codex` 时跳过，否则重复执行会把包装脚本当成真实二进制复制过去）：
 
 ```bash
-install -D -m 755 /usr/local/bin/codex /opt/codex/bin/codex
+[ -e /opt/codex/bin/codex ] || install -D -m 755 /usr/local/bin/codex /opt/codex/bin/codex
 /opt/codex/bin/codex --version
 install -m 755 deploy/codex-wrapper.sh /usr/local/bin/codex
 install -d -m 755 /etc/codex && install -m 644 deploy/requirements.toml /etc/codex/requirements.toml
 ```
 
-备选（全新服务器，尚未安装 codex）：
+备选（全新服务器，尚未安装 codex）：先用 NodeSource 安装 Node 18+（不要用 apt 自带的旧版 nodejs），再执行：
 
 ```bash
-apt-get install -y nodejs npm
 npm install -g --prefix /opt/codex @openai/codex
 ```
 
 ### 3. 配置与启动
 
 ```bash
-install -d -m 700 /etc/codexctl && install -m 600 deploy/config.example.toml /etc/codexctl/config.toml
+install -d -m 700 /etc/codexctl
+[ -e /etc/codexctl/config.toml ] || install -m 600 deploy/config.example.toml /etc/codexctl/config.toml   # 已有配置则不覆盖
 /opt/codexctl/venv/bin/codexctl init
 install -m 644 deploy/codexctl.service /etc/systemd/system/codexctl.service
 systemctl daemon-reload && systemctl enable --now codexctl
@@ -91,6 +93,12 @@ systemd 单元设置了 `TimeoutStopSec=120` 与 `KillMode=mixed`：`systemctl s
 - 切换账号后，用户正在运行的 codex 进程仍使用内存中的旧 token，需重启 codex。
 - 用户可以读取自己被分配账号的凭证。怀疑泄露时对该账号执行 `account relogin`，使旧凭证作废。
 - 多人共用一个账号会平摊额度，并可能触发 OpenAI 风控。
+
+## 已知限制
+
+- 包装脚本只是辅助手段，不是强制边界：用户仍可用 `codex -c k=v logout` 之类的写法绕过，IDE / app-server 也可以通过协议直接登出。
+- 长时间运行的 codex 进程（超过 6 天，例如 zdy 的 app-server）可能在内存中持有过期 token，分配账号后需重启这些进程。
+- 用量数字来自用户可写的会话日志，不具备防篡改能力。
 
 ## 备份
 
