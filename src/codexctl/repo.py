@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
+
+from . import pricing
 
 
 @dataclass(frozen=True)
@@ -166,6 +169,30 @@ def end_assignment(conn: sqlite3.Connection, username: str, now: int) -> None:
     conn.execute("UPDATE assignments SET ended_at = ? WHERE username = ? AND ended_at IS NULL", (now, username))
 
 
+def last_assignment_change(conn: sqlite3.Connection, username: str) -> int | None:
+    """该用户最近一次「账号真正变化」的时间；从未分配过则为 None。
+
+    回收后再分配同一个账号不算变化：用户始终持有同一份凭证，期间启动的
+    codex 进程仍然有效。
+    """
+    rows = conn.execute(
+        "SELECT account_pk, started_at, ended_at FROM assignments WHERE username = ? ORDER BY started_at, id",
+        (username,),
+    ).fetchall()
+    boundary: int | None = None
+    previous: int | None = None
+    for index, row in enumerate(rows):
+        account_pk, started_at, ended_at = int(row[0]), int(row[1]), row[2]
+        if account_pk != previous:
+            boundary = started_at
+        if ended_at is not None:
+            next_account = int(rows[index + 1][0]) if index + 1 < len(rows) else None
+            if next_account != account_pk:
+                boundary = int(ended_at)
+        previous = account_pk
+    return boundary
+
+
 def account_at(conn: sqlite3.Connection, username: str, ts: int) -> int | None:
     row = conn.execute(
         "SELECT account_pk FROM assignments WHERE username = ? AND started_at <= ? "
@@ -284,6 +311,22 @@ def usage_summary(conn: sqlite3.Connection, since: int) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def usage_summary_by_model(conn: sqlite3.Connection, since: int) -> list[sqlite3.Row]:
+    """按用户、账号、模型汇总 since 之后的用量；命令行的费用估算需要模型明细。"""
+    return conn.execute(
+        """
+        SELECT u.username, a.label, u.model,
+               SUM(u.total_tokens) AS total, SUM(u.input_tokens) AS input,
+               SUM(u.cached_input_tokens) AS cached, SUM(u.output_tokens) AS output, COUNT(*) AS turns
+        FROM usage_events u LEFT JOIN accounts a ON a.id = u.account_pk
+        WHERE u.ts >= ?
+        GROUP BY u.username, a.label, u.model
+        ORDER BY total DESC
+        """,
+        (since,),
+    ).fetchall()
+
+
 def usage_by_user(conn: sqlite3.Connection, since: int) -> dict[str, int]:
     return {
         r[0]: int(r[1])
@@ -330,18 +373,27 @@ def usage_by_model(conn: sqlite3.Connection, since: int) -> list[sqlite3.Row]:
 
 
 def usage_by_user_model_windows(conn: sqlite3.Connection, today: int, week: int) -> list[sqlite3.Row]:
-    """按用户+模型汇总：今天、近 7 天与全部的总 tokens，以及全部次数；未知模型为 NULL。"""
+    """按用户+模型汇总：今天、近 7 天与全部的 tokens 及输入/缓存/输出明细，以及次数；未知模型为 NULL。"""
     return conn.execute(
         """
         SELECT username, model,
-               SUM(CASE WHEN ts >= ? THEN total_tokens ELSE 0 END) AS today,
-               SUM(CASE WHEN ts >= ? THEN total_tokens ELSE 0 END) AS week,
-               SUM(total_tokens) AS total, COUNT(*) AS turns
+               SUM(CASE WHEN ts >= :today THEN total_tokens ELSE 0 END) AS today,
+               SUM(CASE WHEN ts >= :week THEN total_tokens ELSE 0 END) AS week,
+               SUM(total_tokens) AS total, COUNT(*) AS turns,
+               SUM(CASE WHEN ts >= :today THEN input_tokens ELSE 0 END) AS today_input,
+               SUM(CASE WHEN ts >= :today THEN cached_input_tokens ELSE 0 END) AS today_cached,
+               SUM(CASE WHEN ts >= :today THEN output_tokens ELSE 0 END) AS today_output,
+               SUM(CASE WHEN ts >= :week THEN input_tokens ELSE 0 END) AS week_input,
+               SUM(CASE WHEN ts >= :week THEN cached_input_tokens ELSE 0 END) AS week_cached,
+               SUM(CASE WHEN ts >= :week THEN output_tokens ELSE 0 END) AS week_output,
+               SUM(input_tokens) AS total_input,
+               SUM(cached_input_tokens) AS total_cached,
+               SUM(output_tokens) AS total_output
         FROM usage_events
         GROUP BY username, model
         ORDER BY username, week DESC, total DESC
         """,
-        (today, week),
+        {"today": today, "week": week},
     ).fetchall()
 
 
@@ -354,6 +406,61 @@ def usage_user_accounts(conn: sqlite3.Connection) -> dict[str, list[str]]:
     ):
         out.setdefault(r[0], []).append(r[1])
     return out
+
+
+def _price(row: sqlite3.Row) -> pricing.Price:
+    try:
+        aliases = json.loads(row["aliases"] or "[]")
+    except (TypeError, ValueError):
+        aliases = []
+    if not isinstance(aliases, list):
+        aliases = []
+    return pricing.Price(
+        name=row["name"], input_usd=row["input_usd"], cached_usd=row["cached_usd"],
+        output_usd=row["output_usd"], aliases=tuple(str(a) for a in aliases), id=row["id"],
+    )
+
+
+def list_prices(conn: sqlite3.Connection) -> list[pricing.Price]:
+    return [
+        _price(r) for r in conn.execute(
+            "SELECT id, name, input_usd, cached_usd, output_usd, aliases FROM model_prices ORDER BY id"
+        )
+    ]
+
+
+def get_price(conn: sqlite3.Connection, price_id: int) -> pricing.Price | None:
+    row = conn.execute(
+        "SELECT id, name, input_usd, cached_usd, output_usd, aliases FROM model_prices WHERE id = ?", (price_id,)
+    ).fetchone()
+    return _price(row) if row is not None else None
+
+
+def _aliases_json(aliases: tuple[str, ...]) -> str:
+    return json.dumps(list(aliases), ensure_ascii=False)
+
+
+def insert_price(conn: sqlite3.Connection, price: pricing.Price) -> int:
+    cur = conn.execute(
+        "INSERT INTO model_prices(name, input_usd, cached_usd, output_usd, aliases) VALUES (?, ?, ?, ?, ?)",
+        (price.name, price.input_usd, price.cached_usd, price.output_usd, _aliases_json(price.aliases)),
+    )
+    return int(cur.lastrowid)
+
+
+def update_price(conn: sqlite3.Connection, price_id: int, price: pricing.Price) -> bool:
+    before = conn.total_changes
+    conn.execute(
+        "UPDATE model_prices SET name = ?, input_usd = ?, cached_usd = ?, output_usd = ?, aliases = ? WHERE id = ?",
+        (price.name, price.input_usd, price.cached_usd, price.output_usd, _aliases_json(price.aliases), price_id),
+    )
+    return conn.total_changes > before
+
+
+def delete_price(conn: sqlite3.Connection, price_id: int) -> bool:
+    before = conn.total_changes
+    conn.execute("DELETE FROM model_prices WHERE id = ?", (price_id,))
+    return conn.total_changes > before
 
 
 def recent_audit(conn: sqlite3.Connection, limit: int) -> list[sqlite3.Row]:

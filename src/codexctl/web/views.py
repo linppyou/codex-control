@@ -10,20 +10,22 @@ from urllib.parse import urlencode
 from fastapi import Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from .. import accounts, assignments, events, quota, refresher, repo
+from .. import accounts, assignments, events, pricing, procs, quota, refresher, repo, useradmin
 from ..authfile import AuthFileError
+from ..codexinstall import CodexInstallError
 from ..devicelogin import DeviceLoginError
 from ..cli import fmt_ts, window_name
 from ..locks import LockBusy
 from ..publisher import PublishError
 from ..runner import CommandError
 from ..sysusers import UserError
+from ..useradmin import UserAdminError
 from .app import clean_text, current_admin
 from .charts import fmt_md, fmt_md_hm, quota_chart, week_trend_chart
 
 HANDLED = (
     accounts.AccountError, assignments.AssignError, UserError, AuthFileError,
-    PublishError, LockBusy, CommandError, DeviceLoginError,
+    PublishError, LockBusy, CommandError, DeviceLoginError, UserAdminError, CodexInstallError,
 )
 _TERMINAL = ("succeeded", "failed", "cancelled", "expired")
 
@@ -516,8 +518,13 @@ def register(app) -> None:
             devlogins.sweep()
             now = ctx.now()
             hidden = set(ctx.settings.hidden_users)
-            u1 = repo.usage_by_user(ctx.conn, now - 86400)
-            u7 = repo.usage_by_user(ctx.conn, now - 7 * 86400)
+            book = pricing.PriceBook(repo.list_prices(ctx.conn))
+            usage = {
+                u["raw"]: u
+                for u in group_users(
+                    repo.usage_by_user_model_windows(ctx.conn, now - 86400, now - 7 * 86400), {}, book
+                )
+            }
             labels = {a.id: a.label for a in repo.list_accounts(ctx.conn)}
             assigned = {a.username: labels.get(a.account_pk, "?") for a in repo.all_active(ctx.conn)}
             rows = []
@@ -525,13 +532,26 @@ def register(app) -> None:
                 if not show_all and u.name in hidden:
                     continue
                 link = ctx.publisher.read_link(u)
+                stale = procs.stale_procs(
+                    procs.list_codex_procs(u.uid, ctx.settings.codex_bin.parent, home=u.home),
+                    repo.last_assignment_change(ctx.conn, u.name),
+                )
+                used = usage.get(u.name, {})
                 rows.append({
                     "name": u.name,
                     "account": assigned.get(u.name, ""),
                     "link": clean_text(link.kind),
                     "target": clean_text(link.target or "", 200),
-                    "t24": u1.get(u.name, 0),
-                    "t7": u7.get(u.name, 0),
+                    "t24": used.get("today", 0),
+                    "t7": used.get("week", 0),
+                    "c24": used.get("cost_today"),
+                    "c7": used.get("cost_week"),
+                    "u24": used.get("unpriced_today", 0),
+                    "u7": used.get("unpriced_week", 0),
+                    "stale": stale,
+                    "stale_title": "；".join(
+                        f"pid {p.pid} {clean_text(p.exe, 80)} 于 {fmt_ts(p.started_at)} 启动" for p in stale
+                    ),
                 })
             choices = [
                 {"label": a.label, "name": clean_text(a.name)}
@@ -540,6 +560,36 @@ def register(app) -> None:
         return render(
             request, "users.html", admin=admin[0], csrf=admin[1], rows=rows, choices=choices, show_all=show_all
         )
+
+    @app.post("/users/create")
+    def users_create(
+        username: str = Form(""), password: str = Form(""), password2: str = Form(""),
+        admin: tuple[str, str] = Depends(current_admin),
+    ):
+        name = username.strip()
+        with lock:
+            devlogins.sweep()
+        try:
+            useradmin.validate_new_user(ctx, name, password, password2)
+        except HANDLED as e:
+            return _redirect("/users", err=str(e))
+        # codex 首次安装可能耗时较长，放在全局锁之外，避免阻塞面板其它请求
+        try:
+            codex_note = useradmin.ensure_codex(ctx)
+        except HANDLED as e:
+            return _redirect("/users", err=str(e))
+        with lock:
+            try:
+                user, note = useradmin.create(
+                    ctx, name, password, password2, actor_of(admin), codex_note=codex_note
+                )
+            except HANDLED as e:
+                return _redirect("/users", err=str(e))
+        msg = f"用户 {user.name} 已创建（uid {user.uid}，家目录 {user.home}）"
+        if note:
+            msg += f"，{note}"
+        msg += "；请在列表勾选后分配账号"
+        return _redirect("/users", msg=msg)
 
     @app.post("/users/assign")
     def users_assign(
@@ -566,6 +616,13 @@ def register(app) -> None:
         msg = f"已分配 {len(ok)} 个用户到 {account}" if ok else ""
         if backups:
             msg += f"（{backups} 个用户的原 auth.json 已备份）"
+        for name in ok:
+            n = len(assignments.stale_codex_procs(ctx, name))
+            if n:
+                msg += (
+                    f"。{clean_text(name, 32)} 有 {n} 个旧 codex 进程仍在使用旧账号，"
+                    "通知对方后点『重启 codex』"
+                )
         return _redirect("/users", msg=msg, err="；".join(bad))
 
     @app.post("/users/unassign")
@@ -573,15 +630,25 @@ def register(app) -> None:
         if not users:
             return _redirect("/users", err="请先选择用户")
         ok, bad = 0, []
+        done: list[str] = []
         with lock:
             devlogins.sweep()
             for name in users:
                 try:
                     if assignments.unassign(ctx, name, actor_of(admin)):
                         ok += 1
+                        done.append(name)
                 except HANDLED as e:
                     bad.append(f"{clean_text(name, 32)}：{e}")
-        return _redirect("/users", msg=f"已回收 {ok} 个用户" if ok else "", err="；".join(bad))
+        msg = f"已回收 {ok} 个用户" if ok else ""
+        for name in done:
+            n = len(assignments.stale_codex_procs(ctx, name))
+            if n:
+                msg += (
+                    f"。{clean_text(name, 32)} 有 {n} 个旧 codex 进程仍在使用旧账号，"
+                    "通知对方后点『重启 codex』"
+                )
+        return _redirect("/users", msg=msg, err="；".join(bad))
 
     @app.post("/users/{name}/fix")
     def user_fix(name: str, admin: tuple[str, str] = Depends(current_admin)):
@@ -593,6 +660,21 @@ def register(app) -> None:
                 return _redirect("/users", err=str(e))
         return _redirect("/users", msg=f"已修复 {clean_text(name, 32)}")
 
+    @app.post("/users/{name}/restart-codex")
+    def user_restart_codex(name: str, admin: tuple[str, str] = Depends(current_admin)):
+        with lock:
+            devlogins.sweep()
+            try:
+                ended, unable = assignments.restart_codex(ctx, name, actor_of(admin))
+            except HANDLED as e:
+                return _redirect("/users", err=str(e))
+        label = clean_text(name, 32)
+        if not ended and not unable:
+            return _redirect("/users", msg=f"{label} 没有旧 codex 进程")
+        msg = f"已结束 {label} 的 {len(ended)} 个 codex 进程"
+        err = f"部分进程无法结束：{', '.join(str(p) for p in unable)}" if unable else ""
+        return _redirect("/users", msg=msg, err=err)
+
     def usage_windows() -> tuple[int, int]:
         """返回 (今天零点, 7 天前) 的时间戳；今天按服务器本地时区计算。"""
         now = ctx.now()
@@ -600,25 +682,36 @@ def register(app) -> None:
         today = int(time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 0, 0, 0, 0, 0, -1)))
         return today, now - 7 * 86400
 
-    def usage_user_rows() -> list[sqlite3.Row]:
+    def usage_user_rows() -> tuple[list[sqlite3.Row], pricing.PriceBook]:
         today, week = usage_windows()
         with lock:
             devlogins.sweep()
-            return repo.usage_by_user_model_windows(ctx.conn, today, week)
+            rows = repo.usage_by_user_model_windows(ctx.conn, today, week)
+            return rows, pricing.PriceBook(repo.list_prices(ctx.conn))
 
-    def group_users(rows: list[sqlite3.Row], labels: dict[str, list[str]]) -> list[dict]:
-        """把 (用户, 模型) 行聚合成每个用户一项，内含按近 7 天降序的模型明细。"""
+    def group_users(rows: list[sqlite3.Row], labels: dict[str, list[str]], book: pricing.PriceBook) -> list[dict]:
+        """把 (用户, 模型) 行聚合成每个用户一项，内含按近 7 天降序的模型明细与各时段估算费用。"""
         users: dict[str, dict] = {}
         for r in rows:
             u = users.setdefault(r["username"], {
-                "username": clean_text(r["username"]),
+                "username": clean_text(r["username"]), "raw": r["username"],
                 "labels": [clean_text(x) for x in labels.get(r["username"], [])],
                 "today": 0, "week": 0, "total": 0, "turns": 0, "models": [],
+                "cost_today": None, "cost_week": None, "cost_total": None,
+                "unpriced_today": 0, "unpriced_week": 0, "unpriced_total": 0,
             })
             m = {
                 "name": clean_text(r["model"]) if r["model"] else "未知模型", "known": bool(r["model"]),
                 "today": r["today"] or 0, "week": r["week"] or 0, "total": r["total"] or 0, "turns": r["turns"],
             }
+            for k in ("today", "week", "total"):
+                cost = book.cost(r["model"], r[f"{k}_input"], r[f"{k}_cached"], r[f"{k}_output"])
+                m[f"cost_{k}"] = cost
+                if m[k]:
+                    if cost is None:
+                        u[f"unpriced_{k}"] += 1
+                    else:
+                        u[f"cost_{k}"] = (u[f"cost_{k}"] or 0) + cost
             u["models"].append(m)
             for k in ("today", "week", "total", "turns"):
                 u[k] += m[k]
@@ -629,44 +722,168 @@ def register(app) -> None:
         today, week = usage_windows()
         with lock:
             devlogins.sweep()
+            book = pricing.PriceBook(repo.list_prices(ctx.conn))
             periods = []
             for key, title, since in (("today", "今天", today), ("week", "近 7 天", week), ("all", "全部", 0)):
-                models = [
-                    {
+                models = []
+                for r in repo.usage_by_model(ctx.conn, since):
+                    inp, cached, out = r["input"] or 0, r["cached"] or 0, r["output"] or 0
+                    cost = book.cost(r["model"], inp, cached, out)
+                    models.append({
                         "name": clean_text(r["model"]) if r["model"] else "未知模型", "known": bool(r["model"]),
-                        "total": r["total"] or 0, "input": r["input"] or 0, "cached": r["cached"] or 0,
-                        "output": r["output"] or 0, "turns": r["turns"],
-                    }
-                    for r in repo.usage_by_model(ctx.conn, since)
-                ]
+                        "total": r["total"] or 0, "input": inp, "cached": cached, "output": out,
+                        "turns": r["turns"], "cost": cost,
+                    })
                 total = sum(m["total"] for m in models)
                 for m in models:
                     m["pct"] = round(m["total"] * 100 / total, 1) if total else 0
+                priced = [m for m in models if m["cost"] is not None]
                 periods.append({
                     "key": key, "title": title, "models": models, "total": total,
                     "input": sum(m["input"] for m in models), "cached": sum(m["cached"] for m in models),
                     "output": sum(m["output"] for m in models), "turns": sum(m["turns"] for m in models),
+                    "cost": sum(m["cost"] for m in priced) if priced else None,
+                    "unpriced": sum(1 for m in models if m["cost"] is None),
                 })
             users = group_users(
-                repo.usage_by_user_model_windows(ctx.conn, today, week), repo.usage_user_accounts(ctx.conn)
+                repo.usage_by_user_model_windows(ctx.conn, today, week), repo.usage_user_accounts(ctx.conn), book
             )
-        return render(request, "usage.html", admin=admin[0], csrf=admin[1], periods=periods, users=users)
+        return render(
+            request, "usage.html", admin=admin[0], csrf=admin[1], periods=periods, users=users,
+            prices=book.prices,
+        )
 
     @app.get("/usage.csv")
     def usage_csv(request: Request, admin: tuple[str, str] = Depends(current_admin)):
         buf = io.StringIO()
         w = csv.writer(buf)
-        w.writerow(["username", "model", "today_tokens", "7d_tokens", "total_tokens", "turns"])
-        for r in usage_user_rows():
+        w.writerow([
+            "username", "model", "today_tokens", "7d_tokens", "total_tokens",
+            "today_usd", "7d_usd", "total_usd", "turns",
+        ])
+        rows, book = usage_user_rows()
+        for r in rows:
+            costs = []
+            for k in ("today", "week", "total"):
+                cost = book.cost(r["model"], r[f"{k}_input"], r[f"{k}_cached"], r[f"{k}_output"])
+                costs.append("" if cost is None else f"{cost:.6f}".rstrip("0").rstrip(".") or "0")
             w.writerow([
                 _csv_cell(r["username"]), _csv_cell(r["model"] or ""),
-                r["today"] or 0, r["week"] or 0, r["total"] or 0, r["turns"],
+                r["today"] or 0, r["week"] or 0, r["total"] or 0, *costs, r["turns"],
             ])
         return Response(
             buf.getvalue(),
             media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": 'attachment; filename="usage.csv"'},
         )
+
+    def _price_from_form(
+        name: str, input_usd: str, cached_usd: str, output_usd: str, aliases: str
+    ) -> pricing.Price:
+        label = name.strip()
+        if not label:
+            raise ValueError("模型名不能为空")
+        if len(label) > pricing.MAX_NAME:
+            raise ValueError(f"模型名最多 {pricing.MAX_NAME} 个字符")
+        label = clean_text(label, pricing.MAX_NAME)
+
+        def rate(field: str, raw: str) -> float:
+            try:
+                return pricing.parse_usd(raw)
+            except ValueError as e:
+                raise ValueError(f"{field}：{e}") from None
+
+        inp = rate("输入价格", input_usd)
+        cached = rate("缓存输入价格", cached_usd)
+        out = rate("输出价格", output_usd)
+        try:
+            alias_tuple = pricing.parse_aliases(clean_text(aliases, pricing.MAX_NAME * pricing.MAX_ALIASES + 40))
+        except ValueError as e:
+            raise ValueError(f"别名：{e}") from None
+        return pricing.Price(label, inp, cached, out, alias_tuple)
+
+    def _price_detail(price: pricing.Price) -> str:
+        return f"输入 {price.input_usd:g} / 缓存 {price.cached_usd:g} / 输出 {price.output_usd:g}"
+
+    def _price_diff(old: pricing.Price, new: pricing.Price) -> str:
+        parts = []
+        if old.name != new.name:
+            parts.append(f"名称 {old.name}→{new.name}")
+        for label, before, after in (
+            ("输入", old.input_usd, new.input_usd),
+            ("缓存", old.cached_usd, new.cached_usd),
+            ("输出", old.output_usd, new.output_usd),
+        ):
+            if before != after:
+                parts.append(f"{label} {before:g}→{after:g}")
+        if old.aliases != new.aliases:
+            parts.append("别名已更新")
+        return "；".join(parts)
+
+    @app.get("/pricing", response_class=HTMLResponse)
+    def pricing_page(request: Request, admin: tuple[str, str] = Depends(current_admin)):
+        with lock:
+            devlogins.sweep()
+            prices = repo.list_prices(ctx.conn)
+        return render(request, "pricing.html", admin=admin[0], csrf=admin[1], prices=prices)
+
+    @app.post("/pricing/add")
+    def pricing_add(
+        name: str = Form(""), input_usd: str = Form(""), cached_usd: str = Form(""),
+        output_usd: str = Form(""), aliases: str = Form(""),
+        admin: tuple[str, str] = Depends(current_admin),
+    ):
+        with lock:
+            devlogins.sweep()
+            try:
+                price = _price_from_form(name, input_usd, cached_usd, output_usd, aliases)
+                error = pricing.validate_prices([*repo.list_prices(ctx.conn), price])
+                if error:
+                    raise ValueError(error)
+                repo.insert_price(ctx.conn, price)
+            except ValueError as e:
+                return _redirect("/pricing", err=str(e))
+            events.audit(
+                ctx.conn, actor_of(admin), "pricing.add", price.name, _price_detail(price), now=ctx.now()
+            )
+        return _redirect("/pricing", msg=f"已添加 {price.name}")
+
+    @app.post("/pricing/{price_id}")
+    def pricing_update(
+        price_id: int, name: str = Form(""), input_usd: str = Form(""), cached_usd: str = Form(""),
+        output_usd: str = Form(""), aliases: str = Form(""),
+        admin: tuple[str, str] = Depends(current_admin),
+    ):
+        with lock:
+            devlogins.sweep()
+            old = repo.get_price(ctx.conn, price_id)
+            if old is None:
+                return _redirect("/pricing", err="模型不存在或已被删除")
+            try:
+                price = _price_from_form(name, input_usd, cached_usd, output_usd, aliases)
+                prices = [price if p.id == price_id else p for p in repo.list_prices(ctx.conn)]
+                error = pricing.validate_prices(prices)
+                if error:
+                    raise ValueError(error)
+                repo.update_price(ctx.conn, price_id, price)
+            except ValueError as e:
+                return _redirect("/pricing", err=str(e))
+            events.audit(
+                ctx.conn, actor_of(admin), "pricing.update", price.name,
+                _price_diff(old, price) or "未改变", now=ctx.now(),
+            )
+        return _redirect("/pricing", msg=f"{price.name} 的价格已保存")
+
+    @app.post("/pricing/{price_id}/delete")
+    def pricing_delete(price_id: int, admin: tuple[str, str] = Depends(current_admin)):
+        with lock:
+            devlogins.sweep()
+            old = repo.get_price(ctx.conn, price_id)
+            if old is None:
+                return _redirect("/pricing", err="模型不存在或已被删除")
+            repo.delete_price(ctx.conn, price_id)
+            events.audit(ctx.conn, actor_of(admin), "pricing.delete", old.name, now=ctx.now())
+        return _redirect("/pricing", msg=f"已删除 {old.name}")
 
     @app.get("/audit", response_class=HTMLResponse)
     def audit_page(request: Request, admin: tuple[str, str] = Depends(current_admin)):

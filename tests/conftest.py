@@ -26,8 +26,12 @@ def ctx(tmp_path):
         state_dir=tmp_path / "state",
         key_file=tmp_path / "master.key",
         codex_bin=tmp_path / "codex",
+        codex_wrapper=tmp_path / "bin" / "codex",
+        codex_requirements=tmp_path / "etc" / "requirements.toml",
     )
     settings.state_dir.mkdir()
+    settings.codex_bin.write_text("#!/bin/sh\nexit 0\n")
+    settings.codex_bin.chmod(0o755)
     runner = FakeRunner()
     users = FakeUsers(tmp_path / "home")
     clock = FakeClock()
@@ -45,6 +49,8 @@ def ctx(tmp_path):
         http=httpx.Client(transport=httpx.MockTransport(handler)),
         lookup_user=users.lookup,
         list_users=users.list,
+        user_exists=users.exists,
+        create_user=users.create,
         clock=clock,
     )
     c.test_runner = runner

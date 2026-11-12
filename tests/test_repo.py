@@ -1,6 +1,6 @@
 import pytest
 
-from codexctl import repo
+from codexctl import pricing, repo
 
 
 def _insert(ctx, label="acc1", account_id="acct-1"):
@@ -70,3 +70,53 @@ def test_usage_by_user_and_recent_lists(ctx):
     alerts = repo.recent_alerts(ctx.conn, 10)
     assert [r["kind"] for r in alerts] == ["k2", "k1", "k0"]
     assert len(repo.recent_alerts(ctx.conn, 1)) == 1
+
+
+def test_usage_by_user_model_windows_has_token_breakdown(ctx):
+    d = {f: 0 for f in repo.USAGE_FIELDS}
+    d.update(input_tokens=1000, cached_input_tokens=400, output_tokens=100, total_tokens=1100)
+    repo.insert_usage(ctx.conn, "alice", None, 100, d, "f", "gpt-5.2")
+    old = {f: 0 for f in repo.USAGE_FIELDS}
+    old.update(input_tokens=50, cached_input_tokens=10, output_tokens=5, total_tokens=55)
+    repo.insert_usage(ctx.conn, "alice", None, 10, old, "f", "gpt-5.2")
+    [row] = repo.usage_by_user_model_windows(ctx.conn, today=50, week=0)
+    assert (row["today"], row["week"], row["total"], row["turns"]) == (1100, 1155, 1155, 2)
+    assert (row["today_input"], row["today_cached"], row["today_output"]) == (1000, 400, 100)
+    assert (row["week_input"], row["week_cached"], row["week_output"]) == (1050, 410, 105)
+    assert (row["total_input"], row["total_cached"], row["total_output"]) == (1050, 410, 105)
+
+
+def test_model_price_crud(ctx):
+    prices = repo.list_prices(ctx.conn)
+    assert len(prices) == len(pricing.PRICES) and all(p.id for p in prices)
+    assert repo.get_price(ctx.conn, prices[0].id) == prices[0]
+
+    pid = repo.insert_price(ctx.conn, pricing.Price("Custom", 1.5, 0.15, 3.0, ("custom-id",)))
+    got = repo.get_price(ctx.conn, pid)
+    assert got is not None and (got.name, got.aliases) == ("Custom", ("custom-id",))
+
+    changed = pricing.Price("Custom 2", 2.0, 0.2, 4.0, ("custom-2",))
+    assert repo.update_price(ctx.conn, pid, changed)
+    got = repo.get_price(ctx.conn, pid)
+    assert (got.name, got.input_usd, got.aliases) == ("Custom 2", 2.0, ("custom-2",))
+    assert repo.delete_price(ctx.conn, pid)
+    assert repo.get_price(ctx.conn, pid) is None
+    assert not repo.delete_price(ctx.conn, pid)
+
+
+def test_last_assignment_change(ctx):
+    pk = _insert(ctx)
+    assert repo.last_assignment_change(ctx.conn, "alice") is None
+    repo.start_assignment(ctx.conn, "alice", pk, 100)
+    assert repo.last_assignment_change(ctx.conn, "alice") == 100
+    repo.end_assignment(ctx.conn, "alice", 150)
+    assert repo.last_assignment_change(ctx.conn, "alice") == 150
+    repo.start_assignment(ctx.conn, "alice", pk, 200)
+    # 回收后重新分配同一个账号不算变化
+    assert repo.last_assignment_change(ctx.conn, "alice") == 100
+    repo.end_assignment(ctx.conn, "alice", 250)
+    assert repo.last_assignment_change(ctx.conn, "alice") == 250
+    other = _insert(ctx, label="acc2", account_id="acct-2")
+    repo.start_assignment(ctx.conn, "alice", other, 300)
+    assert repo.last_assignment_change(ctx.conn, "alice") == 300
+    assert repo.last_assignment_change(ctx.conn, "bob") is None

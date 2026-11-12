@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .. import events, webauth
+from .. import events, pricing, webauth
 from ..context import Context
 from .charts import fmt_tokens
 from ..devicelogin import DeviceLoginManager
@@ -148,6 +148,9 @@ def create_app(
     app.state.user_limiter = LoginRateLimiter(max_failures=30, window=900)
     app.state.templates = Jinja2Templates(directory=str(base / "templates"))
     app.state.templates.env.filters["tokens"] = fmt_tokens
+    app.state.templates.env.filters["usd"] = pricing.fmt_usd
+    app.state.templates.env.filters["rate"] = pricing.fmt_rate
+    app.state.templates.env.filters["rate_value"] = pricing.fmt_rate_value
     app.mount("/static", StaticFiles(directory=str(base / "static")), name="static")
 
     @app.get("/favicon.ico", include_in_schema=False)

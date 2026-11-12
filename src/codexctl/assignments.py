@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from . import accounts, events, repo
+from . import accounts, events, procs, repo
 from .context import Context
 from .db import transaction
 from .locks import account_lock
@@ -71,6 +71,38 @@ def unassign(ctx: Context, username: str, actor: str) -> bool:
         # 无论查找用户或删除链接是否出错，都必须撤销读权限
         _sync_acl(ctx, current.account_pk)
     return True
+
+
+def stale_codex_procs(ctx: Context, username: str) -> list[procs.CodexProc]:
+    """该用户仍在使用旧账号的 codex 进程（启动早于最近一次分配变化）。"""
+    user = ctx.lookup_user(username, ctx.settings.min_uid)
+    return procs.stale_procs(
+        procs.list_codex_procs(user.uid, ctx.settings.codex_bin.parent, home=user.home),
+        repo.last_assignment_change(ctx.conn, username),
+    )
+
+
+def restart_codex(ctx: Context, username: str, actor: str) -> tuple[list[int], list[int]]:
+    """结束该用户的旧 codex 进程，返回 (已结束, 无法结束) 的 pid 列表。"""
+    stale = stale_codex_procs(ctx, username)
+    if not stale:
+        return [], []
+    user = ctx.lookup_user(username, ctx.settings.min_uid)
+    # 防止 pid 复用误杀：只结束进程号与启动时间都未变的进程。
+    current = {
+        (p.pid, p.started_at)
+        for p in procs.list_codex_procs(user.uid, ctx.settings.codex_bin.parent, home=user.home)
+    }
+    pids = [p.pid for p in stale if (p.pid, p.started_at) in current]
+    if not pids:
+        return [], []
+    ended, failed = procs.terminate(pids)
+    if ended:
+        with transaction(ctx.conn):
+            events.audit(
+                ctx.conn, actor, "restart_codex", username, ",".join(str(p) for p in ended), now=ctx.now()
+            )
+    return ended, failed
 
 
 def reconcile_user(ctx: Context, username: str, actor: str) -> None:

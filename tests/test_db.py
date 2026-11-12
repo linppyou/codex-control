@@ -4,7 +4,7 @@ import stat
 
 import pytest
 
-from codexctl import db
+from codexctl import db, pricing
 
 
 def test_schema_created():
@@ -12,7 +12,7 @@ def test_schema_created():
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {
         "accounts", "account_secrets", "assignments", "quota_samples",
-        "usage_events", "log_offsets", "alerts", "audit_log",
+        "usage_events", "log_offsets", "model_prices", "alerts", "audit_log",
     } <= names
 
 
@@ -97,3 +97,19 @@ def test_migrates_old_usage_tables(tmp_path):
     assert conn.execute("SELECT model FROM usage_events").fetchone()[0] is None
     assert conn.execute("SELECT last_model FROM log_offsets").fetchone()[0] is None
     db.connect(path)
+
+
+def test_seeds_model_prices_once_and_keeps_edits(tmp_path):
+    path = tmp_path / "prices.db"
+    conn = db.connect(path)
+    assert conn.execute("SELECT COUNT(*) FROM model_prices").fetchone()[0] == len(pricing.PRICES)
+    conn.execute("UPDATE model_prices SET input_usd = 9 WHERE name = 'GPT-5.2'")
+    conn.close()
+
+    conn = db.connect(path)
+    assert conn.execute("SELECT input_usd FROM model_prices WHERE name = 'GPT-5.2'").fetchone()[0] == 9
+    conn.execute("DELETE FROM model_prices")
+    conn.close()
+
+    conn = db.connect(path)
+    assert conn.execute("SELECT COUNT(*) FROM model_prices").fetchone()[0] == 0

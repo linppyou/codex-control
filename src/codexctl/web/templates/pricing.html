@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}价目表 - codexctl{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>价目表</h1><div class="sub">美元 / 百万 tokens · 修改后立即用于用量费用估算</div></div>
+  <div class="toolbar"><a class="btn" href="/usage">返回用量</a></div>
+</div>
+<div class="panel flush">
+  <div class="panel-head">
+    <h2><span class="section-mark"></span>模型价格</h2>
+    <span class="hint">别名用逗号分隔，用于匹配会话日志里的模型 ID；改名时请保留旧别名，避免历史用量显示为未定价。</span>
+  </div>
+  <div class="table-wrap"><table class="price-table">
+    <thead><tr><th>模型</th><th>输入</th><th>缓存输入</th><th>输出</th><th>别名</th><th>操作</th></tr></thead>
+    <tbody>
+    {% for p in prices %}
+    {% set fid = "price-" ~ p.id %}
+    <tr>
+      <td>
+        <form id="{{ fid }}" method="post" action="/pricing/{{ p.id }}"><input type="hidden" name="csrf" value="{{ csrf }}"></form>
+        <input class="price-name" type="text" name="name" value="{{ p.name }}" form="{{ fid }}" maxlength="120" required>
+      </td>
+      <td><input class="price-rate" type="text" inputmode="decimal" name="input_usd" value="{{ p.input_usd|rate_value }}" form="{{ fid }}" required></td>
+      <td><input class="price-rate" type="text" inputmode="decimal" name="cached_usd" value="{{ p.cached_usd|rate_value }}" form="{{ fid }}" required></td>
+      <td><input class="price-rate" type="text" inputmode="decimal" name="output_usd" value="{{ p.output_usd|rate_value }}" form="{{ fid }}" required></td>
+      <td><input class="price-aliases" type="text" name="aliases" value="{{ p.aliases|join(', ') }}" form="{{ fid }}"></td>
+      <td class="ops">
+        <button class="btn small primary" type="submit" form="{{ fid }}">保存</button>
+        <button class="btn small danger" type="submit" form="{{ fid }}" formaction="/pricing/{{ p.id }}/delete" formnovalidate data-confirm="删除模型 {{ p.name }}？该模型的历史用量将显示为未定价。">删除</button>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="empty">还没有价格，请在下方添加模型</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</div>
+<div class="panel">
+  <div class="panel-head"><h2><span class="section-mark"></span>新增模型</h2><span class="hint">模型名可以填价目表里的展示名，也可以填日志中的模型 ID</span></div>
+  <form method="post" action="/pricing/add" class="price-add">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>模型名<input type="text" name="name" maxlength="120" required placeholder="例如 GPT-6 Sol"></label>
+    <label>输入<input type="text" inputmode="decimal" name="input_usd" required placeholder="2.00"></label>
+    <label>缓存输入<input type="text" inputmode="decimal" name="cached_usd" required placeholder="0.20"></label>
+    <label>输出<input type="text" inputmode="decimal" name="output_usd" required placeholder="10.00"></label>
+    <label>别名<input type="text" name="aliases" placeholder="gpt-6-sol, gpt-6-sol-high"></label>
+    <button class="btn primary">添加</button>
+  </form>
+</div>
+<script src="/static/confirm.js"></script>
+{% endblock %}

@@ -47,11 +47,13 @@ class FakeRunner:
 
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
+        self.inputs: list[bytes | None] = []
         self.outputs: dict[str, str] = {}
         self.fail_with: Exception | None = None
 
     def __call__(self, args: list[str], input: bytes | None = None, timeout: float = 30) -> str:
         self.calls.append(list(args))
+        self.inputs.append(input)
         if self.fail_with is not None:
             raise self.fail_with
         return self.outputs.get(args[0], "")
@@ -76,11 +78,21 @@ class FakeUsers:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.names: set[str] = set()
+        self.created: list[tuple[str, str]] = []
 
     def add(self, name: str) -> SysUser:
         (self.root / name).mkdir(parents=True, exist_ok=True)
         self.names.add(name)
         return self.get(name)
+
+    def create(self, name: str, password: str) -> SysUser:
+        if name in self.names:
+            raise UserError(f"用户已存在：{name}")
+        self.created.append((name, password))
+        return self.add(name)
+
+    def exists(self, name: str) -> bool:
+        return name in self.names
 
     def get(self, name: str) -> SysUser:
         return SysUser(name, os.getuid(), os.getgid(), self.root / name)

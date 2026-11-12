@@ -67,14 +67,26 @@ systemd 单元设置了 `TimeoutStopSec=120` 与 `KillMode=mixed`：`systemctl s
 服务器上 linpp、zdy（以及 root）已经各自在 `~/.codex` 登录过。接入 codexctl 时：
 
 - `codexctl assign` 分配账号给用户时，会把该用户已有的普通 `~/.codex/auth.json` 备份为 `auth.json.bak.<时间戳>`，再换成指向发布文件的软链接。
-- **正在运行的 codex 进程仍持有内存中的旧 token，分配后必须重启**。例如 zdy 常驻的 `codex app-server` 需要重启后才会使用新账号。
+- **正在运行的 codex 进程仍持有内存中的旧 token，分配后必须重启**。例如 zdy 常驻的 `codex app-server` 需要重启后才会使用新账号。面板「用户」页会标出「仍有旧进程（仍用旧账号）」的用户并给出「重启 codex」按钮（会中断其正在运行的任务，请先通知对方）；也可以执行 `codexctl restart-codex <user>`。
 - **永远不要**执行 `codex logout` 来「清理」旧登录：logout 会在服务端吊销 token，若该 token 与某个共享账号相同，会让所有共用者掉线。直接让 codexctl 备份并替换即可。
 - 备份文件含旧凭证，确认迁移无误后由管理员自行决定是否删除。
+
+## 创建新用户
+
+在面板「用户」页底部的「添加用户」填写用户名、密码（至少 8 位，输入两次）后提交，会自动：
+
+1. 用 `useradd --create-home --shell /bin/bash` 创建用户和家目录；
+2. 用 `chpasswd` 经 stdin 设置密码（密码不出现在命令行参数、日志或审计里）；
+3. 确保系统级 codex 可用：`/opt/codex/bin/codex` 缺失时按 `codex_version` 自动下载官方安装包，并补齐 `/usr/local/bin/codex` 包装脚本与 `/etc/codex/requirements.toml`；
+4. 初始化 `~/.codex`（属主为该用户、0700），供随后分配账号使用。
+
+创建完成后仍需在用户页勾选该用户并「分配 / 切换到所选账号」。CLI 等价命令：`codexctl user add <用户名>`（两次输入密码）。自动安装首次会下载较大的安装包；若服务器访问 GitHub 较慢，可在 `/etc/codexctl/config.toml` 中通过 `codex_package_url` 指向镜像，或设 `codex_auto_install = false` 后按「安装」一节手动安装。已有部署请同步更新 nginx 配置中的 `proxy_read_timeout 300s`（见 `deploy/nginx/codex-control.ppspace.xyz.conf`），否则首次安装可能被代理超时中断。
 
 ## 日常操作（`codexctl` 即 `/opt/codexctl/venv/bin/codexctl`）
 
 | 操作 | 命令 |
 |---|---|
+| 创建 Linux 用户并安装/初始化 codex | `codexctl user add alice` |
 | 添加账号（终端显示验证码，在浏览器批准） | `codexctl account add acc1` |
 | 查看账号 | `codexctl account list` |
 | 分配 / 切换（可多个用户） | `codexctl assign --account acc1 alice bob` |
@@ -84,6 +96,7 @@ systemd 单元设置了 `TimeoutStopSec=120` 与 `KillMode=mixed`：`systemctl s
 | 查看近 7 天用量 | `codexctl usage --days 7` |
 | 立即巡检 | `codexctl check` |
 | 修复某用户链接 | `codexctl fix alice` |
+| 结束用户仍用旧账号的 codex 进程 | `codexctl restart-codex alice` |
 | 账号显示 needs_relogin 时重新登录 | `codexctl account relogin acc1` |
 | 发布文件与保险库不一致时 | `codexctl account republish acc1` |
 | 查看服务日志 | `journalctl -u codexctl -f` |
@@ -93,7 +106,7 @@ systemd 单元设置了 `TimeoutStopSec=120` 与 `KillMode=mixed`：`systemctl s
 ## 重要注意事项
 
 - **永远不要**在服务器上以任何身份对已分配账号执行 `codex logout`：会在服务端吊销 token，所有共用该账号的用户掉线，只能 `account relogin` 恢复。
-- 切换账号后，用户正在运行的 codex 进程仍使用内存中的旧 token，需重启 codex。
+- 切换账号后，用户正在运行的 codex 进程仍使用内存中的旧 token，需重启 codex；面板「用户」页可一键结束这些旧进程（`codexctl restart-codex <user>`）。
 - 用户可以读取自己被分配账号的凭证。怀疑泄露时对该账号执行 `account relogin`，使旧凭证作废。
 - 多人共用一个账号会平摊额度，并可能触发 OpenAI 风控。
 

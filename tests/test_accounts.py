@@ -109,6 +109,7 @@ def test_enable_keeps_needs_relogin(ctx):
 
 
 def test_device_login_missing_binary(ctx):
+    ctx.settings.codex_bin.unlink()
     with pytest.raises(accounts.AccountError, match="无法运行 codex"):
         accounts.device_login(ctx, "acc1")
     assert list(ctx.settings.staging_dir.iterdir()) == []

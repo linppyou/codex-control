@@ -1,7 +1,7 @@
 # 旧 codex 进程提示与一键重启 设计文档
 
 - 日期：2026-11-12
-- 状态：设计已确认，待编写实现计划
+- 状态：已实现（2026-11-12）
 
 ## 1. 背景与目标
 
@@ -19,7 +19,7 @@ codex 进程只在启动时读取一次 `~/.codex/auth.json`，之后一直使�
 
 - 分配时自动结束进程（会在用户不知情时中断其任务）。
 - 修改 codex 本身，让其热加载凭证。
-- 识别用户自行安装在 `codex_bin` 所在目录之外的 codex。
+- 识别安装在 `$HOME/.codex` 与 `codex_bin` 之外的其他 codex（例如用户放在 `~/.local/bin` 的第三方版本）。
 
 ## 2. 旧进程的判定（新模块 `src/codexctl/procs.py`）
 
@@ -28,7 +28,8 @@ codex 进程只在启动时读取一次 `~/.codex/auth.json`，之后一直使�
 满足以下全部条件的进程视为该用户的 codex 进程：
 
 - 真实 uid 等于该用户 uid（`/proc/<pid>/status` 的 `Uid:` 第一列）。
-- `/proc/<pid>/exe` 的链接目标位于 `settings.codex_bin` 的父目录下（默认 `/opt/codex/bin/`），例如 `codex`、`codex-code-mode-host`。目标带 ` (deleted)` 后缀（二进制已被升级替换）时去掉后缀再判断，仍视为 codex 进程。
+- `/proc/<pid>/exe` 的链接目标位于 `settings.codex_bin` 的父目录下（默认 `/opt/codex/bin/`），或位于该用户的 `$HOME/.codex` 下（Codex App 自行安装的 `app-server-daemon` / `standalone` 版本）。例如 `codex`、`codex-code-mode-host`。目标带 ` (deleted)` 后缀（二进制已被升级替换）时去掉后缀再判断，仍视为 codex 进程。
+- 命令行含 `pid-update-loop` 的升级监督进程不计入（它只负责更新二进制，不持有账号 token）。
 - 读取任一 `/proc` 文件时进程已退出或无权限：跳过该进程，不报错。
 
 ### 2.2 启动时间
@@ -37,7 +38,7 @@ codex 进程只在启动时读取一次 `~/.codex/auth.json`，之后一直使�
 
 ### 2.3 「旧」的定义
 
-该用户最近一次分配变化时间 `changed_at` = assignments 表中该用户所有记录的 `started_at` 与 `ended_at` 的最大值（新增 `repo.last_assignment_change(conn, username) -> int | None`）。
+该用户最近一次「账号真正变化」的时间 `changed_at`（新增 `repo.last_assignment_change(conn, username) -> int | None`）：按 assignments 表的时间顺序取账号发生变化（或回收后不再分配同一账号）的时刻；**同一账号的回收再分配不算变化**，因为用户始终持有同一份凭证。
 
 - `changed_at` 为空（从未分配过）：不判定，不显示旧进程。
 - 启动时间 `< changed_at` 的 codex 进程为旧进程。之后启动的进程不受影响。
@@ -52,7 +53,7 @@ class CodexProc:
     exe: str
     started_at: int  # Unix 秒
 
-def list_codex_procs(uid: int, codex_dir: Path, proc_root: Path = Path("/proc")) -> list[CodexProc]: ...
+def list_codex_procs(uid: int, codex_dir: Path, proc_root: Path = Path("/proc"), *, home: Path | None = None) -> list[CodexProc]: ...
 def stale_procs(procs: list[CodexProc], changed_at: int | None) -> list[CodexProc]: ...
 def terminate(pids: list[int], grace: float = 5.0, kill=os.kill, sleep=time.sleep, alive=...) -> tuple[list[int], list[int]]: ...  # (已结束, 无法结束)
 ```
@@ -98,7 +99,7 @@ def terminate(pids: list[int], grace: float = 5.0, kill=os.kill, sleep=time.slee
 
 ## 6. 测试
 
-- `tests/test_procs.py`：用临时目录构造 `/proc`，覆盖 uid 过滤、exe 目录过滤、` (deleted)` 后缀、进程名含空格和括号、进程中途消失、启动时间计算、旧进程判定边界（等于 `changed_at` 不算旧）、`terminate` 的 TERM→KILL 升级与 `ProcessLookupError`、pid 复用保护。
+- `tests/test_procs.py`：用临时目录构造 `/proc`，覆盖 uid 过滤、exe 目录过滤、`$HOME/.codex` 下的自装版本、`pid-update-loop` 排除、` (deleted)` 后缀、进程名含空格和括号、进程中途消失、启动时间计算、旧进程判定边界（等于 `changed_at` 不算旧）、`terminate` 的 TERM→KILL 升级与 `ProcessLookupError`、pid 复用保护。
 - `tests/test_repo.py`：`last_assignment_change` 覆盖从未分配、分配中、已回收。
 - `tests/test_web_pages.py` / `tests/test_web.py`：用户页显示旧进程标签与按钮；无旧进程时不显示按钮；重启路由写审计并重定向；分配后提示文案。
 - `tests/test_cli.py`：`restart-codex` 命令与 `users` 新增列。

@@ -9,3 +9,12 @@
 # quota_crit_percent = 95.0
 # 面板「用户」页隐藏的服务账号
 # hidden_users = ["www", "mysql", "redis", "memcached"]
+
+# 创建用户时确保 codex 可用（缺失时自动安装）
+# codex_wrapper = "/usr/local/bin/codex"
+# codex_requirements = "/etc/codex/requirements.toml"
+# codex_version = "0.167.0"
+# 可改为国内镜像，支持 {version} 与 {arch}（x86_64 / aarch64）占位符
+# codex_package_url = "https://github.com/openai/codex/releases/download/rust-v{version}/codex-package-{arch}-unknown-linux-musl.tar.gz"
+# codex_auto_install = true
+# codex_install_timeout = 300.0

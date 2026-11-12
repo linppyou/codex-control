@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from codexctl import accounts, assignments, repo
+from codexctl import accounts, assignments, procs, repo
 from codexctl.sysusers import UserError
 from fakes import make_auth_json
 
@@ -210,3 +210,59 @@ def test_sync_acl_holds_account_lock(ctx, monkeypatch):
             assert seen == ["acc1"]
     finally:
         pass
+
+
+def _fake_proc(ctx, pid, started_at):
+    return procs.CodexProc(pid=pid, exe=str(ctx.settings.codex_bin), started_at=started_at)
+
+
+def test_restart_codex_kills_only_stale_procs(setup, monkeypatch):
+    ctx = setup
+    base = ctx.now()
+    assignments.assign(ctx, "alice", "acc1", "t")
+    ctx.test_clock.t = base + 60
+    old = _fake_proc(ctx, 101, base - 10)
+    new = _fake_proc(ctx, 102, base + 5)
+    monkeypatch.setattr(assignments.procs, "list_codex_procs", lambda uid, d, **kw: [old, new])
+    calls = []
+
+    def fake_terminate(pids, **kw):
+        calls.append(list(pids))
+        return [pids[0]], []
+
+    monkeypatch.setattr(assignments.procs, "terminate", fake_terminate)
+    ended, failed = assignments.restart_codex(ctx, "alice", "admin")
+    assert (ended, failed, calls) == ([101], [], [[101]])
+    row = ctx.conn.execute("SELECT action, target, detail FROM audit_log WHERE action = 'restart_codex'").fetchone()
+    assert tuple(row) == ("restart_codex", "alice", "101")
+
+
+def test_restart_codex_without_stale_procs_does_nothing(setup, monkeypatch):
+    ctx = setup
+    base = ctx.now()
+    assignments.assign(ctx, "alice", "acc1", "t")
+    monkeypatch.setattr(assignments.procs, "list_codex_procs", lambda uid, d, **kw: [_fake_proc(ctx, 101, base + 1)])
+
+    def boom(*a, **kw):
+        raise AssertionError("不应结束进程")
+
+    monkeypatch.setattr(assignments.procs, "terminate", boom)
+    assert assignments.restart_codex(ctx, "alice", "admin") == ([], [])
+    assert ctx.conn.execute("SELECT COUNT(*) FROM audit_log WHERE action = 'restart_codex'").fetchone()[0] == 0
+
+
+def test_restart_codex_skips_reused_pids(setup, monkeypatch):
+    ctx = setup
+    base = ctx.now()
+    assignments.assign(ctx, "alice", "acc1", "t")
+    ctx.test_clock.t = base + 60
+    stale = _fake_proc(ctx, 101, base - 10)
+    reused = _fake_proc(ctx, 101, base + 5)  # 同一个 pid 已被别的进程占用
+    rounds = [[stale], [reused]]
+    monkeypatch.setattr(assignments.procs, "list_codex_procs", lambda uid, d, **kw: rounds.pop(0))
+
+    def boom(*a, **kw):
+        raise AssertionError("不应结束进程")
+
+    monkeypatch.setattr(assignments.procs, "terminate", boom)
+    assert assignments.restart_codex(ctx, "alice", "admin") == ([], [])

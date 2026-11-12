@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
+
+from . import pricing
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
@@ -69,6 +72,14 @@ CREATE TABLE IF NOT EXISTS log_offsets (
     last_totals TEXT,
     last_model TEXT
 );
+CREATE TABLE IF NOT EXISTS model_prices (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    input_usd REAL NOT NULL,
+    cached_usd REAL NOT NULL,
+    output_usd REAL NOT NULL,
+    aliases TEXT NOT NULL DEFAULT '[]'
+);
 CREATE TABLE IF NOT EXISTS alerts (
     id INTEGER PRIMARY KEY,
     ts INTEGER NOT NULL,
@@ -114,9 +125,29 @@ def connect(path: Path | str) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout = 30000")
     if str(path) != ":memory:":
         conn.execute("PRAGMA journal_mode = WAL")
+    has_prices = _table_exists(conn, "model_prices")
     conn.executescript(SCHEMA)
     _migrate(conn)
+    if not has_prices:
+        _seed_prices(conn)
     return conn
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    return conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone() is not None
+
+
+def _seed_prices(conn: sqlite3.Connection) -> None:
+    """只在首次创建 model_prices 表时写入默认价目表；用户删除后不再自动补回。"""
+    rows = [
+        (p.name, p.input_usd, p.cached_usd, p.output_usd, json.dumps(list(p.aliases), ensure_ascii=False))
+        for p in pricing.PRICES
+    ]
+    with transaction(conn):
+        conn.executemany(
+            "INSERT INTO model_prices(name, input_usd, cached_usd, output_usd, aliases) VALUES (?, ?, ?, ?, ?)",
+            rows,
+        )
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

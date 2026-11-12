@@ -31,3 +31,22 @@ def test_unknown_key_rejected(tmp_path):
 
 def test_quota_poll_seconds_default():
     assert Settings().quota_poll_seconds == 600
+
+
+def test_codex_install_overrides(tmp_path):
+    cfg = tmp_path / "c.toml"
+    cfg.write_text(
+        'codex_wrapper = "/srv/wrapper"\n'
+        'codex_requirements = "/srv/requirements.toml"\n'
+        'codex_version = "9.9.9"\n'
+        'codex_package_url = "https://mirror/{version}/{arch}.tgz"\n'
+        "codex_auto_install = false\n"
+        "codex_install_timeout = 42.0\n"
+    )
+    s = load_settings(cfg)
+    assert s.codex_wrapper == Path("/srv/wrapper")
+    assert s.codex_requirements == Path("/srv/requirements.toml")
+    assert s.codex_version == "9.9.9"
+    assert s.codex_package_url == "https://mirror/{version}/{arch}.tgz"
+    assert s.codex_auto_install is False
+    assert s.codex_install_timeout == 42.0

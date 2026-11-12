@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 from fastapi.testclient import TestClient
 
-from codexctl import accounts, events, repo, webauth
+from codexctl import accounts, assignments, events, procs, repo, webauth
 from codexctl.devicelogin import DeviceLoginManager
 from codexctl.locks import account_lock
 from codexctl.web.app import create_app
@@ -65,7 +65,7 @@ def test_pages_render(c, ctx):
     add_acc(ctx)
     repo.insert_quota_sample(ctx.conn, 1, ctx.now(), "primary", 42.4, 300, ctx.now() + 8000, "api")
     ctx.test_users.add("alice")
-    for p in ("/", "/accounts", "/users", "/usage", "/audit"):
+    for p in ("/", "/accounts", "/users", "/usage", "/pricing", "/audit"):
         r = c.get(p)
         assert r.status_code == 200 and 'style="' not in r.text, p
     dash = c.get("/").text
@@ -77,7 +77,7 @@ def test_pages_render(c, ctx):
 def test_pages_require_login(ctx, mgr):
     webauth.create_admin(ctx.conn, "root_admin", PW, now=ctx.now())
     anon = TestClient(create_app(ctx, devlogins=mgr), follow_redirects=False)
-    for p in ("/", "/accounts", "/users", "/usage", "/usage.csv", "/audit", "/accounts/login/x", "/accounts/login/x/status"):
+    for p in ("/", "/accounts", "/users", "/usage", "/usage.csv", "/pricing", "/audit", "/accounts/login/x", "/accounts/login/x/status"):
         r = anon.get(p)
         assert r.status_code == 303 and r.headers["location"] == "/login", p
 
@@ -87,6 +87,58 @@ def test_users_hidden_and_all(c, ctx):
     ctx.test_users.add("svc")
     assert "alice" in c.get("/users").text and "svc" not in c.get("/users").text
     assert "svc" in c.get("/users?all=1").text
+
+
+def test_create_user_form_rendered(c):
+    page = c.get("/users").text
+    assert 'action="/users/create"' in page
+    assert 'name="username"' in page and 'name="password"' in page and 'name="password2"' in page
+    assert 'autocomplete="new-password"' in page
+
+
+def test_create_user_from_users_page(c, ctx):
+    pw = "long-enough-password"
+    r = post(c, "/users/create", username="alice", password=pw, password2=pw)
+    path, q = qs(r)
+    assert path == "/users"
+    assert "alice 已创建" in q["msg"] and "分配账号" in q["msg"]
+    home = ctx.test_users.get("alice").home
+    assert (home / ".codex").is_dir()
+    assert ctx.settings.codex_wrapper.is_file()
+    row = ctx.conn.execute(
+        "SELECT actor, action, target, detail FROM audit_log WHERE action = 'user.create'"
+    ).fetchone()
+    assert tuple(row)[:3] == ("web:root_admin", "user.create", "alice")
+    assert pw not in row["detail"] and pw not in q["msg"]
+    assert pw not in c.get("/users").text
+
+
+def test_create_user_errors(c, ctx):
+    ctx.test_users.add("bob")
+    cases = [
+        ({"username": "alice", "password": "short", "password2": "short"}, "至少"),
+        ({"username": "alice", "password": "long-enough", "password2": "different"}, "不一致"),
+        ({"username": "bob", "password": "long-enough", "password2": "long-enough"}, "已存在"),
+        ({"username": "Bad Name", "password": "long-enough", "password2": "long-enough"}, "非法用户名"),
+    ]
+    for data, expected in cases:
+        q = qs(post(c, "/users/create", **data))[1]
+        assert "err" in q and expected in q["err"], (data, q)
+    assert not ctx.test_users.exists("alice")
+    assert ctx.conn.execute("SELECT COUNT(*) FROM audit_log WHERE action = 'user.create'").fetchone()[0] == 0
+
+
+def test_create_user_codex_install_failure(c, ctx, tmp_path):
+    ctx.settings = dataclasses.replace(
+        ctx.settings,
+        codex_bin=tmp_path / "missing" / "bin" / "codex",
+        codex_wrapper=tmp_path / "missing-wrapper",
+        codex_requirements=tmp_path / "missing-requirements",
+    )
+    q = qs(post(c, "/users/create", username="alice", password="long-enough", password2="long-enough"))[1]
+    assert "err" in q and "HTTP 404" in q["err"]
+    assert not ctx.test_users.exists("alice")
+    assert ctx.conn.execute("SELECT COUNT(*) FROM audit_log WHERE action = 'user.create'").fetchone()[0] == 0
 
 
 def test_bulk_assign_and_unassign(c, ctx):
@@ -220,7 +272,7 @@ def test_csv_and_usage(c, ctx):
     r = c.get("/usage.csv")
     assert r.status_code == 200 and "attachment" in r.headers["content-disposition"]
     lines = r.text.splitlines()
-    assert lines[0] == "username,model,today_tokens,7d_tokens,total_tokens,turns"
+    assert lines[0] == "username,model,today_tokens,7d_tokens,total_tokens,today_usd,7d_usd,total_usd,turns"
     for bad in ("'=cmd", "'+x", "'-y", "'@z"):
         assert any(l.startswith(bad + ",") for l in lines), bad
     assert any(l.startswith("alice,") for l in lines)
@@ -246,10 +298,10 @@ def test_usage_page_periods_and_models(c, ctx):
     assert "2,001,545,000" in t  # 全部总量的精确值放在 title 里
     csv_lines = sorted(l for l in c.get("/usage.csv").text.splitlines() if l.startswith("alice,"))
     assert csv_lines == [
-        "alice,,0,0,40000,1",
-        "alice,<b>m</b>,0,0,5000,1",
-        "alice,gpt-a,1500000,1500000,1500000,1",
-        "alice,gpt-b,0,2000000000,2000000000,1",
+        "alice,,0,0,40000,,,,1",
+        "alice,<b>m</b>,0,0,5000,,,,1",
+        "alice,gpt-a,1500000,1500000,1500000,,,,1",
+        "alice,gpt-b,0,2000000000,2000000000,,,,1",
     ]
 
 
@@ -275,6 +327,90 @@ def test_usage_page_per_user_models(c, ctx):
     assert bob.count('class="model-sub"') == 1 and "3.3B" in bob
 
 
+def test_usage_page_shows_cost_and_price_list(c, ctx):
+    def add(ts, model, inp, cached, out):
+        d = {f: 0 for f in repo.USAGE_FIELDS}
+        d.update(input_tokens=inp, cached_input_tokens=cached, output_tokens=out, total_tokens=inp + out)
+        repo.insert_usage(ctx.conn, "alice", None, ts, d, "f", model)
+
+    now = ctx.now()
+    add(now, "gpt-5.2", 1_000_000, 400_000, 100_000)
+    add(now, "gpt-a", 1_000, 0, 1_000)
+    t = c.get("/usage").text
+    assert "价目表" in t and "美元 / 百万 tokens" in t
+    assert "GPT-5.2" in t and "GPT-6.1 Sol" in t
+    assert "$1.75" in t and "$0.175" in t
+    assert "$2.52" in t
+    assert "未定价" in t  # gpt-a 不在价目表
+    assert "1 个模型未定价，费用未计入" in t
+
+    lines = sorted(l for l in c.get("/usage.csv").text.splitlines() if l.startswith("alice,"))
+    assert lines == [
+        "alice,gpt-5.2,1100000,1100000,1100000,2.52,2.52,2.52,1",
+        "alice,gpt-a,2000,2000,2000,,,,1",
+    ]
+
+
+def test_users_page_shows_cost(c, ctx):
+    ctx.test_users.add("alice")
+    d = {f: 0 for f in repo.USAGE_FIELDS}
+    d.update(input_tokens=1_000_000, output_tokens=0, total_tokens=1_000_000)
+    repo.insert_usage(ctx.conn, "alice", None, ctx.now(), d, "f", "gpt-5.2")
+    t = c.get("/users").text
+    assert "24 小时 tokens / 费用" in t
+    assert "$1.75" in t
+
+
+def _price_id(ctx, name="GPT-5.2"):
+    return next(p.id for p in repo.list_prices(ctx.conn) if p.name == name)
+
+
+def test_pricing_page_and_update_changes_usage_cost(c, ctx):
+    pid = _price_id(ctx)
+    page = c.get("/pricing").text
+    assert "模型价格" in page and "新增模型" in page and "GPT-5.2" in page
+    assert f'action="/pricing/{pid}"' in page and 'name="input_usd"' in page
+
+    d = {f: 0 for f in repo.USAGE_FIELDS}
+    d.update(input_tokens=1_000_000, total_tokens=1_000_000)
+    repo.insert_usage(ctx.conn, "alice", None, ctx.now(), d, "f", "gpt-5.2")
+    assert "alice,gpt-5.2,1000000,1000000,1000000,1.75,1.75,1.75,1" in c.get("/usage.csv").text
+
+    r = post(c, f"/pricing/{pid}", name="GPT-5.2", input_usd="3.33", cached_usd="0.20", output_usd="20", aliases="gpt-5.2")
+    assert qs(r)[0] == "/pricing" and "msg" in qs(r)[1]
+    assert repo.get_price(ctx.conn, pid).input_usd == 3.33
+    assert "alice,gpt-5.2,1000000,1000000,1000000,3.33,3.33,3.33,1" in c.get("/usage.csv").text
+    assert "$3.33" in c.get("/usage").text
+
+
+def test_pricing_add_delete_and_validation(c, ctx):
+    r = post(
+        c, "/pricing/add", name="Custom-X", input_usd="2", cached_usd="0.2", output_usd="4",
+        aliases="custom-x, custom x",
+    )
+    assert "msg" in qs(r)[1]
+    price = next(p for p in repo.list_prices(ctx.conn) if p.name == "Custom-X")
+    assert price.aliases == ("custom-x",)  # 与 custom x 归一化后相同，自动去重
+
+    d = {f: 0 for f in repo.USAGE_FIELDS}
+    d.update(input_tokens=1_000_000, total_tokens=1_000_000)
+    repo.insert_usage(ctx.conn, "alice", None, ctx.now(), d, "f", "custom-x")
+    assert "alice,custom-x,1000000,1000000,1000000,2,2,2,1" in c.get("/usage.csv").text
+
+    r = post(c, "/pricing/add", name="custom x", input_usd="1", cached_usd="0", output_usd="1", aliases="")
+    assert "重复" in qs(r)[1]["err"]
+
+    r = post(c, f"/pricing/{price.id}", name="Custom-X", input_usd="-1", cached_usd="0", output_usd="1", aliases="")
+    assert "价格" in qs(r)[1]["err"]
+    assert repo.get_price(ctx.conn, price.id).input_usd == 2
+
+    r = post(c, f"/pricing/{price.id}/delete")
+    assert "msg" in qs(r)[1]
+    assert repo.get_price(ctx.conn, price.id) is None
+    assert "alice,custom-x,1000000,1000000,1000000,,,,1" in c.get("/usage.csv").text
+    assert "未定价" in c.get("/usage").text
+
+
 def test_audit_and_xss(c, ctx):
     events.raise_alert(ctx.conn, "critical", "k", "t", "<script>alert(1)</script>", now=ctx.now())
     events.audit(ctx.conn, "web:x", "weird", "<b>t</b>", now=ctx.now())
@@ -287,7 +423,8 @@ def test_audit_and_xss(c, ctx):
 def test_writes_require_csrf(c, ctx):
     add_acc(ctx)
     for p in ("/accounts/acc1/refresh", "/accounts/acc1/disable", "/accounts/login", "/users/assign",
-              "/users/unassign", "/users/alice/fix", "/accounts/login/x/cancel"):
+              "/users/unassign", "/users/alice/fix", "/users/alice/restart-codex", "/accounts/login/x/cancel",
+              "/pricing/1", "/pricing/add", "/pricing/1/delete"):
         assert c.post(p, data={}).status_code == 403, p
         assert c.post(p, data={"csrf": "bad"}).status_code == 403, p
     assert repo.get_account(ctx.conn, "acc1").status == "active"
@@ -542,3 +679,46 @@ def test_account_rename(c, ctx):
     assert "err" in qs(post(c, "/accounts/nope/name", name="x"))[1]
     assert "已清除" in qs(post(c, "/accounts/acc1/name", name=""))[1]["msg"]
     assert repo.get_account(ctx.conn, "acc1").display_name is None
+
+
+def test_users_page_flags_stale_codex(c, ctx, monkeypatch):
+    add_acc(ctx)
+    ctx.test_users.add("alice")
+    base = ctx.now()
+    assignments.assign(ctx, "alice", "acc1", "t")
+    ctx.test_clock.t = base + 60
+    stale = procs.CodexProc(pid=4321, exe=str(ctx.settings.codex_bin), started_at=base - 5)
+    monkeypatch.setattr(procs, "list_codex_procs", lambda uid, d, **kw: [stale])
+
+    page = c.get("/users").text
+    assert "1 个旧进程（仍用旧账号）" in page
+    assert "重启 codex" in page and "pid 4321" in page
+
+    monkeypatch.setattr(procs, "terminate", lambda pids, **kw: (list(pids), []))
+    path, q = qs(post(c, "/users/alice/restart-codex"))
+    assert path == "/users" and "已结束 alice 的 1 个 codex 进程" in q["msg"]
+    got = [
+        tuple(x)
+        for x in ctx.conn.execute("SELECT action, target, detail FROM audit_log WHERE action = 'restart_codex'")
+    ]
+    assert got == [("restart_codex", "alice", "4321")]
+
+
+def test_users_page_without_stale_codex(c, ctx, monkeypatch):
+    ctx.test_users.add("alice")
+    monkeypatch.setattr(procs, "list_codex_procs", lambda uid, d, **kw: [])
+    assert "重启 codex" not in c.get("/users").text
+    path, q = qs(post(c, "/users/alice/restart-codex"))
+    assert path == "/users" and "没有旧 codex 进程" in q["msg"]
+
+
+def test_assign_mentions_stale_codex(c, ctx, monkeypatch):
+    add_acc(ctx)
+    ctx.test_users.add("alice")
+    base = ctx.now()
+    monkeypatch.setattr(
+        procs, "list_codex_procs", lambda uid, d, **kw: [procs.CodexProc(pid=101, exe="x", started_at=base - 5)]
+    )
+    r = c.post("/users/assign", data={"csrf": c.csrf, "users": ["alice"], "account": "acc1"})
+    q = qs(r)[1]
+    assert "旧 codex 进程" in q["msg"] and "重启 codex" in q["msg"]

@@ -4,7 +4,7 @@ import tomllib
 from dataclasses import dataclass, fields
 from pathlib import Path
 
-_PATH_KEYS = {"state_dir", "key_file", "codex_bin"}
+_PATH_KEYS = {"state_dir", "key_file", "codex_bin", "codex_wrapper", "codex_requirements"}
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,15 @@ class Settings:
     web_socket: str = "/run/codexctl/web.sock"
     web_socket_group: str = "www"
     hidden_users: tuple[str, ...] = ()
+    codex_wrapper: Path = Path("/usr/local/bin/codex")
+    codex_requirements: Path = Path("/etc/codex/requirements.toml")
+    codex_version: str = "0.167.0"
+    codex_package_url: str = (
+        "https://github.com/openai/codex/releases/download/"
+        "rust-v{version}/codex-package-{arch}-unknown-linux-musl.tar.gz"
+    )
+    codex_auto_install: bool = True
+    codex_install_timeout: float = 300.0
 
     @property
     def db_path(self) -> Path:

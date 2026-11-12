@@ -95,6 +95,15 @@ class Publisher:
 
     # ---- 用户软链接 ----
 
+    def ensure_codex_dir(self, user: SysUser) -> None:
+        """创建或校验 ~/.codex：普通目录、0700、属主为该用户。"""
+        fd = self._open_codex_dir(user, create=True)
+        try:
+            if stat.S_IMODE(os.fstat(fd).st_mode) != 0o700:
+                os.fchmod(fd, 0o700)
+        finally:
+            os.close(fd)
+
     def _open_codex_dir(self, user: SysUser, create: bool) -> int:
         home_fd = os.open(user.home, os.O_RDONLY | os.O_DIRECTORY)
         flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW

@@ -10,20 +10,25 @@ import tomllib
 from pathlib import Path
 from typing import Callable
 
-from . import accounts, assignments, daemon, db, locks, logscan, refresher, repo, selfcheck, watcher, webauth
+from . import (
+    accounts, assignments, codexinstall, daemon, db, locks, logscan, pricing, refresher, repo,
+    selfcheck, useradmin, watcher, webauth,
+)
 from .authfile import AuthFileError
 from .config import Settings, load_settings
 from .context import Context, open_context
 from .publisher import PublishError
 from .runner import CommandError
 from .sysusers import UserError
+from .useradmin import UserAdminError
 from .vault import VaultError, generate_key_file
 
 DEFAULT_CONFIG = Path("/etc/codexctl/config.toml")
 ACTOR = "cli"
 _HANDLED = (
     accounts.AccountError, assignments.AssignError, UserError, AuthFileError,
-    PublishError, VaultError, CommandError, webauth.AuthError, locks.LockBusy, OSError, sqlite3.Error, LookupError,
+    PublishError, VaultError, CommandError, webauth.AuthError, locks.LockBusy, OSError,
+    sqlite3.Error, LookupError, UserAdminError, codexinstall.CodexInstallError,
 )
 
 
@@ -71,7 +76,12 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("users", nargs="+")
     a = sub.add_parser("fix", help="按数据库记录修复用户链接与 ACL")
     a.add_argument("users", nargs="+")
+    a = sub.add_parser("restart-codex", help="结束用户仍在使用旧账号的 codex 进程")
+    a.add_argument("users", nargs="+")
     sub.add_parser("users", help="列出系统用户及其分配")
+    usr = sub.add_parser("user", help="创建 Linux 用户").add_subparsers(dest="ucmd", required=True)
+    a = usr.add_parser("add", help="创建用户、设置密码并安装/初始化 codex")
+    a.add_argument("name")
     sub.add_parser("quota", help="显示各账号最新额度")
     a = sub.add_parser("usage", help="按用户汇总用量")
     a.add_argument("--days", type=_positive_int, default=7)
@@ -180,28 +190,66 @@ def dispatch(ctx: Context, args: argparse.Namespace) -> int:
         return account_cmd(ctx, args)
     if args.cmd in ("assign", "unassign", "fix"):
         failed = False
+        done: list[str] = []
         for name in args.users:
             try:
                 if args.cmd == "assign":
                     backup = assignments.assign(ctx, name, args.account, ACTOR)
                     print(_safe(f"{name} -> {args.account}" + (f"（原 auth.json 已备份为 {backup}）" if backup else "")))
                 elif args.cmd == "unassign":
-                    done = assignments.unassign(ctx, name, ACTOR)
-                    print(_safe(f"{name}: {'已回收' if done else '没有生效的分配'}"))
+                    done_ok = assignments.unassign(ctx, name, ACTOR)
+                    print(_safe(f"{name}: {'已回收' if done_ok else '没有生效的分配'}"))
                 else:
                     assignments.reconcile_user(ctx, name, ACTOR)
                     print(_safe(f"{name}: 已按记录修复"))
+                done.append(name)
             except _HANDLED as e:
                 failed = True
                 print(_safe(f"错误：{name}: {e}"), file=sys.stderr)
-        if args.cmd == "assign" and not failed:
-            print("提示：用户需重启正在运行的 codex 才会使用新账号")
+        if args.cmd in ("assign", "unassign"):
+            hinted = False
+            for name in done:
+                try:
+                    stale = assignments.stale_codex_procs(ctx, name)
+                except _HANDLED:
+                    continue
+                if stale:
+                    hinted = True
+                    print(_safe(
+                        f"提示：{name} 有 {len(stale)} 个旧 codex 进程仍在使用旧账号，"
+                        f"通知对方后执行 codexctl restart-codex {name}"
+                    ))
+            if not hinted and not failed:
+                print("提示：用户需重启正在运行的 codex 才会使用新账号")
         return 1 if failed else 0
+    if args.cmd == "restart-codex":
+        failed = False
+        for name in args.users:
+            try:
+                ended, unable = assignments.restart_codex(ctx, name, ACTOR)
+            except _HANDLED as e:
+                failed = True
+                print(_safe(f"错误：{name}: {e}"), file=sys.stderr)
+                continue
+            if ended:
+                print(_safe(f"{name}: 已结束 {', '.join(str(p) for p in ended)}"))
+            else:
+                print(_safe(f"{name}: 没有旧 codex 进程"))
+            if unable:
+                failed = True
+                print(_safe(f"{name}: 部分进程无法结束：{', '.join(str(p) for p in unable)}"), file=sys.stderr)
+        return 1 if failed else 0
+    if args.cmd == "user":
+        return user_cmd(ctx, args)
     if args.cmd == "users":
         for user in ctx.list_users(ctx.settings.min_uid):
             a = repo.active_assignment(ctx.conn, user.name)
             label = repo.get_account_by_pk(ctx.conn, a.account_pk).label if a else "-"
-            print(f"{_safe(user.name):<20} {_safe(label):<12} {_safe(ctx.publisher.read_link(user).kind)}")
+            stale = assignments.stale_codex_procs(ctx, user.name)
+            print(
+                f"{_safe(user.name):<20} {_safe(label):<12} {_safe(ctx.publisher.read_link(user).kind):<8} "
+                f"{len(stale) if stale else '-'}"
+            )
         return 0
     if args.cmd == "quota":
         for acc in repo.list_accounts(ctx.conn):
@@ -213,10 +261,32 @@ def dispatch(ctx: Context, args: argparse.Namespace) -> int:
             print(f"{acc.label:<12} {acc.status:<14} " + " | ".join(parts))
         return 0
     if args.cmd == "usage":
-        for r in repo.usage_summary(ctx.conn, ctx.now() - args.days * 86400):
+        summary: dict[tuple[str, str], dict] = {}
+        book = pricing.PriceBook(repo.list_prices(ctx.conn))
+        for r in repo.usage_summary_by_model(ctx.conn, ctx.now() - args.days * 86400):
+            key = (r["username"], r["label"] or "-")
+            s = summary.setdefault(key, {
+                "total": 0, "input": 0, "output": 0, "turns": 0, "cost": None, "unpriced": 0,
+            })
+            total = r["total"] or 0
+            s["total"] += total
+            s["input"] += r["input"] or 0
+            s["output"] += r["output"] or 0
+            s["turns"] += r["turns"]
+            cost = book.cost(r["model"], r["input"], r["cached"], r["output"])
+            if total:
+                if cost is None:
+                    s["unpriced"] += 1
+                else:
+                    s["cost"] = (s["cost"] or 0) + cost
+        for (username, label), s in sorted(summary.items(), key=lambda kv: -kv[1]["total"]):
+            if s["cost"] is None:
+                cost_text = "未定价"
+            else:
+                cost_text = pricing.fmt_usd(s["cost"]) + ("*" if s["unpriced"] else "")
             print(
-                f"{_safe(r['username']):<20} {_safe(r['label'] or '-'):<12} total={r['total']} "
-                f"input={r['input']} output={r['output']} turns={r['turns']}"
+                f"{_safe(username):<20} {_safe(label):<12} total={s['total']} "
+                f"input={s['input']} output={s['output']} turns={s['turns']} cost={cost_text}"
             )
         return 0
     if args.cmd == "backfill-models":
@@ -232,6 +302,22 @@ def dispatch(ctx: Context, args: argparse.Namespace) -> int:
         daemon.run(ctx)
         return 0
     raise AssertionError(f"unhandled command {args.cmd}")
+
+
+def user_cmd(ctx: Context, args: argparse.Namespace) -> int:
+    if args.ucmd != "add":
+        raise AssertionError(f"unhandled user command {args.ucmd}")
+    password = getpass.getpass("新用户密码：")
+    if getpass.getpass("再输入一次：") != password:
+        print("错误：两次输入的密码不一致", file=sys.stderr)
+        return 1
+    user, note = useradmin.create(ctx, args.name, password, password, ACTOR)
+    text = f"已创建用户 {user.name}（uid {user.uid}，家目录 {user.home}）"
+    if note:
+        text += f"；{note}"
+    text += f"。请用 codexctl assign --account <标签> {user.name} 分配账号"
+    print(_safe(text))
+    return 0
 
 
 def account_cmd(ctx: Context, args: argparse.Namespace) -> int:
