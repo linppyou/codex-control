@@ -104,6 +104,22 @@ def test_fresh_api_sample_beats_newer_log_sample(ctx):
     assert [a["level"] for a in events.open_alerts(ctx.conn)] == ["critical"]
 
 
+def test_fresh_api_response_does_not_mix_in_other_log_windows(ctx):
+    acc = accounts.import_account(ctx, "acc1", make_auth_json(), "t")
+    quota.record(ctx, acc.id, T0, [QuotaWindow("secondary", 37, 10080, T0 + 400)], "log")
+    quota.record(ctx, acc.id, T0 + 10, [QuotaWindow("primary", 54, 10080, T0 + 600)], "api")
+    rows = repo.latest_quota(ctx.conn, acc.id, api_fresh_since=T0)
+    assert [(r["win"], r["used_percent"], r["source"]) for r in rows] == [("primary", 54, "api")]
+
+
+def test_stale_api_falls_back_to_log(ctx):
+    acc = accounts.import_account(ctx, "acc1", make_auth_json(), "t")
+    quota.record(ctx, acc.id, T0, [QuotaWindow("primary", 54, 10080, None)], "api")
+    quota.record(ctx, acc.id, T0 + 10, [QuotaWindow("primary", 37, 10080, None)], "log")
+    rows = repo.latest_quota(ctx.conn, acc.id, api_fresh_since=T0 + 1)
+    assert [(r["used_percent"], r["source"]) for r in rows] == [(37, "log")]
+
+
 def test_poll_quotas_continues_after_account_exception(ctx, monkeypatch):
     accounts.import_account(ctx, "acc1", make_auth_json(), "t")
     accounts.import_account(ctx, "acc2", make_auth_json(account_id="acct-2"), "t")
