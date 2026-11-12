@@ -30,6 +30,8 @@ class Price:
 # 默认价目表：首次创建数据库时写入 model_prices；之后以面板里编辑后的价格为准。
 # aliases 用于兼容会话日志里的模型 ID（如 gpt-6.1-sol）。
 PRICES: tuple[Price, ...] = (
+    # ChatGPT 登录的 auto-review 安全检查免费；不代表 API 自动审查的定价。
+    Price("Codex Auto Review (ChatGPT)", 0.0, 0.0, 0.0, ("codex-auto-review",)),
     Price("GPT-6.1 Sol", 2.00, 0.10, 10.00, ("gpt-6.1-sol",)),
     Price("GPT-6.1 Terra", 1.00, 0.05, 5.00, ("gpt-6.1-terra",)),
     Price("GPT-6 Astra", 10.00, 1.00, 50.00, ("gpt-6-astra",)),

@@ -5,6 +5,7 @@ from codexctl import pricing
 
 def test_price_table_matches_image():
     assert [(p.name, p.input_usd, p.cached_usd, p.output_usd) for p in pricing.PRICES] == [
+        ("Codex Auto Review (ChatGPT)", 0.0, 0.0, 0.0),
         ("GPT-6.1 Sol", 2.00, 0.10, 10.00),
         ("GPT-6.1 Terra", 1.00, 0.05, 5.00),
         ("GPT-6 Astra", 10.00, 1.00, 50.00),
@@ -23,6 +24,10 @@ def test_price_table_matches_image():
         ("GPT-5.3-Codex", 1.75, 0.175, 14.00),
         ("GPT-5.2", 1.75, 0.175, 14.00),
     ]
+
+
+def test_chatgpt_auto_review_is_free():
+    assert pricing.cost_usd("codex-auto-review", 1_000_000, 100_000, 100_000) == 0
 
 
 @pytest.mark.parametrize("model", ["gpt-6.1-sol", "GPT-6.1 Sol", "GPT-6.1-SOL", "gpt_6_1 sol"])
