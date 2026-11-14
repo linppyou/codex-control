@@ -11,23 +11,23 @@
     <span class="hint">别名用逗号分隔，用于匹配会话日志里的模型 ID；改名时请保留旧别名，避免历史用量显示为未定价。</span>
   </div>
   <div class="table-wrap"><table class="price-table">
-    <thead><tr><th>模型</th><th>输入</th><th>缓存输入</th><th>输出</th><th>别名</th><th>操作</th></tr></thead>
+    <thead><tr><th>模型</th><th>输入</th><th>缓存输入</th><th>输出</th><th>别名</th>{% if is_admin %}<th>操作</th>{% endif %}</tr></thead>
     <tbody>
     {% for p in prices %}
     {% set fid = "price-" ~ p.id %}
     <tr>
       <td>
-        <form id="{{ fid }}" method="post" action="/pricing/{{ p.id }}"><input type="hidden" name="csrf" value="{{ csrf }}"></form>
-        <input class="price-name" type="text" name="name" value="{{ p.name }}" form="{{ fid }}" maxlength="120" required>
+        {% if is_admin %}<form id="{{ fid }}" method="post" action="/pricing/{{ p.id }}"><input type="hidden" name="csrf" value="{{ csrf }}"></form>{% endif %}
+        <input class="price-name" type="text" name="name" value="{{ p.name }}" form="{{ fid }}"{% if not is_admin %} readonly{% endif %} maxlength="120" required>
       </td>
-      <td><input class="price-rate" type="text" inputmode="decimal" name="input_usd" value="{{ p.input_usd|rate_value }}" form="{{ fid }}" required></td>
-      <td><input class="price-rate" type="text" inputmode="decimal" name="cached_usd" value="{{ p.cached_usd|rate_value }}" form="{{ fid }}" required></td>
-      <td><input class="price-rate" type="text" inputmode="decimal" name="output_usd" value="{{ p.output_usd|rate_value }}" form="{{ fid }}" required></td>
-      <td><input class="price-aliases" type="text" name="aliases" value="{{ p.aliases|join(', ') }}" form="{{ fid }}"></td>
-      <td class="ops">
-        <button class="btn small primary" type="submit" form="{{ fid }}">保存</button>
-        <button class="btn small danger" type="submit" form="{{ fid }}" formaction="/pricing/{{ p.id }}/delete" formnovalidate data-confirm="删除模型 {{ p.name }}？该模型的历史用量将显示为未定价。">删除</button>
-      </td>
+      <td><input class="price-rate" type="text" inputmode="decimal" name="input_usd" value="{{ p.input_usd|rate_value }}" form="{{ fid }}"{% if not is_admin %} readonly{% endif %} required></td>
+      <td><input class="price-rate" type="text" inputmode="decimal" name="cached_usd" value="{{ p.cached_usd|rate_value }}" form="{{ fid }}"{% if not is_admin %} readonly{% endif %} required></td>
+      <td><input class="price-rate" type="text" inputmode="decimal" name="output_usd" value="{{ p.output_usd|rate_value }}" form="{{ fid }}"{% if not is_admin %} readonly{% endif %} required></td>
+      <td><input class="price-aliases" type="text" name="aliases" value="{{ p.aliases|join(', ') }}" form="{{ fid }}"{% if not is_admin %} readonly{% endif %}></td>
+      {% if is_admin %}<td class="ops">
+        <button class="btn small primary" type="submit" form="{{ fid }}"{% if not is_admin %} readonly{% endif %}>保存</button>
+        <button class="btn small danger" type="submit" form="{{ fid }}"{% if not is_admin %} readonly{% endif %} formaction="/pricing/{{ p.id }}/delete" formnovalidate data-confirm="删除模型 {{ p.name }}？该模型的历史用量将显示为未定价。">删除</button>
+      </td>{% endif %}
     </tr>
     {% else %}
     <tr><td colspan="6" class="empty">还没有价格，请在下方添加模型</td></tr>
@@ -35,7 +35,7 @@
     </tbody>
   </table></div>
 </div>
-<div class="panel">
+{% if is_admin %}<div class="panel">
   <div class="panel-head"><h2><span class="section-mark"></span>新增模型</h2><span class="hint">模型名可以填价目表里的展示名，也可以填日志中的模型 ID</span></div>
   <form method="post" action="/pricing/add" class="price-add">
     <input type="hidden" name="csrf" value="{{ csrf }}">
@@ -47,5 +47,5 @@
     <button class="btn primary">添加</button>
   </form>
 </div>
-<script src="/static/confirm.js"></script>
+{% endif %}<script src="/static/confirm.js"></script>
 {% endblock %}

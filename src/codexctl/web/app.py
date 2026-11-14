@@ -97,7 +97,9 @@ def csrf_guard(request: Request, csrf: str = Form("")) -> None:
     """全局依赖：除 /login 外的所有写请求都必须带有效会话和 csrf。"""
     if request.method in ("GET", "HEAD", "OPTIONS") or request.url.path == "/login":
         return
-    admin_csrf(request, csrf)
+    username, _ = admin_csrf(request, csrf)
+    if request.url.path != "/logout" and username != "admin":
+        raise HTTPException(status_code=403, detail="仅管理员可以修改")
 
 
 class SecurityHeadersMiddleware:
@@ -128,6 +130,12 @@ def create_app(
     devlogins: DeviceLoginManager | None = None,
     limiter: LoginRateLimiter | None = None,
 ) -> FastAPI:
+    if webauth.get_hash(ctx.conn, "admin") is None:
+        try:
+            webauth.create_admin(ctx.conn, "admin", "root@root.root", now=ctx.now())
+        except webauth.AuthError:
+            if webauth.get_hash(ctx.conn, "admin") is None:
+                raise
     manager = devlogins if devlogins is not None else DeviceLoginManager(ctx.settings, clock=ctx.clock)
 
     @asynccontextmanager
@@ -165,6 +173,7 @@ def create_app(
     def render(request: Request, name: str, status: int = 200, flash: bool = True, **context) -> HTMLResponse:
         context.setdefault("admin", None)
         context.setdefault("csrf", "")
+        context.setdefault("is_admin", context["admin"] == "admin")
         context.setdefault("msg", request.query_params.get("msg", "") if flash else "")
         context.setdefault("err", request.query_params.get("err", "") if flash else "")
         return app.state.templates.TemplateResponse(request, name, context, status_code=status)

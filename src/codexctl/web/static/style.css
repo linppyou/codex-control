@@ -219,5 +219,11 @@ progress.bad::-moz-progress-bar { background: var(--red); }
 .model-bar span { display: block; height: 100%; background: var(--green-2); border-radius: 2px; }
 .usage-users tbody + tbody { border-top: 2px solid var(--line); }
 .usage-users .user-row td { background: #fafbfc; }
+.user-usage-toggle { display: inline-flex; align-items: center; gap: 7px; border: 0; padding: 3px 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.user-usage-toggle:hover { color: var(--green); }
+.user-usage-toggle:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; border-radius: 2px; }
+.usage-chevron { color: var(--muted); display: inline-block; transition: transform .15s; }
+.user-usage-toggle[aria-expanded="false"] .usage-chevron { transform: rotate(-90deg); }
+.usage-users .model-sub[hidden] { display: none; }
 .usage-users .model-sub td { padding-top: 6px; padding-bottom: 6px; font-size: 13px; }
 .usage-users .model-sub td:first-child { padding-left: 32px; }

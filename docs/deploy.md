@@ -172,3 +172,5 @@ systemd 单元设置了 `TimeoutStopSec=120` 与 `KillMode=mixed`：`systemctl s
 - 登录限速保存在进程内存中，`systemctl restart codexctl-web` 会重置计数。
 - 面板「用户」页可隐藏服务账号，在 `/etc/codexctl/config.toml` 中配置：`hidden_users = ["www", "mysql", "redis", "memcached"]`，改后重启 `codexctl-web`。
 
+
+Web 面板启动时，如不存在 `admin` 登录账号，会创建该账号，初始密码为 `root@root.root`。已有 `admin` 的密码不会被覆盖；请在部署后通过现有的密码管理命令修改初始密码。只有 `admin` 拥有管理权限，其他现有 Web 登录账号（例如 `linpp`）保留原密码并使用只读面板。

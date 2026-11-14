@@ -277,8 +277,10 @@ def register(app) -> None:
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request, admin: tuple[str, str] = Depends(current_admin)):
         with lock:
-            devlogins.sweep()
-            msg, err = _complete_finished_logins(app, admin)
+            msg, err = "", ""
+            if admin[0] == "admin":
+                devlogins.sweep()
+                msg, err = _complete_finished_logins(app, admin)
             cards = _account_rows(ctx)
             alerts = [
                 {
@@ -293,8 +295,10 @@ def register(app) -> None:
     @app.get("/accounts", response_class=HTMLResponse)
     def accounts_page(request: Request, admin: tuple[str, str] = Depends(current_admin)):
         with lock:
-            devlogins.sweep()
-            msg, err = _complete_finished_logins(app, admin)
+            msg, err = "", ""
+            if admin[0] == "admin":
+                devlogins.sweep()
+                msg, err = _complete_finished_logins(app, admin)
             rows = _account_table(ctx)
         return render(request, "accounts.html", admin=admin[0], csrf=admin[1], rows=rows, **_flash(msg, err))
 
@@ -434,6 +438,8 @@ def register(app) -> None:
 
     @app.get("/accounts/login/{login_id}", response_class=HTMLResponse)
     def login_page(request: Request, login_id: str, admin: tuple[str, str] = Depends(current_admin)):
+        if admin[0] != "admin":
+            raise HTTPException(status_code=403, detail="仅管理员可以查看设备登录")
         with lock:
             devlogins.sweep()
             st = devlogins.status(login_id)
@@ -456,6 +462,8 @@ def register(app) -> None:
 
     @app.get("/accounts/login/{login_id}/status")
     def login_status(login_id: str, admin: tuple[str, str] = Depends(current_admin)):
+        if admin[0] != "admin":
+            raise HTTPException(status_code=403, detail="仅管理员可以查看设备登录")
         with lock:
             devlogins.sweep()
             st = devlogins.status(login_id)
@@ -515,7 +523,8 @@ def register(app) -> None:
     def users_page(request: Request, admin: tuple[str, str] = Depends(current_admin)):
         show_all = request.query_params.get("all") == "1"
         with lock:
-            devlogins.sweep()
+            if admin[0] == "admin":
+                devlogins.sweep()
             now = ctx.now()
             hidden = set(ctx.settings.hidden_users)
             book = pricing.PriceBook(repo.list_prices(ctx.conn))
@@ -525,8 +534,8 @@ def register(app) -> None:
                     repo.usage_by_user_model_windows(ctx.conn, now - 86400, now - 7 * 86400), {}, book
                 )
             }
-            labels = {a.id: a.label for a in repo.list_accounts(ctx.conn)}
-            assigned = {a.username: labels.get(a.account_pk, "?") for a in repo.all_active(ctx.conn)}
+            accounts_by_id = {a.id: a for a in repo.list_accounts(ctx.conn)}
+            assigned = {a.username: accounts_by_id.get(a.account_pk) for a in repo.all_active(ctx.conn)}
             rows = []
             for u in ctx.list_users(ctx.settings.min_uid):
                 if not show_all and u.name in hidden:
@@ -537,9 +546,11 @@ def register(app) -> None:
                     repo.last_assignment_change(ctx.conn, u.name),
                 )
                 used = usage.get(u.name, {})
+                account = assigned.get(u.name)
                 rows.append({
                     "name": u.name,
-                    "account": assigned.get(u.name, ""),
+                    "account": clean_text(account.name) if account else "",
+                    "account_label": clean_text(account.label) if account and account.display_name else "",
                     "link": clean_text(link.kind),
                     "target": clean_text(link.target or "", 200),
                     "t24": used.get("today", 0),
@@ -685,7 +696,6 @@ def register(app) -> None:
     def usage_user_rows() -> tuple[list[sqlite3.Row], pricing.PriceBook]:
         today, week = usage_windows()
         with lock:
-            devlogins.sweep()
             rows = repo.usage_by_user_model_windows(ctx.conn, today, week)
             return rows, pricing.PriceBook(repo.list_prices(ctx.conn))
 
@@ -721,7 +731,8 @@ def register(app) -> None:
     def usage_page(request: Request, admin: tuple[str, str] = Depends(current_admin)):
         today, week = usage_windows()
         with lock:
-            devlogins.sweep()
+            if admin[0] == "admin":
+                devlogins.sweep()
             book = pricing.PriceBook(repo.list_prices(ctx.conn))
             periods = []
             for key, title, since in (("today", "今天", today), ("week", "近 7 天", week), ("all", "全部", 0)):
@@ -823,7 +834,8 @@ def register(app) -> None:
     @app.get("/pricing", response_class=HTMLResponse)
     def pricing_page(request: Request, admin: tuple[str, str] = Depends(current_admin)):
         with lock:
-            devlogins.sweep()
+            if admin[0] == "admin":
+                devlogins.sweep()
             prices = repo.list_prices(ctx.conn)
         return render(request, "pricing.html", admin=admin[0], csrf=admin[1], prices=prices)
 
@@ -888,7 +900,8 @@ def register(app) -> None:
     @app.get("/audit", response_class=HTMLResponse)
     def audit_page(request: Request, admin: tuple[str, str] = Depends(current_admin)):
         with lock:
-            devlogins.sweep()
+            if admin[0] == "admin":
+                devlogins.sweep()
             audit_rows = [
                 {
                     "ts": fmt_ts(r["ts"]), "actor": clean_text(r["actor"]), "action": clean_text(r["action"]),

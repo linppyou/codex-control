@@ -47,19 +47,19 @@
   {% endfor %}
 </div>
 <div class="panel flush">
-  <div class="panel-head"><h2><span class="section-mark"></span>按用户</h2><span class="hint">每个用户下列出各模型在三个时间段的用量与估算费用</span></div>
+  <div class="panel-head"><h2><span class="section-mark"></span>按用户</h2><span class="hint">点击用户名展开或折叠各模型用量</span></div>
   <div class="table-wrap"><table class="usage-users">
     <thead><tr><th>用户 / 模型</th><th>账号</th><th class="num">今天</th><th class="num">近 7 天</th><th class="num">全部</th><th class="num">次数</th></tr></thead>
     {% for u in users %}
     <tbody>
-    <tr class="user-row"><td><b>{{ u.username }}</b></td>
+    <tr class="user-row"><td><button type="button" class="user-usage-toggle" aria-expanded="false" aria-label="展开 {{ u.username }} 的模型用量"><span class="usage-chevron" aria-hidden="true">▾</span><b>{{ u.username }}</b></button></td>
       <td>{% for l in u.labels %}<span class="tag">{{ l }}</span> {% else %}<span class="muted">-</span>{% endfor %}</td>
       {{ cost_cell(u.today, u.cost_today, u.unpriced_today) }}
       {{ cost_cell(u.week, u.cost_week, u.unpriced_week) }}
       {{ cost_cell(u.total, u.cost_total, u.unpriced_total) }}
       <td class="num">{{ u.turns }}</td></tr>
     {% for m in u.models %}
-    <tr class="model-sub"><td colspan="2"><span class="model-name{% if not m.known %} muted{% endif %}">{{ m.name }}</span></td>
+    <tr class="model-sub" hidden><td colspan="2"><span class="model-name{% if not m.known %} muted{% endif %}">{{ m.name }}</span></td>
       {{ cost_cell(m.today, m.cost_today) }}
       {{ cost_cell(m.week, m.cost_week) }}
       {{ cost_cell(m.total, m.cost_total) }}
@@ -89,4 +89,5 @@
   </table></div>
   <div class="pricing-note hint">未匹配价目表的模型显示“未定价”，token 仍计入总量但不计入费用；带 * 的合计表示其中包含未定价模型。</div>
 </div>
+<script src="/static/usage.js" defer></script>
 {% endblock %}

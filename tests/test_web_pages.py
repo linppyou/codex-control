@@ -40,7 +40,7 @@ def mgr(ctx, tmp_path):
 
 @pytest.fixture
 def c(ctx, mgr):
-    webauth.create_admin(ctx.conn, "root_admin", PW, now=ctx.now())
+    webauth.create_admin(ctx.conn, "admin", PW, now=ctx.now())
     client = TestClient(create_app(ctx, devlogins=mgr), follow_redirects=False)
     assert do_login(client).status_code == 303
     client.csrf = re.search(r'name="csrf" value="([^"]+)"', client.get("/").text).group(1)
@@ -75,7 +75,7 @@ def test_pages_render(c, ctx):
 
 
 def test_pages_require_login(ctx, mgr):
-    webauth.create_admin(ctx.conn, "root_admin", PW, now=ctx.now())
+    webauth.create_admin(ctx.conn, "admin", PW, now=ctx.now())
     anon = TestClient(create_app(ctx, devlogins=mgr), follow_redirects=False)
     for p in ("/", "/accounts", "/users", "/usage", "/usage.csv", "/pricing", "/audit", "/accounts/login/x", "/accounts/login/x/status"):
         r = anon.get(p)
@@ -108,7 +108,7 @@ def test_create_user_from_users_page(c, ctx):
     row = ctx.conn.execute(
         "SELECT actor, action, target, detail FROM audit_log WHERE action = 'user.create'"
     ).fetchone()
-    assert tuple(row)[:3] == ("web:root_admin", "user.create", "alice")
+    assert tuple(row)[:3] == ("web:admin", "user.create", "alice")
     assert pw not in row["detail"] and pw not in q["msg"]
     assert pw not in c.get("/users").text
 
@@ -152,7 +152,7 @@ def test_bulk_assign_and_unassign(c, ctx):
         assert (ctx.test_users.get(n).home / ".codex" / "auth.json").is_symlink()
         assert repo.active_assignment(ctx.conn, n).account_pk == 1
     assert any(call[0] == "setfacl" for call in ctx.test_runner.calls)
-    assert ("web:root_admin", "assign", "alice", "- -> acc1") in [
+    assert ("web:admin", "assign", "alice", "- -> acc1") in [
         tuple(x) for x in ctx.conn.execute("SELECT actor, action, target, detail FROM audit_log")
     ]
     assert "acc1" in c.get("/users").text
@@ -186,7 +186,7 @@ def test_refresh_success_failure_and_busy(c, ctx, monkeypatch):
         lambda ctx_, acc, actor, blocking=True: calls.append((actor, blocking)) or True,
     )
     assert qs(post(c, "/accounts/acc1/refresh"))[1] == {"msg": "刷新成功"}
-    assert calls == [("web:root_admin", False)]
+    assert calls == [("web:admin", False)]
     monkeypatch.setattr("codexctl.refresher.refresh_account", lambda *a, **k: False)
     repo.set_status(ctx.conn, 1, "needs_relogin", "token reused")
     assert "token reused" in qs(post(c, "/accounts/acc1/refresh"))[1]["err"]
@@ -222,7 +222,7 @@ def test_device_login_add_full_flow(c, ctx, mgr):
     path, q = qs(c.get(page))
     assert path == "/accounts" and "已被取走" in q["err"]
     assert ctx.conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='account.add'").fetchone()[0] == n == 1
-    assert ("web:root_admin", "account.add") in [tuple(x) for x in ctx.conn.execute("SELECT actor, action FROM audit_log")]
+    assert ("web:admin", "account.add") in [tuple(x) for x in ctx.conn.execute("SELECT actor, action FROM audit_log")]
 
 
 def test_device_login_relogin_and_errors(c, ctx, mgr):
@@ -254,7 +254,7 @@ def test_device_login_cancel_and_unknown(c, ctx, mgr):
 
 
 def test_shutdown_cancels_logins(ctx, mgr):
-    webauth.create_admin(ctx.conn, "root_admin", PW, now=ctx.now())
+    webauth.create_admin(ctx.conn, "admin", PW, now=ctx.now())
     with TestClient(create_app(ctx, devlogins=mgr), follow_redirects=False) as cl:
         do_login(cl)
         csrf = re.search(r'name="csrf" value="([^"]+)"', cl.get("/").text).group(1)
@@ -321,10 +321,11 @@ def test_usage_page_per_user_models(c, ctx):
     # alice 近 7 天更多，排在 bob 前面；每个用户下有各自模型的子行
     assert table.index("alice") < table.index("bob")
     alice = table[table.index("alice"):table.index("bob")]
-    assert alice.count('class="model-sub"') == 2 and "gpt-a" in alice and "gpt-b" in alice
+    assert table.count('class="user-usage-toggle" aria-expanded="false"') == 2
+    assert alice.count('class="model-sub" hidden') == 2 and "gpt-a" in alice and "gpt-b" in alice
     assert "3K" in alice and "7M" in alice and "7.0M" not in alice
     bob = table[table.index("bob"):]
-    assert bob.count('class="model-sub"') == 1 and "3.3B" in bob
+    assert bob.count('class="model-sub" hidden') == 1 and "3.3B" in bob
 
 
 def test_usage_page_shows_cost_and_price_list(c, ctx):
@@ -510,8 +511,8 @@ def test_republish_and_cancel_audited(c, ctx):
     page = post(c, "/accounts/login", label="zzz", mode="add").headers["location"]
     post(c, page + "/cancel")
     got = [tuple(x) for x in ctx.conn.execute("SELECT actor, action, target FROM audit_log")]
-    assert ("web:root_admin", "account.republish", "acc1") in got
-    assert ("web:root_admin", "account.login_cancel", "zzz") in got
+    assert ("web:admin", "account.republish", "acc1") in got
+    assert ("web:admin", "account.login_cancel", "zzz") in got
 
 
 USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
@@ -575,7 +576,7 @@ def test_quota_refresh_records_sample_and_requires_csrf(c, ctx):
     assert path == "/accounts" and q == {"msg": "额度已更新"}
     h = repo.quota_history(ctx.conn, 1, 0)
     assert len(h) == 1 and h[0]["primary"]["used_percent"] == 33.0
-    assert ("web:root_admin", "account.quota_refresh", "acc1") in [
+    assert ("web:admin", "account.quota_refresh", "acc1") in [
         tuple(x) for x in ctx.conn.execute("SELECT actor, action, target FROM audit_log")
     ]
     ctx.test_routes[("GET", USAGE_URL)] = lambda r: httpx.Response(500)
@@ -626,7 +627,7 @@ def test_dashboard_and_accounts_links(c, ctx):
 
 
 def test_quota_pages_require_login(ctx, mgr):
-    webauth.create_admin(ctx.conn, "root_admin", PW, now=ctx.now())
+    webauth.create_admin(ctx.conn, "admin", PW, now=ctx.now())
     anon = TestClient(create_app(ctx, devlogins=mgr), follow_redirects=False)
     for p in ("/accounts/acc1/quota", "/accounts/acc1/quota.csv"):
         r = anon.get(p)
@@ -679,6 +680,22 @@ def test_account_rename(c, ctx):
     assert "err" in qs(post(c, "/accounts/nope/name", name="x"))[1]
     assert "已清除" in qs(post(c, "/accounts/acc1/name", name=""))[1]["msg"]
     assert repo.get_account(ctx.conn, "acc1").display_name is None
+
+
+
+def test_users_page_shows_assigned_account_name_and_label(c, ctx):
+    add_acc(ctx)
+    ctx.test_users.add("alice")
+    assignments.assign(ctx, "alice", "acc1", "test")
+    post(c, "/accounts/acc1/name", name="主力号")
+    page = c.get("/users").text
+    row = re.search(r"<tr>\s*.*?<b>alice</b>.*?</tr>", page, re.S).group()
+    assert '<span class="tag">主力号</span>' in row
+    assert '<span class="tag">acc1</span>' in row
+    post(c, "/accounts/acc1/name", name="")
+    page = c.get("/users").text
+    row = re.search(r"<tr>\s*.*?<b>alice</b>.*?</tr>", page, re.S).group()
+    assert row.count('<span class="tag">acc1</span>') == 1
 
 
 def test_users_page_flags_stale_codex(c, ctx, monkeypatch):

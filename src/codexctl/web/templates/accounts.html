@@ -4,12 +4,12 @@
 <div class="page-head"><div><h1>账号</h1><div class="sub">共 {{ rows|length }} 个账号</div></div></div>
 <div class="panel flush">
 <div class="table-wrap"><table>
-  <thead><tr><th>名称 / 标签</th><th>邮箱</th><th>套餐</th><th>状态</th><th>额度</th><th>last_error</th><th class="num">用户数</th><th>上次刷新</th><th>token 到期</th><th>操作</th></tr></thead>
+  <thead><tr><th>名称 / 标签</th><th>邮箱</th><th>套餐</th><th>状态</th><th>额度</th><th>last_error</th><th class="num">用户数</th><th>上次刷新</th><th>token 到期</th>{% if is_admin %}<th>操作</th>{% endif %}</tr></thead>
   <tbody>
   {% for r in rows %}
   <tr>
     <td class="name-cell">
-      <details class="rename">
+      {% if is_admin %}<details class="rename">
         <summary title="点击编辑名称"><span class="acc-name">{{ r.name }}</span>{% if r.display_name %} <span class="tag">{{ r.label }}</span>{% endif %}<span class="edit-hint">编辑</span></summary>
         <form method="post" action="/accounts/{{ r.label }}/name" class="rename-form">
           <input type="hidden" name="csrf" value="{{ csrf }}">
@@ -17,12 +17,12 @@
           <button class="btn small primary">保存</button>
         </form>
         <div class="hint">只改显示名称，标签 {{ r.label }} 不变；留空恢复为标签</div>
-      </details>
+      </details>{% else %}<span class="acc-name">{{ r.name }}</span>{% if r.display_name %} <span class="tag">{{ r.label }}</span>{% endif %}{% endif %}
     </td><td>{{ r.email }}</td><td class="mono">{{ r.plan }}</td>
     <td><span class="badge {{ r.status }}">{{ r.status }}</span></td>
     <td class="nowrap mono">{% for q in r.quota %}{{ q.name }} {{ "未知" if q.percent is none else q.percent ~ "%" }}{% if not loop.last %} / {% endif %}{% else %}<span class="muted">-</span>{% endfor %} <a href="/accounts/{{ r.label }}/quota">记录</a></td>
     <td class="muted">{{ r.last_error }}</td><td class="num">{{ r.users }}</td><td class="mono nowrap">{{ r.last_refresh }}</td><td class="mono nowrap">{{ r.expires }}</td>
-    <td class="ops">
+    {% if is_admin %}<td class="ops">
       {% for act, text in (("refresh", "刷新"), ("republish", "重新发布")) %}
       <form method="post" action="/accounts/{{ r.label }}/{{ act }}" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn small">{{ text }}</button></form>
       {% endfor %}
@@ -32,7 +32,7 @@
       {% else %}
       <form method="post" action="/accounts/{{ r.label }}/disable" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn small danger">停用</button></form>
       {% endif %}
-    </td>
+    </td>{% endif %}
   </tr>
   {% else %}
   <tr><td colspan="10" class="empty">还没有账号</td></tr>
@@ -40,7 +40,7 @@
   </tbody>
 </table></div>
 </div>
-<div class="panel">
+{% if is_admin %}<div class="panel">
   <div class="section-head"><span class="section-title"><span class="section-mark"></span>添加账号</span></div>
   <form method="post" action="/accounts/login" class="form-row">
     <input type="hidden" name="csrf" value="{{ csrf }}">
@@ -50,4 +50,5 @@
     <span class="hint">小写字母、数字、- 或 _，提交后按提示完成设备登录</span>
   </form>
 </div>
+{% endif %}
 {% endblock %}

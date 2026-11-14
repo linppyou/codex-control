@@ -13,11 +13,11 @@ PW = "correct-horse-battery"
 @pytest.fixture
 def client(ctx):
     ctx.settings = dataclasses.replace(ctx.settings, web_cookie_secure=False)
-    webauth.create_admin(ctx.conn, "root_admin", PW, now=ctx.now())
+    webauth.create_admin(ctx.conn, "admin", PW, now=ctx.now())
     return TestClient(create_app(ctx), follow_redirects=False)
 
 
-def do_login(client, username="root_admin", password=PW, **kw):
+def do_login(client, username="admin", password=PW, **kw):
     client.get("/login")
     return client.post(
         "/login",
@@ -42,21 +42,21 @@ def test_login_success(client, ctx):
     assert "httponly" in r.headers["set-cookie"].lower()
     assert "samesite=strict" in r.headers["set-cookie"].lower()
     assert client.get("/").status_code == 200
-    assert ("root_admin", "web.login", "testclient", "") in audits(ctx)
+    assert ("admin", "web.login", "testclient", "") in audits(ctx)
     assert 'style="' not in client.get("/").text
 
 
 def test_login_requires_prelogin_csrf(client):
     client.get("/login")
-    assert client.post("/login", data={"username": "root_admin", "password": PW, "csrf": "bad"}).status_code == 403
-    assert client.post("/login", data={"username": "root_admin", "password": PW}).status_code == 403
+    assert client.post("/login", data={"username": "admin", "password": PW, "csrf": "bad"}).status_code == 403
+    assert client.post("/login", data={"username": "admin", "password": PW}).status_code == 403
 
 
 def test_login_failure_audited(client, ctx):
     r = do_login(client, password="wrong-password-xx")
     assert r.status_code == 200 and "用户名或密码错误" in r.text
     r = do_login(client, username="ev\nil\x00")
-    assert ("web", "web.login_failed", "testclient", "root_admin") in audits(ctx)
+    assert ("web", "web.login_failed", "testclient", "admin") in audits(ctx)
     assert all("\n" not in a[3] and "\x00" not in a[3] for a in audits(ctx))
 
 
@@ -101,15 +101,15 @@ def test_security_headers(client):
 
 def test_real_ip_not_trusted_from_remote(client, ctx):
     do_login(client, password="wrong-password-xx", headers={"X-Real-IP": "1.2.3.4"})
-    assert ("web", "web.login_failed", "testclient", "root_admin") in audits(ctx)
+    assert ("web", "web.login_failed", "testclient", "admin") in audits(ctx)
 
 
 def test_real_ip_trusted_from_loopback(ctx):
     ctx.settings = dataclasses.replace(ctx.settings, web_cookie_secure=False)
-    webauth.create_admin(ctx.conn, "root_admin", PW, now=ctx.now())
+    webauth.create_admin(ctx.conn, "admin", PW, now=ctx.now())
     c = TestClient(create_app(ctx), client=("127.0.0.1", 5000), follow_redirects=False)
     do_login(c, password="wrong-password-xx", headers={"X-Real-IP": "1.2.3.4"})
-    assert ("web", "web.login_failed", "1.2.3.4", "root_admin") in audits(ctx)
+    assert ("web", "web.login_failed", "1.2.3.4", "admin") in audits(ctx)
 
 
 def test_docs_disabled_and_static(client):
@@ -188,7 +188,7 @@ def test_client_ip_rules(ctx):
 
 def test_user_limiter_threshold_is_30(ctx):
     ctx.settings = dataclasses.replace(ctx.settings, web_cookie_secure=False)
-    webauth.create_admin(ctx.conn, "root_admin", PW, now=ctx.now())
+    webauth.create_admin(ctx.conn, "admin", PW, now=ctx.now())
     app = create_app(ctx)
     c = TestClient(app, client=("127.0.0.1", 1), follow_redirects=False)
     for i in range(30):
@@ -208,3 +208,29 @@ def test_favicon_public(client):
     svg = client.get("/static/favicon.svg")
     assert svg.status_code == 200 and "image/svg+xml" in svg.headers["content-type"]
     assert 'rel="icon"' in client.get("/login").text
+
+
+def test_user_panel_is_read_only(client, ctx):
+    webauth.create_admin(ctx.conn, "linpp", PW, now=ctx.now())
+    assert do_login(client, username="linpp").status_code == 303
+    for path in ("/", "/accounts", "/users", "/usage", "/pricing", "/audit"):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert "用户面板（只读）" in response.text
+        assert 'method="post" action="/logout"' in response.text
+        assert 'method="post" action="/pricing/add"' not in response.text
+        assert 'method="post" action="/users/create"' not in response.text
+    csrf = re.search(r'name="csrf" value="([^"]+)"', client.get("/").text).group(1)
+    for path in ("/users/create", "/users/assign", "/accounts/login", "/pricing/add"):
+        assert client.post(path, data={"csrf": csrf}).status_code == 403
+    assert client.get("/accounts/login/example/status").status_code == 403
+    assert client.post("/logout", data={"csrf": csrf}).status_code == 303
+
+
+def test_default_admin_created_once(ctx):
+    create_app(ctx)
+    assert webauth.verify_login(ctx.conn, "admin", "root@root.root")
+    webauth.set_password(ctx.conn, "admin", PW, now=ctx.now())
+    create_app(ctx)
+    assert webauth.verify_login(ctx.conn, "admin", PW)
+    assert not webauth.verify_login(ctx.conn, "admin", "root@root.root")
