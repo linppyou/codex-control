@@ -414,7 +414,7 @@ def usage_user_accounts(conn: sqlite3.Connection) -> dict[str, list[str]]:
     return out
 
 
-def user_recent_sessions(conn: sqlite3.Connection, username: str, limit: int = 50) -> list[sqlite3.Row]:
+def user_recent_sessions(conn: sqlite3.Connection, username: str, limit: int = 50, offset: int = 0, model: str = "", account: str = "") -> list[sqlite3.Row]:
     """查询用户的最近会话（按最后活跃时间倒序），包含 token 分项和所用账号与模型列表。"""
     return conn.execute(
         """
@@ -433,21 +433,54 @@ def user_recent_sessions(conn: sqlite3.Connection, username: str, limit: int = 5
         FROM usage_events u
         LEFT JOIN accounts a ON a.id = u.account_pk
         WHERE u.username = ?
+          AND (? = '' OR EXISTS (SELECT 1 FROM usage_events m WHERE m.username = u.username AND m.session_file = u.session_file AND m.model = ?))
+          AND (? = '' OR EXISTS (SELECT 1 FROM usage_events e JOIN accounts a2 ON a2.id = e.account_pk WHERE e.username = u.username AND e.session_file = u.session_file AND a2.label = ?))
         GROUP BY u.session_file
-        ORDER BY last_active_at DESC
-        LIMIT ?
+        ORDER BY last_active_at DESC, u.session_file DESC
+        LIMIT ? OFFSET ?
         """,
-        (username, limit),
+        (username, model, model, account, account, limit, offset),
     ).fetchall()
 
 
-def user_session_count(conn: sqlite3.Connection, username: str) -> int:
+def user_session_count(conn: sqlite3.Connection, username: str, model: str = "", account: str = "") -> int:
     """查询指定用户的会话总数。"""
     row = conn.execute(
-        "SELECT COUNT(DISTINCT session_file) FROM usage_events WHERE username = ?",
-        (username,),
+        """SELECT COUNT(DISTINCT u.session_file) FROM usage_events u WHERE u.username = ?
+        AND (? = '' OR EXISTS (SELECT 1 FROM usage_events m WHERE m.username = u.username AND m.session_file = u.session_file AND m.model = ?))
+        AND (? = '' OR EXISTS (SELECT 1 FROM usage_events e JOIN accounts a ON a.id = e.account_pk WHERE e.username = u.username AND e.session_file = u.session_file AND a.label = ?))""",
+        (username, model, model, account, account),
     ).fetchone()
     return int(row[0]) if row and row[0] is not None else 0
+
+
+def user_daily_usage(conn: sqlite3.Connection, username: str, since: int, until: int) -> list[sqlite3.Row]:
+    """Aggregate by server-local calendar day, within a half-open time range."""
+    return conn.execute("""
+        SELECT date(ts, 'unixepoch', 'localtime') AS day, COUNT(*) AS turns,
+               SUM(total_tokens) AS total, SUM(input_tokens) AS input,
+               SUM(cached_input_tokens) AS cached, SUM(output_tokens) AS output
+        FROM usage_events WHERE username = ? AND ts >= ? AND ts < ?
+        GROUP BY day ORDER BY day
+    """, (username, since, until)).fetchall()
+
+
+def usage_daily_by_user_model(conn: sqlite3.Connection, since: int, until: int) -> list[sqlite3.Row]:
+    """Summarize a bounded range by local calendar day, user and model."""
+    return conn.execute("""
+        SELECT date(ts, 'unixepoch', 'localtime') AS day, username, model,
+               SUM(total_tokens) AS total, SUM(input_tokens) AS input,
+               SUM(cached_input_tokens) AS cached, SUM(output_tokens) AS output,
+               COUNT(*) AS turns
+        FROM usage_events WHERE ts >= ? AND ts < ?
+        GROUP BY day, username, model ORDER BY day, username
+    """, (since, until)).fetchall()
+
+
+def user_session_filters(conn: sqlite3.Connection, username: str) -> tuple[list[str], list[str]]:
+    models = [r[0] for r in conn.execute("SELECT DISTINCT model FROM usage_events WHERE username = ? AND model IS NOT NULL AND model != '' ORDER BY model", (username,))]
+    accounts = [r[0] for r in conn.execute("SELECT DISTINCT a.label FROM usage_events u JOIN accounts a ON a.id = u.account_pk WHERE u.username = ? ORDER BY a.label", (username,))]
+    return models, accounts
 
 
 def user_sessions_model_breakdown(

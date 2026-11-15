@@ -797,3 +797,115 @@ def test_user_detail_action_redirects_back(c, ctx):
     r = c.post("/users/alice/fix", data={"csrf": c.csrf, "next": "/users/alice"})
     path, q = qs(r)
     assert path == "/users/alice" and "已修复" in q.get("msg", "")
+
+
+def test_user_detail_daily_chart_and_session_pagination(c, ctx):
+    ctx.test_users.add("alice")
+    acc = add_acc(ctx, label="daily-acc")
+    d = {f: 0 for f in repo.USAGE_FIELDS}
+    d.update(input_tokens=100, cached_input_tokens=10, output_tokens=20, total_tokens=120)
+    for i in range(21):
+        repo.insert_usage(ctx.conn, "alice", acc.id, ctx.now() - i, d, f"session-{i}.jsonl", "daily-model")
+    r = c.get("/users/alice?days=7&model=daily-model&account_filter=daily-acc")
+    assert r.status_code == 200
+    assert "每日用量" in r.text and "近 7 天" in r.text
+    assert "2,520" in r.text and "缓存输入" in r.text
+    assert "第 1 / 2 页" in r.text and "下一页" in r.text
+    assert "session-20" not in r.text
+    r = c.get("/users/alice?days=7&model=daily-model&account_filter=daily-acc&page=2")
+    assert r.status_code == 200 and "session-20" in r.text and "上一页" in r.text
+    r = c.get("/users/alice?model=missing")
+    assert "没有符合条件的会话" in r.text
+
+
+def test_usage_comparison_panel_renders(ctx):
+    from starlette.requests import Request
+
+    ctx.test_users.add("alice")
+    d = {f: 0 for f in repo.USAGE_FIELDS}
+    d.update(input_tokens=1_000_000, cached_input_tokens=250_000, output_tokens=200_000, total_tokens=1_200_000)
+    repo.insert_usage(ctx.conn, "alice", None, ctx.now(), d, "alice-session", "unknown-model")
+    repo.insert_usage(ctx.conn, "bob", None, ctx.now(), d, "bob-session", "unknown-model")
+    app = create_app(ctx)
+    request = Request({"type": "http", "method": "GET", "path": "/", "query_string": b"", "headers": [], "app": app, "client": ("127.0.0.1", 1), "server": ("localhost", 80), "scheme": "http", "root_path": ""})
+    endpoint = next(route.endpoint for route in app.routes if getattr(route, "path", "") == "/")
+    response = endpoint(request, days=7, admin=("admin", "test"))
+    html = response.body.decode()
+    assert "用户用量对比" in html and "近 7 天" in html
+    assert "alice" in html and "bob" in html and "未定价" in html
+    assert 'compare-line compare-0' in html and 'compare-line compare-1' in html
+    assert 'data-series-toggle="0" aria-pressed="true"' in html
+    assert html.index('>Codex</span>') < html.index('>用户用量对比</h2>') < html.index('>未解决告警</span>')
+    assert '折线图' in html and '查看每日用户用量' in html
+    assert 'data-chart-kind="comparison"' in html and 'data-chart-names=' in html
+    assert html.count('class="chart-hit"') == 7
+    assert 'chart-inspector.js' in html and 'data-values-short=' in html
+    assert 'data-total-short=' in html
+    assert "25.0%" in html
+    assert 'title="1,200,000 tokens">1.2M</td>' in html
+    assert 'title="2,400,000 tokens">2.4M</td>' in html
+
+
+def test_user_detail_uses_latest_session_title_and_fallback(ctx):
+    from starlette.requests import Request
+
+    alice = ctx.test_users.add("alice")
+    session_id = "01a1de3b-4512-74d0-8b43-841dc78a0577"
+    codex = alice.home / ".codex"
+    session_dir = codex / "sessions"
+    session_dir.mkdir(parents=True)
+    path = session_dir / f"rollout-2026-11-15T12-00-00-{session_id}.jsonl"
+    path.write_text(json.dumps({"payload": {"type": "message", "role": "user", "content": "初始问题"}}) + "\n")
+    (codex / "session_index.jsonl").write_text(
+        json.dumps({"id": session_id, "thread_name": "旧标题"}) + "\n" +
+        json.dumps({"id": session_id, "thread_name": "更新后的会话标题"}) + "\n"
+    )
+    d = {f: 0 for f in repo.USAGE_FIELDS}
+    d.update(input_tokens=100, output_tokens=20, total_tokens=120)
+    repo.insert_usage(ctx.conn, "alice", None, ctx.now(), d, str(path), "model")
+    app = create_app(ctx)
+    request = Request({"type": "http", "method": "GET", "path": "/users/alice", "query_string": b"", "headers": [], "app": app, "client": ("127.0.0.1", 1), "server": ("localhost", 80), "scheme": "http", "root_path": ""})
+    endpoint = next(route.endpoint for route in app.routes if getattr(route, "path", "") == "/users/{name}")
+    def render():
+        return endpoint("alice", request, days=7, page=1, model="", account_filter="", admin=("admin", "test")).body.decode()
+    html = render()
+    assert 'class="session-title" title="更新后的会话标题"' in html
+    assert 'class="session-reference"' in html
+    assert 'data-chart-kind="daily"' in html and html.count('class="chart-hit"') == 7
+    assert 'data-cached-short=' in html and 'chart-inspector.js' in html
+    (codex / "session_index.jsonl").unlink()
+    assert 'class="session-title" title="初始问题"' in render()
+
+
+def test_usage_comparison_shows_every_user(ctx):
+    from starlette.requests import Request
+
+    d = {f: 0 for f in repo.USAGE_FIELDS}
+    d.update(input_tokens=100, output_tokens=20, total_tokens=120)
+    for i in range(7):
+        repo.insert_usage(ctx.conn, f"user{i}", None, ctx.now(), d, f"session{i}", "model")
+    app = create_app(ctx)
+    request = Request({"type": "http", "method": "GET", "path": "/", "query_string": b"", "headers": [], "app": app, "client": ("127.0.0.1", 1), "server": ("localhost", 80), "scheme": "http", "root_path": ""})
+    endpoint = next(route.endpoint for route in app.routes if getattr(route, "path", "") == "/")
+    html = endpoint(request, days=7, admin=("admin", "test")).body.decode()
+    assert '其他用户' not in html
+    assert html.count('class="compare-line ') == 7
+    for i in range(7):
+        assert f'<th class="num">user{i}</th>' in html
+        assert f'user{i}' in html
+    assert 'compare-line compare-6' in html
+
+
+def test_usage_charts_default_to_seven_days(ctx):
+    from starlette.requests import Request
+
+    ctx.test_users.add("alice")
+    app = create_app(ctx)
+    def request(path):
+        return Request({"type": "http", "method": "GET", "path": path, "query_string": b"", "headers": [], "app": app, "client": ("127.0.0.1", 1), "server": ("localhost", 80), "scheme": "http", "root_path": ""})
+    dashboard = next(route.endpoint for route in app.routes if getattr(route, "path", "") == "/")
+    detail = next(route.endpoint for route in app.routes if getattr(route, "path", "") == "/users/{name}")
+    assert 'href="?days=7#comparison" class="active"' in dashboard(request("/"), admin=("admin", "test")).body.decode()
+    html = detail("alice", request("/users/alice"), admin=("admin", "test")).body.decode()
+    assert 'option value="7" selected' in html and html.count('class="chart-hit"') == 7
+    assert 'href="?days=30#comparison" class="active"' in dashboard(request("/"), days=30, admin=("admin", "test")).body.decode()

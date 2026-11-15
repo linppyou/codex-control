@@ -1,5 +1,6 @@
 {% extends "base.html" %}
-{% block title %}总览 - codexctl{% endblock %}
+{% block title %}总览 - codexctl<script src="/static/chart-inspector.js" defer></script>
+{% endblock %}
 {% block content %}
 <div class="page-head"><div><h1>总览</h1><div class="sub">各账号本周额度与走势</div></div></div>
 <div class="section-head"><span class="section-title"><span class="section-mark"></span>Codex</span><span class="muted mono">{{ cards|length }} 个账号</span></div>
@@ -51,6 +52,7 @@
 <div class="acard empty-state">还没有账号，去 <a href="/accounts">账号</a> 页添加</div>
 {% endfor %}
 </div>
+{% include "_user_comparison.html" %}
 <div class="section-head"><span class="section-title"><span class="section-mark red"></span>未解决告警</span><span class="muted mono">{{ alerts|length }} 条</span></div>
 <div class="panel flush">
 {% if alerts %}
@@ -64,4 +66,5 @@
 </table></div>
 {% else %}<div class="empty-state">没有未解决的告警</div>{% endif %}
 </div>
+<script src="/static/chart-inspector.js" defer></script>
 {% endblock %}

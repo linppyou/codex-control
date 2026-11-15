@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import csv
+from datetime import datetime, timedelta
 import io
 import json
 import math
 import os
+import re
 from pathlib import Path
 import sqlite3
 import stat
@@ -279,13 +281,14 @@ def register(app) -> None:
         return f"web:{admin[0]}"
 
     @app.get("/", response_class=HTMLResponse)
-    def index(request: Request, admin: tuple[str, str] = Depends(current_admin)):
+    def index(request: Request, days: int = 7, admin: tuple[str, str] = Depends(current_admin)):
         with lock:
             msg, err = "", ""
             if admin[0] == "admin":
                 devlogins.sweep()
                 msg, err = _complete_finished_logins(app, admin)
             cards = _account_rows(ctx)
+            analytics = user_comparison(days)
             alerts = [
                 {
                     "level": clean_text(a["level"], 16), "kind": clean_text(a["kind"]),
@@ -294,7 +297,7 @@ def register(app) -> None:
                 }
                 for a in events.open_alerts(ctx.conn)
             ]
-        return render(request, "dashboard.html", admin=admin[0], csrf=admin[1], cards=cards, alerts=alerts, **_flash(msg, err))
+        return render(request, "dashboard.html", admin=admin[0], csrf=admin[1], cards=cards, alerts=alerts, **analytics, **_flash(msg, err))
 
     @app.get("/accounts", response_class=HTMLResponse)
     def accounts_page(request: Request, admin: tuple[str, str] = Depends(current_admin)):
@@ -688,6 +691,52 @@ def register(app) -> None:
             return base[: -len(".jsonl")]
         return base
 
+    def _session_titles(home: Path, uid: int, session_files: list[str]) -> dict[str, str]:
+        """Read the most recent title updates from the user's Codex session index."""
+        wanted = {}
+        for path in session_files:
+            match = re.search(r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.jsonl$", os.path.basename(path))
+            if match:
+                wanted[match.group(1).lower()] = path
+        if not wanted:
+            return {}
+        try:
+            directory = os.open(home / ".codex", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                st = os.fstat(directory)
+                if st.st_uid != uid:
+                    return {}
+                fd = os.open("session_index.jsonl", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY, dir_fd=directory)
+            finally:
+                os.close(directory)
+            with os.fdopen(fd, "rb") as f:
+                st = os.fstat(f.fileno())
+                if not stat.S_ISREG(st.st_mode) or st.st_uid != uid:
+                    return {}
+                # Bound memory and work for a user-controlled file; the index is append-only.
+                offset = max(0, st.st_size - 8 * 1024 * 1024)
+                f.seek(offset)
+                if offset:
+                    f.readline(8 * 1024 * 1024)
+                lines = f.read(8 * 1024 * 1024).splitlines()
+        except OSError:
+            return {}
+        titles = {}
+        for line in reversed(lines):
+            try:
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    continue
+                thread_id, title = row.get("id"), row.get("thread_name")
+                if not isinstance(thread_id, str) or not isinstance(title, str):
+                    continue
+                path = wanted.get(thread_id.lower())
+                if path and path not in titles and title.strip():
+                    titles[path] = " ".join(title.split())[:200]
+            except (ValueError, UnicodeError):
+                continue
+        return titles
+
     def _shorten_cwd(cwd: str | None, home: Path | None) -> str | None:
         if not cwd:
             return None
@@ -742,7 +791,7 @@ def register(app) -> None:
                             p = content
                         elif isinstance(content, list) and content and isinstance(content[0], dict):
                             p = content[0].get("text")
-                    if p and p.strip():
+                    if isinstance(p, str) and p.strip():
                         clean_p = " ".join(p.strip().split())
                         meta["first_prompt"] = clean_p[:80] + ("…" if len(clean_p) > 80 else "")
             if meta["cwd"] and meta["first_prompt"]:
@@ -777,9 +826,16 @@ def register(app) -> None:
         return _redirect(back, msg=msg, err=err)
 
     @app.get("/users/{name}", response_class=HTMLResponse)
-    def user_detail_page(name: str, request: Request, admin: tuple[str, str] = Depends(current_admin)):
+    def user_detail_page(name: str, request: Request, days: int = 7, page: int = 1, model: str = "", account_filter: str = "", admin: tuple[str, str] = Depends(current_admin)):
         clean_name = clean_text(name.strip(), 32)
         today, week = usage_windows()
+        days = days if days in (7, 30, 90) else 7
+        page = max(1, page)
+        model, account_filter = model[:200], account_filter[:200]
+        local_today = datetime.fromtimestamp(ctx.now()).date()
+        start_day = local_today - timedelta(days=days - 1)
+        start_ts = int(time.mktime(start_day.timetuple()))
+        end_ts = int(time.mktime((local_today + timedelta(days=1)).timetuple()))
         with lock:
             if admin[0] == "admin":
                 devlogins.sweep()
@@ -839,8 +895,30 @@ def register(app) -> None:
                 if summary[f"unpriced_{k}"] > 0 and summary[k] > 0 and summary[f"cost_{k}"] == 0.0:
                     summary[f"cost_{k}"] = None
 
-            session_rows = repo.user_recent_sessions(ctx.conn, clean_name, limit=50)
+            daily_rows = {r["day"]: r for r in repo.user_daily_usage(ctx.conn, clean_name, start_ts, end_ts)}
+            daily = []
+            for i in range(days):
+                day = start_day + timedelta(days=i)
+                row = daily_rows.get(day.isoformat())
+                daily.append({"day": day.isoformat(), "label": day.strftime("%m-%d"),
+                              **{k: (row[k] or 0) if row else 0 for k in ("total", "input", "cached", "output", "turns")}})
+            daily_max = max((d["total"] for d in daily), default=0)
+            for i, d in enumerate(daily):
+                d["x"] = round(45 + i * 900 / days, 2)
+                d["width"] = round(max(2, 900 / days - 2), 2)
+                d["height"] = round(max(0, d["total"]) / (daily_max or 1) * 150, 2)
+                d["y"] = round(165 - d["height"], 2)
+                d["show_label"] = i == 0 or i == days - 1 or (days <= 7 or (days <= 30 and i % 5 == 0) or (days > 30 and i % 15 == 0))
+            filter_models, filter_accounts = repo.user_session_filters(ctx.conn, clean_name)
+            filtered_sessions = repo.user_session_count(ctx.conn, clean_name, model, account_filter)
+            pages = max(1, math.ceil(filtered_sessions / 20))
+            page = min(page, pages)
+            session_rows = repo.user_recent_sessions(ctx.conn, clean_name, limit=20, offset=(page - 1) * 20, model=model, account=account_filter)
+            def page_url(n: int) -> str:
+                return "?" + urlencode({"days": days, "page": n, "model": model, "account_filter": account_filter}) + "#sessions"
+
             session_files = [r["session_file"] for r in session_rows]
+            session_titles = _session_titles(user.home, user.uid, session_files) if user else {}
             breakdown = repo.user_sessions_model_breakdown(ctx.conn, clean_name, session_files)
             costs: dict[str, tuple[float | None, int]] = {}
             for b in breakdown:
@@ -888,12 +966,16 @@ def register(app) -> None:
                     "cwd": cwd,
                     "cwd_short": _shorten_cwd(cwd, user_home),
                     "first_prompt": meta.get("first_prompt"),
+                    "title": session_titles.get(sf) or meta.get("first_prompt") or "未命名会话",
                 })
 
         return render(
             request, "user_detail.html", admin=admin[0], csrf=admin[1],
             username=clean_name, user=user, account=account, link=link, stale=stale,
             summary=summary, models=models, sessions=sessions, total_sessions=total_sessions,
+            daily=daily, daily_max=daily_max, days=days, page=page, pages=pages,
+            filtered_sessions=filtered_sessions, filter_models=filter_models, filter_accounts=filter_accounts,
+            selected_model=model, selected_account=account_filter, page_url=page_url,
         )
 
     def usage_windows() -> tuple[int, int]:
@@ -936,6 +1018,61 @@ def register(app) -> None:
             for k in ("today", "week", "total", "turns"):
                 u[k] += m[k]
         return sorted(users.values(), key=lambda u: (-u["week"], -u["total"], u["username"]))
+
+    def user_comparison(days: int) -> dict:
+        """Build the per-user daily chart for the dashboard; caller holds the lock."""
+        days = days if days in (7, 30, 90) else 7
+        local_today = datetime.fromtimestamp(ctx.now()).date()
+        start_day = local_today - timedelta(days=days - 1)
+        start_ts = int(time.mktime(start_day.timetuple()))
+        end_ts = int(time.mktime((local_today + timedelta(days=1)).timetuple()))
+        book = pricing.PriceBook(repo.list_prices(ctx.conn))
+        daily_rows = repo.usage_daily_by_user_model(ctx.conn, start_ts, end_ts)
+        comparison = {}
+        daily_totals = {}
+        for r in daily_rows:
+            u = comparison.setdefault(r["username"], {"name": clean_text(r["username"]), "raw": r["username"],
+                "total": 0, "input": 0, "cached": 0, "output": 0, "turns": 0, "cost": 0.0,
+                "priced": False, "unpriced": False})
+            for key in ("total", "input", "cached", "output", "turns"):
+                u[key] += r[key] or 0
+            cost = book.cost(r["model"], r["input"], r["cached"], r["output"])
+            if cost is None and (r["total"] or 0):
+                u["unpriced"] = True
+            elif cost is not None:
+                u["cost"] += cost
+                u["priced"] = True
+            key = (r["day"], r["username"])
+            daily_totals[key] = daily_totals.get(key, 0) + (r["total"] or 0)
+        ranking = sorted(comparison.values(), key=lambda u: (-u["total"], u["raw"]))
+        daily = []
+        for i in range(days):
+            day = start_day + timedelta(days=i)
+            key = day.isoformat()
+            values = [daily_totals.get((key, u["raw"]), 0) for u in ranking]
+            daily.append({"day": key, "label": day.strftime("%m-%d"), "values": values, "total": sum(values),
+                          "show_label": i == 0 or i == days - 1 or (days <= 7 or (days <= 30 and i % 5 == 0) or (days > 30 and i % 15 == 0))})
+        series_names = [u["name"] for u in ranking]
+        daily_max = max((value for d in daily for value in d["values"]), default=0)
+        series = [{"name": name, "index": i, "points": []} for i, name in enumerate(series_names)]
+        for i, d in enumerate(daily):
+            d["x"] = round(70 + i * 850 / max(1, days - 1), 2)
+            for index, item in enumerate(series):
+                value = d["values"][index]
+                y = round(175 - max(0, value) / (daily_max or 1) * 140, 2)
+                item["points"].append({"x": d["x"], "y": y, "value": value, "day": d["day"]})
+        for item in series:
+            item["path"] = " ".join(("M" if i == 0 else "L") + f"{p['x']},{p['y']}" for i, p in enumerate(item["points"]))
+        total_tokens = sum(u["total"] for u in ranking)
+        total_turns = sum(u["turns"] for u in ranking)
+        total_cost = sum(u["cost"] for u in ranking)
+        has_price = any(u["priced"] for u in ranking)
+        has_unpriced = any(u["unpriced"] for u in ranking)
+        total_input = sum(u["input"] for u in ranking)
+        total_cached = sum(u["cached"] for u in ranking)
+        return dict(days=days, ranking=ranking, daily=daily, daily_max=daily_max, series=series,
+                    total_tokens=total_tokens, total_turns=total_turns, total_cost=total_cost,
+                    has_price=has_price, has_unpriced=has_unpriced, total_input=total_input, total_cached=total_cached)
 
     @app.get("/usage", response_class=HTMLResponse)
     def usage_page(request: Request, admin: tuple[str, str] = Depends(current_admin)):

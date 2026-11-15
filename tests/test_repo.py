@@ -185,3 +185,41 @@ def test_user_recent_sessions_and_breakdown(ctx):
     assert by_model["gpt-4o"]["today"] == 230  # only ts=200 is >= 150
     assert by_model["gpt-4o"]["week"] == 350
     assert by_model["gpt-4o"]["total"] == 350
+
+
+def test_daily_usage_and_session_filters(ctx):
+    import time
+
+    pk1 = _insert(ctx, label="daily1", account_id="daily-a")
+    pk2 = _insert(ctx, label="daily2", account_id="daily-b")
+    d = {f: 0 for f in repo.USAGE_FIELDS}
+    d.update(input_tokens=100, cached_input_tokens=20, output_tokens=30, total_tokens=130)
+    start = int(time.mktime((2026, 1, 2, 0, 0, 0, 0, 0, -1)))
+    end = int(time.mktime((2026, 1, 3, 0, 0, 0, 0, 0, -1)))
+    repo.insert_usage(ctx.conn, "alice", pk1, start, d, "one", "model-a")
+    repo.insert_usage(ctx.conn, "alice", pk2, start + 60, d, "one", "model-b")
+    repo.insert_usage(ctx.conn, "alice", pk2, end, d, "two", "model-b")
+    repo.insert_usage(ctx.conn, "bob", pk1, start, d, "other", "model-a")
+    rows = repo.user_daily_usage(ctx.conn, "alice", start, end)
+    assert len(rows) == 1 and rows[0]["day"] == "2026-01-02"
+    assert (rows[0]["total"], rows[0]["cached"], rows[0]["turns"]) == (260, 40, 2)
+    assert repo.user_session_count(ctx.conn, "alice", "model-a", "daily2") == 1
+    sessions = repo.user_recent_sessions(ctx.conn, "alice", model="model-a", account="daily2")
+    assert len(sessions) == 1 and sessions[0]["total_tokens"] == 260
+    assert repo.user_session_count(ctx.conn, "alice", "model-a", "daily1") == 1
+    assert repo.user_recent_sessions(ctx.conn, "alice", limit=1, offset=1)[0]["session_file"] == "one"
+
+
+def test_usage_daily_by_user_model_respects_range_and_dimensions(ctx):
+    d = {f: 0 for f in repo.USAGE_FIELDS}
+    d.update(input_tokens=100, cached_input_tokens=25, output_tokens=20, total_tokens=120)
+    repo.insert_usage(ctx.conn, "alice", None, 100, d, "a", "model-a")
+    repo.insert_usage(ctx.conn, "bob", None, 101, d, "b", "model-a")
+    repo.insert_usage(ctx.conn, "alice", None, 102, d, "a", "model-b")
+    repo.insert_usage(ctx.conn, "alice", None, 103, d, "a", "model-a")
+    rows = repo.usage_daily_by_user_model(ctx.conn, 100, 103)
+    assert len(rows) == 3
+    assert sum(r["total"] for r in rows) == 360
+    assert sum(r["cached"] for r in rows) == 75
+    assert {r["username"] for r in rows} == {"alice", "bob"}
+    assert {r["model"] for r in rows} == {"model-a", "model-b"}

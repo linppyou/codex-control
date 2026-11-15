@@ -241,3 +241,108 @@ progress.bad::-moz-progress-bar { background: var(--red); }
 .user-link:hover { color: var(--green); text-decoration: underline; }
 .user-detail-link { font-size: 12px; color: var(--muted); text-decoration: none; margin-left: 6px; }
 .user-detail-link:hover { color: var(--green); }
+
+
+/* 用户每日用量与会话浏览 */
+.daily-range, .session-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--text-2); font-size: 12px; }
+.session-filters label { display: flex; align-items: center; gap: 5px; }
+.session-filters select { max-width: 180px; }
+.daily-chart-wrap { padding: 14px 20px 4px; }
+.daily-chart-scale { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; font-family: var(--mono); }
+.daily-chart { display: block; width: 100%; min-width: 520px; height: auto; }
+.daily-chart-wrap { overflow-x: auto; }
+.daily-grid { stroke: var(--line); stroke-width: 1; }
+.daily-bar { fill: var(--green-2); }
+.daily-bar:hover { fill: var(--green); }
+.daily-label { fill: var(--muted); font: 11px var(--mono); }
+.daily-details { border-top: 1px solid var(--line); }
+.daily-details summary { padding: 12px 20px; color: var(--text-2); cursor: pointer; font-size: 13px; }
+.session-pagination { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 20px; border-top: 1px solid var(--line); }
+@media (max-width: 720px) { .session-filters { width: 100%; } .daily-chart-wrap { padding: 12px; } }
+
+/* 跨用户用量对比 */
+.analytics-metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border-bottom: 1px solid var(--line); }
+.analytics-metrics > div { display: flex; flex-direction: column; gap: 3px; padding: 16px 20px; border-right: 1px solid var(--line-soft); }
+.analytics-metrics > div:last-child { border-right: 0; }
+.analytics-metrics span, .analytics-metrics small { color: var(--muted); font-size: 12px; }
+.analytics-metrics strong { font-size: 21px; font-variant-numeric: tabular-nums; }
+.compare-bar.compare-0, .compare-swatch.compare-0 { fill: #3f7d20; background: #3f7d20; }
+.compare-bar.compare-1, .compare-swatch.compare-1 { fill: #2f6fed; background: #2f6fed; }
+.compare-bar.compare-2, .compare-swatch.compare-2 { fill: #d9822b; background: #d9822b; }
+.compare-bar.compare-3, .compare-swatch.compare-3 { fill: #9255a8; background: #9255a8; }
+.compare-bar.compare-4, .compare-swatch.compare-4 { fill: #168680; background: #168680; }
+.compare-bar.compare-5, .compare-swatch.compare-5 { fill: #9aa5b1; background: #9aa5b1; }
+.compare-bar:hover { opacity: .7; }
+.compare-legend { display: flex; gap: 8px 18px; flex-wrap: wrap; color: var(--text-2); font-size: 12px; }
+.compare-legend span { display: inline-flex; gap: 6px; align-items: center; }
+.compare-swatch { width: 9px; height: 9px; border-radius: 2px; }
+.analytics-note { margin: 10px 20px 14px; }
+@media (max-width: 720px) { .analytics-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .analytics-metrics > div { border-bottom: 1px solid var(--line-soft); padding: 12px; } }
+
+/* 用量分析：清晰的指标与趋势 */
+.analytics-panel { border-color: #dfe7e2; box-shadow: 0 8px 28px rgba(32, 52, 43, .04); }
+.analytics-panel > .panel-head { padding: 22px 24px; align-items: center; }
+.analytics-eyebrow { color: #63836c; font: 600 10px var(--mono); letter-spacing: .13em; margin-bottom: 5px; }
+.analytics-panel .panel-head h2 { font-size: 19px; letter-spacing: -.02em; }
+.analytics-subtitle { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.analytics-range { display: inline-flex; gap: 3px; padding: 3px; border: 1px solid #e2e9e4; border-radius: 8px; background: #f4f7f5; }
+.analytics-range a { color: var(--text-2); text-decoration: none; font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 5px; white-space: nowrap; }
+.analytics-range a:hover { color: var(--green); }
+.analytics-range a.active { background: white; color: #285d3a; box-shadow: 0 1px 4px rgba(30, 55, 39, .12); }
+.analytics-metrics { background: #fafcfb; }
+.analytics-metrics > div { padding: 18px 24px; }
+.analytics-metrics strong { margin-top: 3px; color: #1d3427; font-size: 24px; letter-spacing: -.03em; }
+.compare-chart-area { padding: 24px 24px 20px; }
+.compare-chart-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.compare-chart-heading h3 { margin: 0; font-size: 15px; }
+.compare-chart-heading p { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+.compare-unit { color: var(--muted); font: 10px var(--mono); letter-spacing: .06em; white-space: nowrap; }
+.compare-legend { margin: 18px 0 0; gap: 8px 20px; }
+.compare-swatch { width: 18px; height: 3px; border-radius: 2px; }
+.compare-plot-wrap { overflow-x: auto; margin-top: 10px; }
+.compare-plot { display: block; width: 100%; min-width: 560px; height: auto; }
+.compare-plot .daily-grid { stroke: #e8eeea; stroke-dasharray: 3 4; }
+.compare-axis { fill: #899891; font: 11px var(--mono); }
+.compare-line { fill: none; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.compare-points circle { stroke: white; stroke-width: 1.2; vector-effect: non-scaling-stroke; }
+.compare-line.compare-0 { stroke: #3f7d20; } .compare-points.compare-0 { fill: #3f7d20; }
+.compare-line.compare-1 { stroke: #2f6fed; } .compare-points.compare-1 { fill: #2f6fed; }
+.compare-line.compare-2 { stroke: #d9822b; } .compare-points.compare-2 { fill: #d9822b; }
+.compare-line.compare-3 { stroke: #9255a8; } .compare-points.compare-3 { fill: #9255a8; }
+.compare-line.compare-4 { stroke: #168680; } .compare-points.compare-4 { fill: #168680; }
+.compare-line.compare-5 { stroke: #9aa5b1; } .compare-points.compare-5 { fill: #9aa5b1; }
+.compare-empty { padding: 52px 0; text-align: center; color: var(--muted); }
+.analytics-panel .daily-details summary { padding: 15px 24px; font-weight: 600; }
+@media (max-width: 720px) { .analytics-panel > .panel-head, .compare-chart-area { padding: 18px 16px; } .analytics-metrics > div { padding: 14px 16px; } .analytics-metrics strong { font-size: 21px; } .compare-plot { min-width: 560px; } }
+
+.session-title { font-weight: 600; max-width: 320px; overflow-wrap: anywhere; }
+.session-reference { margin-top: 3px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font: 11px var(--mono); }
+
+/* 图表数据检查器 */
+.chart-inspector { display: flex; align-items: center; gap: 8px 18px; flex-wrap: wrap; min-height: 44px; padding: 9px 12px; margin-top: 14px; background: #f5f8f6; border: 1px solid #e6ede8; border-radius: 7px; font-size: 12px; color: var(--text-2); }
+.chart-inspector-placeholder { color: var(--muted); }
+.chart-inspector-date { color: var(--text); font: 600 12px var(--mono); }
+.chart-inspector-value { display: inline-flex; gap: 5px; align-items: center; }
+.chart-inspector-value strong { color: var(--text); font-variant-numeric: tabular-nums; }
+.chart-hit { fill: transparent; cursor: crosshair; }
+.chart-hit:hover, .chart-hit.is-active, .chart-hit:focus { fill: rgba(63, 125, 32, .09); outline: none; }
+.interactive-chart:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+
+/* 更多用户的图表配色 */
+.compare-swatch.compare-5 { background: #ba5263; } .compare-line.compare-5 { stroke: #ba5263; } .compare-points.compare-5 { fill: #ba5263; }
+.compare-swatch.compare-6 { background: #936536; } .compare-line.compare-6 { stroke: #936536; } .compare-points.compare-6 { fill: #936536; }
+.compare-swatch.compare-7 { background: #5360a4; } .compare-line.compare-7 { stroke: #5360a4; } .compare-points.compare-7 { fill: #5360a4; }
+.compare-swatch.compare-8 { background: #bd7137; } .compare-line.compare-8 { stroke: #bd7137; } .compare-points.compare-8 { fill: #bd7137; }
+.compare-swatch.compare-9 { background: #66813c; } .compare-line.compare-9 { stroke: #66813c; } .compare-points.compare-9 { fill: #66813c; }
+.compare-line.pattern-1 { stroke-dasharray: 7 4; }
+.compare-line.pattern-2 { stroke-dasharray: 2 4; }
+
+/* 图例可筛选并强调曲线 */
+.compare-legend-button, .compare-reset { display: inline-flex; align-items: center; gap: 7px; padding: 5px 9px; border: 1px solid #e0e9e3; border-radius: 6px; background: #fff; color: var(--text-2); font: inherit; cursor: pointer; }
+.compare-legend-button:hover, .compare-legend-button:focus-visible { border-color: #a9bfae; color: var(--text); background: #f5faf6; }
+.compare-legend-button[aria-pressed="false"] { opacity: .45; background: #f4f5f6; }
+.compare-reset { border-color: transparent; color: var(--green); }
+.compare-reset:hover { background: var(--green-soft); }
+.compare-plot [data-series] { transition: opacity .15s; }
+.compare-plot [data-series].is-muted { opacity: .12; }
+.compare-plot [data-series].is-hidden { display: none; }

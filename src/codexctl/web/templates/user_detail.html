@@ -86,6 +86,41 @@
   </div>
 </div>
 
+<div class="panel flush">
+  <div class="panel-head">
+    <div><h2><span class="section-mark"></span>每日用量</h2><div class="hint">按服务器本地日期统计 · 近 {{ days }} 天</div></div>
+    <form method="get" class="daily-range">
+      <label for="days">时间范围</label>
+      <select id="days" name="days">
+        {% for n in (7, 30, 90) %}<option value="{{ n }}"{% if days == n %} selected{% endif %}>近 {{ n }} 天</option>{% endfor %}
+      </select>
+      <input type="hidden" name="model" value="{{ selected_model }}">
+      <input type="hidden" name="account_filter" value="{{ selected_account }}">
+      <button class="btn">查看</button>
+    </form>
+  </div>
+  <div class="daily-chart-wrap">
+    <div class="daily-chart-scale"><span>Tokens</span><strong>{{ daily_max|tokens }}</strong></div>
+    <div class="chart-inspector" data-chart-inspector aria-live="polite"><span class="chart-inspector-placeholder">将鼠标移到图表上，或使用左右方向键查看每天的数据</span></div>
+    <svg class="daily-chart interactive-chart" data-chart-kind="daily" tabindex="0" viewBox="0 0 960 195" role="group" aria-label="近 {{ days }} 天每日 Token 用量柱状图，详细数据见下方每日明细">
+      <line class="daily-grid" x1="45" y1="15" x2="945" y2="15"/>
+      <line class="daily-grid" x1="45" y1="90" x2="945" y2="90"/>
+      <line class="daily-grid" x1="45" y1="165" x2="945" y2="165"/>
+      {% for d in daily %}
+      <rect class="daily-bar" x="{{ d.x }}" y="{{ d.y }}" width="{{ d.width }}" height="{{ d.height }}"><title>{{ d.day }}：{{ '{:,}'.format(d.total) }} tokens · 输入 {{ '{:,}'.format(d.input) }} · 缓存 {{ '{:,}'.format(d.cached) }} · 输出 {{ '{:,}'.format(d.output) }} · {{ d.turns }} 次交互</title></rect>
+      <rect class="chart-hit" x="{{ d.x }}" y="10" width="{{ 900 / days }}" height="155" tabindex="-1" data-day="{{ d.day }}" data-total="{{ d.total }}" data-total-short="{{ d.total|tokens }}" data-input="{{ d.input }}" data-input-short="{{ d.input|tokens }}" data-cached="{{ d.cached }}" data-cached-short="{{ d.cached|tokens }}" data-output="{{ d.output }}" data-output-short="{{ d.output|tokens }}" data-turns="{{ d.turns }}" aria-label="{{ d.day }}，查看用量明细"/>
+      {% if d.show_label %}<text class="daily-label" x="{{ d.x }}" y="185"{% if loop.last %} text-anchor="end"{% endif %}>{{ d.label }}</text>{% endif %}
+      {% endfor %}
+    </svg>
+    <p class="hint">柱高为每日总 Tokens；缓存包含在输入中。悬停可查看明细。</p>
+  </div>
+  <details class="daily-details">
+    <summary>查看每日明细</summary>
+    <div class="table-wrap"><table><thead><tr><th>日期</th><th class="num">总 Tokens</th><th class="num">输入</th><th class="num">缓存输入</th><th class="num">输出</th><th class="num">交互次数</th></tr></thead>
+    <tbody>{% for d in daily|reverse %}<tr><td class="mono">{{ d.day }}</td><td class="num">{{ '{:,}'.format(d.total) }}</td><td class="num">{{ '{:,}'.format(d.input) }}</td><td class="num">{{ '{:,}'.format(d.cached) }}</td><td class="num">{{ '{:,}'.format(d.output) }}</td><td class="num">{{ d.turns }}</td></tr>{% endfor %}</tbody></table></div>
+  </details>
+</div>
+
 {% if models %}
 <div class="panel flush">
   <div class="panel-head">
@@ -108,18 +143,24 @@
 </div>
 {% endif %}
 
-<div class="panel flush">
+<div class="panel flush" id="sessions">
   <div class="panel-head">
-    <h2><span class="section-mark"></span>最近会话</h2>
-    <span class="hint">显示最近 {{ sessions|length }} 个会话（按最后活跃时间排序）</span>
+    <div><h2><span class="section-mark"></span>最近会话</h2><div class="hint">按最后活跃时间排序 · {{ filtered_sessions }} 个会话</div></div>
+    <form method="get" action="#sessions" class="session-filters">
+      <input type="hidden" name="days" value="{{ days }}">
+      <label>模型 <select name="model"><option value="">全部模型</option>{% for m in filter_models %}<option value="{{ m }}"{% if m == selected_model %} selected{% endif %}>{{ m }}</option>{% endfor %}</select></label>
+      <label>账号 <select name="account_filter"><option value="">全部账号</option>{% for a in filter_accounts %}<option value="{{ a }}"{% if a == selected_account %} selected{% endif %}>{{ a }}</option>{% endfor %}</select></label>
+      <button class="btn">筛选</button>
+      {% if selected_model or selected_account %}<a href="?days={{ days }}#sessions">清除</a>{% endif %}
+    </form>
   </div>
   <div class="table-wrap"><table>
     <thead>
       <tr>
         <th>会话 / 摘要</th>
         <th>工作目录</th>
-        <th>开始时间</th>
-        <th>持续时长</th>
+        <th>首次用量时间</th>
+        <th>用量跨度</th>
         <th>账号</th>
         <th>模型</th>
         <th class="num">轮数</th>
@@ -131,10 +172,9 @@
     {% for s in sessions %}
     <tr>
       <td>
-        <div class="session-id" title="{{ s.session_file }}">{{ s.session_id }}</div>
-        {% if s.first_prompt %}
-        <div class="session-summary" title="{{ s.first_prompt }}">{{ s.first_prompt }}</div>
-        {% endif %}
+        <div class="session-title" title="{{ s.title }}">{{ s.title }}</div>
+        {% if s.first_prompt and s.first_prompt != s.title %}<div class="session-summary" title="{{ s.first_prompt }}">{{ s.first_prompt }}</div>{% endif %}
+        <div class="session-reference" title="{{ s.session_file }}">{{ s.session_id }}</div>
       </td>
       <td>
         {% if s.cwd %}
@@ -172,11 +212,13 @@
       </td>
     </tr>
     {% else %}
-    <tr><td colspan="9" class="empty">暂无会话记录</td></tr>
+    <tr><td colspan="9" class="empty">{% if selected_model or selected_account %}没有符合条件的会话{% else %}暂无会话记录{% endif %}</td></tr>
     {% endfor %}
     </tbody>
   </table></div>
+  <div class="session-pagination"><span class="hint">第 {{ page }} / {{ pages }} 页 · 每页 20 条</span><div>{% if page > 1 %}<a class="btn" href="{{ page_url(page - 1) }}">上一页</a>{% endif %} {% if page < pages %}<a class="btn" href="{{ page_url(page + 1) }}">下一页</a>{% endif %}</div></div>
 </div>
 
+<script src="/static/chart-inspector.js" defer></script>
 {% if is_admin %}<script src="/static/confirm.js"></script>{% endif %}
 {% endblock %}
