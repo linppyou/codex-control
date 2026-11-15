@@ -414,6 +414,94 @@ def usage_user_accounts(conn: sqlite3.Connection) -> dict[str, list[str]]:
     return out
 
 
+def user_recent_sessions(conn: sqlite3.Connection, username: str, limit: int = 50) -> list[sqlite3.Row]:
+    """查询用户的最近会话（按最后活跃时间倒序），包含 token 分项和所用账号与模型列表。"""
+    return conn.execute(
+        """
+        SELECT
+            u.session_file,
+            MIN(u.ts) AS started_at,
+            MAX(u.ts) AS last_active_at,
+            COUNT(*) AS turns,
+            SUM(u.total_tokens) AS total_tokens,
+            SUM(u.input_tokens) AS input_tokens,
+            SUM(u.cached_input_tokens) AS cached_input_tokens,
+            SUM(u.output_tokens) AS output_tokens,
+            SUM(u.reasoning_output_tokens) AS reasoning_output_tokens,
+            GROUP_CONCAT(DISTINCT u.model) AS models,
+            GROUP_CONCAT(DISTINCT a.label) AS accounts
+        FROM usage_events u
+        LEFT JOIN accounts a ON a.id = u.account_pk
+        WHERE u.username = ?
+        GROUP BY u.session_file
+        ORDER BY last_active_at DESC
+        LIMIT ?
+        """,
+        (username, limit),
+    ).fetchall()
+
+
+def user_session_count(conn: sqlite3.Connection, username: str) -> int:
+    """查询指定用户的会话总数。"""
+    row = conn.execute(
+        "SELECT COUNT(DISTINCT session_file) FROM usage_events WHERE username = ?",
+        (username,),
+    ).fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def user_sessions_model_breakdown(
+    conn: sqlite3.Connection, username: str, session_files: list[str]
+) -> list[sqlite3.Row]:
+    """按会话和模型统计 token 分项，用于精确估算各会话的费用。"""
+    if not session_files:
+        return []
+    placeholders = ",".join("?" * len(session_files))
+    return conn.execute(
+        f"""
+        SELECT
+            session_file,
+            model,
+            SUM(input_tokens) AS input,
+            SUM(cached_input_tokens) AS cached,
+            SUM(output_tokens) AS output,
+            SUM(total_tokens) AS total
+        FROM usage_events
+        WHERE username = ? AND session_file IN ({placeholders})
+        GROUP BY session_file, model
+        """,
+        (username, *session_files),
+    ).fetchall()
+
+
+def usage_by_model_for_user(
+    conn: sqlite3.Connection, username: str, today: int, week: int
+) -> list[sqlite3.Row]:
+    """查询指定用户按模型汇总的用量（今天、近 7 天与全部）。"""
+    return conn.execute(
+        """
+        SELECT model,
+               SUM(CASE WHEN ts >= :today THEN total_tokens ELSE 0 END) AS today,
+               SUM(CASE WHEN ts >= :week THEN total_tokens ELSE 0 END) AS week,
+               SUM(total_tokens) AS total, COUNT(*) AS turns,
+               SUM(CASE WHEN ts >= :today THEN input_tokens ELSE 0 END) AS today_input,
+               SUM(CASE WHEN ts >= :today THEN cached_input_tokens ELSE 0 END) AS today_cached,
+               SUM(CASE WHEN ts >= :today THEN output_tokens ELSE 0 END) AS today_output,
+               SUM(CASE WHEN ts >= :week THEN input_tokens ELSE 0 END) AS week_input,
+               SUM(CASE WHEN ts >= :week THEN cached_input_tokens ELSE 0 END) AS week_cached,
+               SUM(CASE WHEN ts >= :week THEN output_tokens ELSE 0 END) AS week_output,
+               SUM(input_tokens) AS total_input,
+               SUM(cached_input_tokens) AS total_cached,
+               SUM(output_tokens) AS total_output
+        FROM usage_events
+        WHERE username = :username
+        GROUP BY model
+        ORDER BY week DESC, total DESC
+        """,
+        {"username": username, "today": today, "week": week},
+    ).fetchall()
+
+
 def _price(row: sqlite3.Row) -> pricing.Price:
     try:
         aliases = json.loads(row["aliases"] or "[]")

@@ -52,7 +52,7 @@
     <thead><tr><th>用户 / 模型</th><th>账号</th><th class="num">今天</th><th class="num">近 7 天</th><th class="num">全部</th><th class="num">次数</th></tr></thead>
     {% for u in users %}
     <tbody>
-    <tr class="user-row"><td><button type="button" class="user-usage-toggle" aria-expanded="false" aria-label="展开 {{ u.username }} 的模型用量"><span class="usage-chevron" aria-hidden="true">▾</span><b>{{ u.username }}</b></button></td>
+    <tr class="user-row"><td><button type="button" class="user-usage-toggle" aria-expanded="false" aria-label="展开 {{ u.username }} 的模型用量"><span class="usage-chevron" aria-hidden="true">▾</span><b>{{ u.username }}</b></button><a href="/users/{{ u.username }}" class="user-detail-link" title="查看 {{ u.username }} 详情">详情 ↗</a></td>
       <td>{% for l in u.labels %}<span class="tag">{{ l }}</span> {% else %}<span class="muted">-</span>{% endfor %}</td>
       {{ cost_cell(u.today, u.cost_today, u.unpriced_today) }}
       {{ cost_cell(u.week, u.cost_week, u.unpriced_week) }}

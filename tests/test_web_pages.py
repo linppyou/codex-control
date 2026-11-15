@@ -1,5 +1,6 @@
 import dataclasses
 import httpx
+import json
 import re
 import time
 from urllib.parse import parse_qs, urlparse
@@ -739,3 +740,60 @@ def test_assign_mentions_stale_codex(c, ctx, monkeypatch):
     r = c.post("/users/assign", data={"csrf": c.csrf, "users": ["alice"], "account": "acc1"})
     q = qs(r)[1]
     assert "旧 codex 进程" in q["msg"] and "重启 codex" in q["msg"]
+
+
+def test_user_detail_page_with_sessions(c, ctx):
+    acc = add_acc(ctx, label="acc1")
+    alice = ctx.test_users.add("alice")
+    repo.start_assignment(ctx.conn, "alice", acc.id, ctx.now() - 3600)
+
+    # 创建会话文件及目录
+    sess_dir = alice.home / ".codex" / "sessions" / "2026" / "11" / "15"
+    sess_dir.mkdir(parents=True, exist_ok=True)
+    sess_path = sess_dir / "rollout-task42.jsonl"
+    lines = [
+        json.dumps({"type": "session_meta", "payload": {"cwd": str(alice.home / "project_x")}}) + "\n",
+        json.dumps({"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"text": "实现登录接口"}]}}) + "\n",
+    ]
+    sess_path.write_text("".join(lines), encoding="utf-8")
+
+    # 写入用量
+    d = {f: 0 for f in repo.USAGE_FIELDS}
+    d.update(input_tokens=1_000_000, output_tokens=0, total_tokens=1_000_000)
+    repo.insert_usage(ctx.conn, "alice", acc.id, ctx.now(), d, str(sess_path), "gpt-5.2")
+
+    r = c.get("/users/alice")
+    assert r.status_code == 200
+    assert "style=" not in r.text
+    t = r.text
+    assert ">用户</a> / alice" in t
+    assert "task42" in t
+    assert "~/project_x" in t
+    assert "实现登录接口" in t
+    assert "最近会话" in t
+    assert "模型用量明细" in t
+    assert "GPT-5.2" in t or "gpt-5.2" in t
+    assert "$1.75" in t
+
+
+def test_user_detail_page_empty_sessions(c, ctx):
+    ctx.test_users.add("bob")
+    r = c.get("/users/bob")
+    assert r.status_code == 200
+    assert "style=" not in r.text
+    assert ">用户</a> / bob" in r.text
+    assert "暂无会话记录" in r.text
+
+
+def test_user_detail_page_nonexistent_user(c, ctx):
+    r = c.get("/users/nonexistent_guy")
+    assert r.status_code == 303
+    path, q = qs(r)
+    assert path == "/users" and "不存在" in q.get("err", "")
+
+
+def test_user_detail_action_redirects_back(c, ctx):
+    ctx.test_users.add("alice")
+    r = c.post("/users/alice/fix", data={"csrf": c.csrf, "next": "/users/alice"})
+    path, q = qs(r)
+    assert path == "/users/alice" and "已修复" in q.get("msg", "")

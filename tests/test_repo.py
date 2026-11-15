@@ -120,3 +120,68 @@ def test_last_assignment_change(ctx):
     repo.start_assignment(ctx.conn, "alice", other, 300)
     assert repo.last_assignment_change(ctx.conn, "alice") == 300
     assert repo.last_assignment_change(ctx.conn, "bob") is None
+
+
+def test_user_recent_sessions_and_breakdown(ctx):
+    pk1 = _insert(ctx, label="acc1", account_id="a1")
+    pk2 = _insert(ctx, label="acc2", account_id="a2")
+
+    d1 = {f: 0 for f in repo.USAGE_FIELDS}
+    d1.update(input_tokens=100, output_tokens=20, total_tokens=120)
+    d2 = {f: 0 for f in repo.USAGE_FIELDS}
+    d2.update(input_tokens=200, output_tokens=30, total_tokens=230)
+
+    # alice session 1: 2 turns (ts=100, ts=200)
+    repo.insert_usage(ctx.conn, "alice", pk1, 100, d1, "file1.jsonl", "gpt-4o")
+    repo.insert_usage(ctx.conn, "alice", pk1, 200, d2, "file1.jsonl", "gpt-4o")
+
+    # alice session 2: 1 turn (ts=300) on acc2, o1
+    repo.insert_usage(ctx.conn, "alice", pk2, 300, d1, "file2.jsonl", "o1")
+
+    # bob session (different user)
+    repo.insert_usage(ctx.conn, "bob", pk1, 400, d1, "file_bob.jsonl", "gpt-4o")
+
+    assert repo.user_session_count(ctx.conn, "alice") == 2
+    assert repo.user_session_count(ctx.conn, "bob") == 1
+    assert repo.user_session_count(ctx.conn, "charlie") == 0
+
+    sessions = repo.user_recent_sessions(ctx.conn, "alice", limit=10)
+    assert len(sessions) == 2
+    # Ordered by last_active_at DESC -> file2 (ts=300) first, then file1 (ts=200)
+    assert sessions[0]["session_file"] == "file2.jsonl"
+    assert sessions[0]["started_at"] == 300
+    assert sessions[0]["last_active_at"] == 300
+    assert sessions[0]["turns"] == 1
+    assert sessions[0]["total_tokens"] == 120
+    assert sessions[0]["accounts"] == "acc2"
+    assert sessions[0]["models"] == "o1"
+
+    assert sessions[1]["session_file"] == "file1.jsonl"
+    assert sessions[1]["started_at"] == 100
+    assert sessions[1]["last_active_at"] == 200
+    assert sessions[1]["turns"] == 2
+    assert sessions[1]["total_tokens"] == 350
+    assert sessions[1]["input_tokens"] == 300
+    assert sessions[1]["output_tokens"] == 50
+    assert sessions[1]["accounts"] == "acc1"
+    assert sessions[1]["models"] == "gpt-4o"
+
+    # Breakdown by session files
+    breakdown = repo.user_sessions_model_breakdown(ctx.conn, "alice", ["file1.jsonl", "file2.jsonl"])
+    assert len(breakdown) == 2
+    by_file = {r["session_file"]: r for r in breakdown}
+    assert by_file["file1.jsonl"]["model"] == "gpt-4o"
+    assert by_file["file1.jsonl"]["total"] == 350
+    assert by_file["file2.jsonl"]["model"] == "o1"
+    assert by_file["file2.jsonl"]["total"] == 120
+
+    # usage_by_model_for_user
+    rows = repo.usage_by_model_for_user(ctx.conn, "alice", today=150, week=50)
+    assert len(rows) == 2
+    by_model = {r["model"]: r for r in rows}
+    assert by_model["o1"]["today"] == 120
+    assert by_model["o1"]["week"] == 120
+    assert by_model["o1"]["total"] == 120
+    assert by_model["gpt-4o"]["today"] == 230  # only ts=200 is >= 150
+    assert by_model["gpt-4o"]["week"] == 350
+    assert by_model["gpt-4o"]["total"] == 350

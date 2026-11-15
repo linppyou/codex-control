@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+{% block title %}{{ username }} 用户详情 - codexctl{% endblock %}
+{% macro cost_cell(n, cost, unpriced=0) -%}
+<td class="num{% if not n %} muted{% endif %}" title="{{ '{:,}'.format(n) }} tokens{% if cost is not none %} · 估算 {{ cost|usd }}{% endif %}{% if unpriced %} · {{ unpriced }} 个模型未定价{% endif %}">{{ n|tokens }}{% if n %}<div class="cost{% if cost is none %} muted{% endif %}">{% if cost is not none %}{{ cost|usd }}{% if unpriced %}*{% endif %}{% else %}未定价{% endif %}</div>{% endif %}</td>
+{%- endmacro %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <div class="crumb"><a href="/users">用户</a> / {{ username }}</div>
+    <h1>{{ username }} <span class="muted">用户详情</span></h1>
+  </div>
+  <div class="toolbar">
+    {% if is_admin %}
+      {% if stale %}
+      <form method="post" action="/users/{{ username }}/restart-codex" class="inline" data-confirm="将结束 {{ username }} 的 {{ stale|length }} 个旧 codex 进程，会中断其正在运行的任务。确定？">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <input type="hidden" name="next" value="/users/{{ username }}">
+        <button class="btn danger">重启 codex ({{ stale|length }} 个旧进程)</button>
+      </form>
+      {% endif %}
+      <form method="post" action="/users/{{ username }}/fix" class="inline">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <input type="hidden" name="next" value="/users/{{ username }}">
+        <button class="btn">修复链接</button>
+      </form>
+    {% endif %}
+  </div>
+</div>
+
+<div class="user-grid">
+  <div class="acard">
+    <div class="acard-head">
+      <span class="muted">当前账号</span>
+      {% if account %}
+      <span class="badge active">已分配</span>
+      {% else %}
+      <span class="badge disabled">未分配</span>
+      {% endif %}
+    </div>
+    <div class="acard-title">
+      {% if account %}{{ account.name }}{% if account.display_name %} <span class="muted mono">({{ account.label }})</span>{% endif %}{% else %}<span class="muted">-</span>{% endif %}
+    </div>
+    <div class="meta-row mono">
+      <span>链接：{{ link.kind if link else "未知" }}</span>
+      {% if stale %}<span class="bad">{{ stale|length }} 个旧进程</span>{% endif %}
+    </div>
+  </div>
+
+  <div class="acard">
+    <div class="acard-head"><span class="muted">今天用量</span></div>
+    <div class="usage-figures">
+      <div class="usage-total">{{ summary.today|tokens }}<small>tokens</small></div>
+      <div class="usage-cost">
+        {% if summary.cost_today is not none %}{{ summary.cost_today|usd }}{% elif summary.unpriced_today %}<span class="muted">未定价</span>{% else %}<span class="muted">-</span>{% endif %}
+      </div>
+    </div>
+    <div class="meta-row mono">
+      <span>输入 {{ summary.today_input|tokens }} · 输出 {{ summary.today_output|tokens }}</span>
+    </div>
+  </div>
+
+  <div class="acard">
+    <div class="acard-head"><span class="muted">近 7 天用量</span></div>
+    <div class="usage-figures">
+      <div class="usage-total">{{ summary.week|tokens }}<small>tokens</small></div>
+      <div class="usage-cost">
+        {% if summary.cost_week is not none %}{{ summary.cost_week|usd }}{% elif summary.unpriced_week %}<span class="muted">未定价</span>{% else %}<span class="muted">-</span>{% endif %}
+      </div>
+    </div>
+    <div class="meta-row mono">
+      <span>输入 {{ summary.week_input|tokens }} · 输出 {{ summary.week_output|tokens }}</span>
+    </div>
+  </div>
+
+  <div class="acard">
+    <div class="acard-head"><span class="muted">全部总计</span></div>
+    <div class="usage-figures">
+      <div class="usage-total">{{ summary.total|tokens }}<small>tokens</small></div>
+      <div class="usage-cost">
+        {% if summary.cost_total is not none %}{{ summary.cost_total|usd }}{% elif summary.unpriced_total %}<span class="muted">未定价</span>{% else %}<span class="muted">-</span>{% endif %}
+      </div>
+    </div>
+    <div class="meta-row mono">
+      <span>共 {{ total_sessions }} 个会话 · {{ summary.turns }} 次交互</span>
+    </div>
+  </div>
+</div>
+
+{% if models %}
+<div class="panel flush">
+  <div class="panel-head">
+    <h2><span class="section-mark"></span>模型用量明细</h2>
+  </div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>模型</th><th class="num">今天</th><th class="num">近 7 天</th><th class="num">全部</th><th class="num">交互次数</th></tr></thead>
+    <tbody>
+    {% for m in models %}
+    <tr>
+      <td><span class="model-name{% if not m.known %} muted{% endif %}">{{ m.name }}</span></td>
+      {{ cost_cell(m.today, m.cost_today) }}
+      {{ cost_cell(m.week, m.cost_week) }}
+      {{ cost_cell(m.total, m.cost_total) }}
+      <td class="num">{{ m.turns }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</div>
+{% endif %}
+
+<div class="panel flush">
+  <div class="panel-head">
+    <h2><span class="section-mark"></span>最近会话</h2>
+    <span class="hint">显示最近 {{ sessions|length }} 个会话（按最后活跃时间排序）</span>
+  </div>
+  <div class="table-wrap"><table>
+    <thead>
+      <tr>
+        <th>会话 / 摘要</th>
+        <th>工作目录</th>
+        <th>开始时间</th>
+        <th>持续时长</th>
+        <th>账号</th>
+        <th>模型</th>
+        <th class="num">轮数</th>
+        <th class="num">总 Tokens</th>
+        <th class="num">估算费用</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for s in sessions %}
+    <tr>
+      <td>
+        <div class="session-id" title="{{ s.session_file }}">{{ s.session_id }}</div>
+        {% if s.first_prompt %}
+        <div class="session-summary" title="{{ s.first_prompt }}">{{ s.first_prompt }}</div>
+        {% endif %}
+      </td>
+      <td>
+        {% if s.cwd %}
+        <span class="session-cwd" title="{{ s.cwd }}">{{ s.cwd_short }}</span>
+        {% else %}
+        <span class="muted">-</span>
+        {% endif %}
+      </td>
+      <td class="mono nowrap">{{ s.started_at_fmt }}</td>
+      <td class="nowrap">{{ s.duration_fmt }}</td>
+      <td>
+        {% for a in s.accounts %}
+        <span class="tag">{{ a }}</span>
+        {% else %}
+        <span class="muted">-</span>
+        {% endfor %}
+      </td>
+      <td>
+        {% for m in s.models %}
+        <span class="tag">{{ m }}</span>
+        {% else %}
+        <span class="muted">-</span>
+        {% endfor %}
+      </td>
+      <td class="num">{{ s.turns }}</td>
+      <td class="num" title="{{ '{:,}'.format(s.total_tokens) }} tokens (输入 {{ '{:,}'.format(s.input_tokens) }} · 缓存 {{ '{:,}'.format(s.cached_input_tokens) }} · 输出 {{ '{:,}'.format(s.output_tokens) }}{% if s.reasoning_output_tokens %} · 推理 {{ '{:,}'.format(s.reasoning_output_tokens) }}{% endif %})">
+        {{ s.total_tokens|tokens }}
+      </td>
+      <td class="num">
+        {% if s.cost is not none %}
+        <span class="cost">{{ s.cost|usd }}{% if s.unpriced %}*{% endif %}</span>
+        {% else %}
+        <span class="muted">未定价</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="9" class="empty">暂无会话记录</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</div>
+
+{% if is_admin %}<script src="/static/confirm.js"></script>{% endif %}
+{% endblock %}

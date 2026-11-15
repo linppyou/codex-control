@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import math
+import os
+from pathlib import Path
 import sqlite3
+import stat
 import time
 from urllib.parse import urlencode
 
@@ -661,30 +665,236 @@ def register(app) -> None:
                 )
         return _redirect("/users", msg=msg, err="；".join(bad))
 
+    def _safe_user_next(value: str) -> str:
+        ok = value == "/users" or (value.startswith("/users/") and "\\" not in value and value.isprintable())
+        return value if ok else "/users"
+
+    def fmt_duration(seconds: int) -> str:
+        if seconds <= 0:
+            return "< 1 秒"
+        if seconds < 60:
+            return f"{seconds} 秒"
+        minutes, rem_secs = divmod(seconds, 60)
+        if minutes < 60:
+            return f"{minutes} 分钟" if rem_secs == 0 else f"{minutes} 分 {rem_secs} 秒"
+        hours, rem_mins = divmod(minutes, 60)
+        return f"{hours} 小时" if rem_mins == 0 else f"{hours} 小时 {rem_mins} 分钟"
+
+    def _format_session_id(session_file: str) -> str:
+        base = os.path.basename(session_file)
+        if base.startswith("rollout-") and base.endswith(".jsonl"):
+            return base[len("rollout-") : -len(".jsonl")]
+        if base.endswith(".jsonl"):
+            return base[: -len(".jsonl")]
+        return base
+
+    def _shorten_cwd(cwd: str | None, home: Path | None) -> str | None:
+        if not cwd:
+            return None
+        if home:
+            home_str = str(home)
+            if cwd == home_str:
+                return "~"
+            if cwd.startswith(home_str + "/"):
+                return "~" + cwd[len(home_str) :]
+        return cwd
+
+    def extract_session_meta(path_str: str, user_uid: int | None = None) -> dict[str, str | None]:
+        meta: dict[str, str | None] = {"cwd": None, "first_prompt": None}
+        try:
+            fd = os.open(path_str, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY)
+        except OSError:
+            return meta
+        try:
+            with os.fdopen(fd, "rb") as f:
+                st = os.fstat(f.fileno())
+                if not stat.S_ISREG(st.st_mode) or (user_uid is not None and st.st_uid != user_uid):
+                    return meta
+                chunk = f.read(16 * 1024)
+        except OSError:
+            return meta
+
+        for raw in chunk.splitlines()[:20]:
+            try:
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                d = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(d, dict):
+                continue
+            payload = d.get("payload")
+            if isinstance(payload, dict):
+                if not meta["cwd"]:
+                    cwd = payload.get("cwd") or payload.get("working_directory") or payload.get("project_dir")
+                    if isinstance(cwd, str) and cwd.strip():
+                        meta["cwd"] = cwd.strip()
+                if not meta["first_prompt"]:
+                    p = None
+                    if isinstance(payload.get("prompt"), str):
+                        p = payload["prompt"]
+                    elif isinstance(payload.get("text"), str) and payload.get("type") in ("user_input", "user_message"):
+                        p = payload["text"]
+                    elif payload.get("type") == "message" and payload.get("role") == "user":
+                        content = payload.get("content")
+                        if isinstance(content, str):
+                            p = content
+                        elif isinstance(content, list) and content and isinstance(content[0], dict):
+                            p = content[0].get("text")
+                    if p and p.strip():
+                        clean_p = " ".join(p.strip().split())
+                        meta["first_prompt"] = clean_p[:80] + ("…" if len(clean_p) > 80 else "")
+            if meta["cwd"] and meta["first_prompt"]:
+                break
+        return meta
+
     @app.post("/users/{name}/fix")
-    def user_fix(name: str, admin: tuple[str, str] = Depends(current_admin)):
+    def user_fix(name: str, next: str = Form(""), admin: tuple[str, str] = Depends(current_admin)):
+        back = _safe_user_next(next)
         with lock:
             devlogins.sweep()
             try:
                 assignments.reconcile_user(ctx, name, actor_of(admin))
             except HANDLED as e:
-                return _redirect("/users", err=str(e))
-        return _redirect("/users", msg=f"已修复 {clean_text(name, 32)}")
+                return _redirect(back, err=str(e))
+        return _redirect(back, msg=f"已修复 {clean_text(name, 32)}")
 
     @app.post("/users/{name}/restart-codex")
-    def user_restart_codex(name: str, admin: tuple[str, str] = Depends(current_admin)):
+    def user_restart_codex(name: str, next: str = Form(""), admin: tuple[str, str] = Depends(current_admin)):
+        back = _safe_user_next(next)
         with lock:
             devlogins.sweep()
             try:
                 ended, unable = assignments.restart_codex(ctx, name, actor_of(admin))
             except HANDLED as e:
-                return _redirect("/users", err=str(e))
+                return _redirect(back, err=str(e))
         label = clean_text(name, 32)
         if not ended and not unable:
-            return _redirect("/users", msg=f"{label} 没有旧 codex 进程")
+            return _redirect(back, msg=f"{label} 没有旧 codex 进程")
         msg = f"已结束 {label} 的 {len(ended)} 个 codex 进程"
         err = f"部分进程无法结束：{', '.join(str(p) for p in unable)}" if unable else ""
-        return _redirect("/users", msg=msg, err=err)
+        return _redirect(back, msg=msg, err=err)
+
+    @app.get("/users/{name}", response_class=HTMLResponse)
+    def user_detail_page(name: str, request: Request, admin: tuple[str, str] = Depends(current_admin)):
+        clean_name = clean_text(name.strip(), 32)
+        today, week = usage_windows()
+        with lock:
+            if admin[0] == "admin":
+                devlogins.sweep()
+            user = None
+            try:
+                user = ctx.lookup_user(clean_name, ctx.settings.min_uid)
+            except UserError:
+                pass
+            total_sessions = repo.user_session_count(ctx.conn, clean_name)
+            if user is None and total_sessions == 0:
+                return _redirect("/users", err=f"用户 {clean_name} 不存在")
+
+            book = pricing.PriceBook(repo.list_prices(ctx.conn))
+
+            active = repo.active_assignment(ctx.conn, clean_name)
+            account = repo.get_account_by_pk(ctx.conn, active.account_pk) if active else None
+            link = ctx.publisher.read_link(user) if user else None
+            stale = procs.stale_procs(
+                procs.list_codex_procs(user.uid, ctx.settings.codex_bin.parent, home=user.home),
+                repo.last_assignment_change(ctx.conn, clean_name),
+            ) if user else []
+
+            model_rows = repo.usage_by_model_for_user(ctx.conn, clean_name, today, week)
+            models = []
+            summary = {
+                "today": 0, "week": 0, "total": 0, "turns": 0,
+                "cost_today": 0.0, "cost_week": 0.0, "cost_total": 0.0,
+                "unpriced_today": 0, "unpriced_week": 0, "unpriced_total": 0,
+                "today_input": 0, "today_output": 0, "week_input": 0, "week_output": 0,
+            }
+            for r in model_rows:
+                m = {
+                    "name": clean_text(r["model"]) if r["model"] else "未知模型",
+                    "known": bool(r["model"]),
+                    "today": r["today"] or 0, "week": r["week"] or 0, "total": r["total"] or 0,
+                    "turns": r["turns"],
+                }
+                for k in ("today", "week", "total"):
+                    cost = book.cost(r["model"], r[f"{k}_input"], r[f"{k}_cached"], r[f"{k}_output"])
+                    m[f"cost_{k}"] = cost
+                    if m[k]:
+                        if cost is None:
+                            summary[f"unpriced_{k}"] += 1
+                        else:
+                            summary[f"cost_{k}"] += cost
+                summary["today_input"] += r["today_input"] or 0
+                summary["today_output"] += r["today_output"] or 0
+                summary["week_input"] += r["week_input"] or 0
+                summary["week_output"] += r["week_output"] or 0
+                summary["today"] += m["today"]
+                summary["week"] += m["week"]
+                summary["total"] += m["total"]
+                summary["turns"] += m["turns"]
+                models.append(m)
+
+            for k in ("today", "week", "total"):
+                if summary[f"unpriced_{k}"] > 0 and summary[k] > 0 and summary[f"cost_{k}"] == 0.0:
+                    summary[f"cost_{k}"] = None
+
+            session_rows = repo.user_recent_sessions(ctx.conn, clean_name, limit=50)
+            session_files = [r["session_file"] for r in session_rows]
+            breakdown = repo.user_sessions_model_breakdown(ctx.conn, clean_name, session_files)
+            costs: dict[str, tuple[float | None, int]] = {}
+            for b in breakdown:
+                c = book.cost(b["model"], b["input"], b["cached"], b["output"])
+                curr_cost, curr_unpriced = costs.setdefault(b["session_file"], (0.0, 0))
+                if c is None:
+                    costs[b["session_file"]] = (curr_cost, curr_unpriced + 1)
+                else:
+                    costs[b["session_file"]] = ((curr_cost or 0.0) + c, curr_unpriced)
+
+            sessions = []
+            user_home = user.home if user else None
+            user_uid = user.uid if user else None
+            for r in session_rows:
+                sf = r["session_file"]
+                cost, unpriced = costs.get(sf, (0.0, 0))
+                if unpriced > 0 and (r["total_tokens"] or 0) > 0 and cost == 0.0:
+                    cost = None
+                meta = extract_session_meta(sf, user_uid)
+                started_at = r["started_at"]
+                last_active_at = r["last_active_at"]
+                duration = max(0, last_active_at - started_at)
+                models_list = [clean_text(m) for m in (r["models"] or "").split(",") if m]
+                accounts_list = [clean_text(a) for a in (r["accounts"] or "").split(",") if a]
+                cwd = meta.get("cwd")
+                sessions.append({
+                    "session_file": sf,
+                    "session_id": _format_session_id(sf),
+                    "started_at": started_at,
+                    "started_at_fmt": fmt_ts(started_at),
+                    "last_active_at": last_active_at,
+                    "last_active_at_fmt": fmt_ts(last_active_at),
+                    "duration": duration,
+                    "duration_fmt": fmt_duration(duration),
+                    "turns": r["turns"],
+                    "total_tokens": r["total_tokens"],
+                    "input_tokens": r["input_tokens"],
+                    "cached_input_tokens": r["cached_input_tokens"],
+                    "output_tokens": r["output_tokens"],
+                    "reasoning_output_tokens": r["reasoning_output_tokens"],
+                    "models": models_list,
+                    "accounts": accounts_list,
+                    "cost": cost,
+                    "unpriced": unpriced > 0,
+                    "cwd": cwd,
+                    "cwd_short": _shorten_cwd(cwd, user_home),
+                    "first_prompt": meta.get("first_prompt"),
+                })
+
+        return render(
+            request, "user_detail.html", admin=admin[0], csrf=admin[1],
+            username=clean_name, user=user, account=account, link=link, stale=stale,
+            summary=summary, models=models, sessions=sessions, total_sessions=total_sessions,
+        )
 
     def usage_windows() -> tuple[int, int]:
         """返回 (今天零点, 7 天前) 的时间戳；今天按服务器本地时区计算。"""

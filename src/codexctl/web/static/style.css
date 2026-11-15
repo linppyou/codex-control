@@ -227,3 +227,17 @@ progress.bad::-moz-progress-bar { background: var(--red); }
 .usage-users .model-sub[hidden] { display: none; }
 .usage-users .model-sub td { padding-top: 6px; padding-bottom: 6px; font-size: 13px; }
 .usage-users .model-sub td:first-child { padding-left: 32px; }
+
+/* 用户详情页与会话列表 */
+.user-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 20px; }
+.user-grid .acard { padding: 18px 20px; }
+.user-grid .acard-title { font-size: 20px; font-weight: 700; overflow-wrap: anywhere; }
+.user-grid .usage-total { font-size: 26px; }
+.user-grid .usage-cost { font-size: 18px; }
+.session-id { font-family: var(--mono); font-weight: 600; font-size: 13px; }
+.session-summary { font-size: 12px; color: var(--muted); margin-top: 2px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-cwd { font-family: var(--mono); font-size: 12px; color: var(--text-2); }
+.user-link { color: inherit; text-decoration: none; }
+.user-link:hover { color: var(--green); text-decoration: underline; }
+.user-detail-link { font-size: 12px; color: var(--muted); text-decoration: none; margin-left: 6px; }
+.user-detail-link:hover { color: var(--green); }

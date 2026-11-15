@@ -23,7 +23,7 @@
   {% for r in rows %}
   <tr>
     {% if is_admin %}<td class="sel"><input type="checkbox" name="users" value="{{ r.name }}" form="bulk"></td>{% endif %}
-    <td><b>{{ r.name }}</b></td><td>{% if r.account %}<span class="tag">{{ r.account }}</span>{% if r.account_label %} <span class="tag">{{ r.account_label }}</span>{% endif %}{% else %}<span class="muted">-</span>{% endif %}</td>
+    <td><a href="/users/{{ r.name }}" class="user-link"><b>{{ r.name }}</b></a></td><td>{% if r.account %}<span class="tag">{{ r.account }}</span>{% if r.account_label %} <span class="tag">{{ r.account_label }}</span>{% endif %}{% else %}<span class="muted">-</span>{% endif %}</td>
     <td class="mono">{{ r.link }}{% if r.target %} <span class="muted">{{ r.target }}</span>{% endif %}</td>
     <td>{% if r.stale %}<span class="badge bad" title="{{ r.stale_title }}">{{ r.stale|length }} 个旧进程（仍用旧账号）</span>{% else %}<span class="muted">-</span>{% endif %}</td>
     <td class="num" title="{{ '{:,}'.format(r.t24) }} tokens{% if r.c24 is not none %} · 估算 {{ r.c24|usd }}{% endif %}{% if r.u24 %} · {{ r.u24 }} 个模型未定价{% endif %}">{{ r.t24|tokens }}{% if r.t24 %}<div class="cost{% if r.c24 is none %} muted{% endif %}">{% if r.c24 is not none %}{{ r.c24|usd }}{% if r.u24 %}*{% endif %}{% else %}未定价{% endif %}</div>{% endif %}</td><td class="num" title="{{ '{:,}'.format(r.t7) }} tokens{% if r.c7 is not none %} · 估算 {{ r.c7|usd }}{% endif %}{% if r.u7 %} · {{ r.u7 }} 个模型未定价{% endif %}">{{ r.t7|tokens }}{% if r.t7 %}<div class="cost{% if r.c7 is none %} muted{% endif %}">{% if r.c7 is not none %}{{ r.c7|usd }}{% if r.u7 %}*{% endif %}{% else %}未定价{% endif %}</div>{% endif %}</td>

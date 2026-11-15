@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS usage_events (
     model TEXT
 );
 CREATE INDEX IF NOT EXISTS usage_events_user_ts ON usage_events(username, ts);
+CREATE INDEX IF NOT EXISTS usage_events_user_session ON usage_events(username, session_file);
 CREATE TABLE IF NOT EXISTS log_offsets (
     path TEXT PRIMARY KEY,
     inode INTEGER NOT NULL,
@@ -161,6 +162,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(log_offsets)")}
     if "last_model" not in cols:
         conn.execute("ALTER TABLE log_offsets ADD COLUMN last_model TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS usage_events_user_session ON usage_events(username, session_file)")
 
 
 @contextmanager
