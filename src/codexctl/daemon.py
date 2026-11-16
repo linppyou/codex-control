@@ -11,6 +11,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 
 from . import logscan, quota, refresher, sites, watcher
 from .context import Context
+from .gateway import storage
 
 log = logging.getLogger(__name__)
 
@@ -39,7 +40,10 @@ def build_scheduler(ctx: Context) -> BlockingScheduler:
         job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": None},
     )
     start = datetime.now()
-    for i, (name, fn, seconds) in enumerate(JOBS):
+    jobs = JOBS if ctx.settings.manages_local_codex else JOBS[:2]
+    if ctx.settings.gateway_enabled:
+        jobs = [*jobs, ("api-usage", storage.prune_usage, 86400)]
+    for i, (name, fn, seconds) in enumerate(jobs):
         if name == "quota":
             seconds = ctx.settings.quota_poll_seconds
         sched.add_job(

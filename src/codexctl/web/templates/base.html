@@ -17,7 +17,9 @@
   <nav>
     {% if is_admin %}
     {% for href, text in (("/", "总览"), ("/accounts", "账号"), ("/users", "用户"), ("/usage", "用量"), ("/pricing", "价目表"), ("/audit", "审计")) %}
+    {% if managed or gateway_enabled or href != "/users" %}
     <a href="{{ href }}"{% if path == href or (href != "/" and path.startswith(href ~ "/")) %} class="on"{% endif %}>{{ text }}</a>
+    {% endif %}
     {% endfor %}
     <a href="/servers"{% if path == "/servers" or path.startswith("/servers/") %} class="on" aria-current="page"{% endif %}>服务器</a>
     {% else %}

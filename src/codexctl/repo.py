@@ -92,6 +92,11 @@ def load_secret(conn: sqlite3.Connection, account_pk: int) -> bytes:
     return bytes(row["blob"])
 
 
+def secret_version(conn: sqlite3.Connection, account_pk: int) -> int | None:
+    row = conn.execute("SELECT version FROM account_secrets WHERE account_pk = ?", (account_pk,)).fetchone()
+    return row["version"] if row else None
+
+
 def update_token_meta(
     conn: sqlite3.Connection,
     pk: int,

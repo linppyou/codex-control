@@ -10,7 +10,7 @@
     <h1>{{ username }} <span class="muted">用户详情</span></h1>
   </div>
   <div class="toolbar">
-    {% if is_admin %}
+    {% if is_admin and managed %}
       {% if stale %}
       <form method="post" action="/users/{{ username }}/restart-codex" class="inline" data-confirm="将结束 {{ username }} 的 {{ stale|length }} 个旧 codex 进程，会中断其正在运行的任务。确定？">
         <input type="hidden" name="csrf" value="{{ csrf }}">
@@ -27,6 +27,9 @@
   </div>
 </div>
 
+{% if show_api_key %}{% include "user_api_key.html" %}{% endif %}
+
+{% if managed %}
 <div class="user-grid">
   <div class="acard">
     <div class="acard-head">
@@ -220,5 +223,6 @@
 </div>
 
 <script src="/static/chart-inspector.js" defer></script>
+{% endif %}
 {% if is_admin %}<script src="/static/confirm.js"></script>{% endif %}
 {% endblock %}

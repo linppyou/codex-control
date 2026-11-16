@@ -16,10 +16,11 @@ from urllib.parse import urlencode
 from fastapi import Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from .. import accounts, assignments, events, pricing, procs, quota, refresher, repo, useradmin
+from .. import accounts, assignments, db, events, pricing, procs, quota, refresher, repo, useradmin, webauth
 from ..authfile import AuthFileError
 from ..codexinstall import CodexInstallError
 from ..devicelogin import DeviceLoginError
+from ..gateway import storage
 from ..cli import fmt_ts, window_name
 from ..locks import LockBusy
 from ..publisher import PublishError
@@ -31,7 +32,7 @@ from .charts import fmt_md, fmt_md_hm, quota_chart, week_trend_chart
 
 HANDLED = (
     accounts.AccountError, assignments.AssignError, UserError, AuthFileError,
-    PublishError, LockBusy, CommandError, DeviceLoginError, UserAdminError, CodexInstallError,
+    PublishError, LockBusy, CommandError, DeviceLoginError, UserAdminError, CodexInstallError, webauth.AuthError,
 )
 _TERMINAL = ("succeeded", "failed", "cancelled", "expired")
 
@@ -42,7 +43,8 @@ def _redirect(path: str, msg: str = "", err: str = "") -> RedirectResponse:
         params["msg"] = msg[:500]
     if err:
         params["err"] = err[:500]
-    return RedirectResponse(path + ("?" + urlencode(params) if params else ""), status_code=303)
+    separator = "&" if "?" in path else "?"
+    return RedirectResponse(path + (separator + urlencode(params) if params else ""), status_code=303)
 
 
 def _countdown(resets_at: int | None, now: int) -> str:
@@ -536,23 +538,31 @@ def register(app) -> None:
             }
             accounts_by_id = {a.id: a for a in repo.list_accounts(ctx.conn)}
             assigned = {a.username: accounts_by_id.get(a.account_pk) for a in repo.all_active(ctx.conn)}
+            key_users = storage.user_key_names(ctx.conn) if ctx.settings.gateway_enabled else set()
+            managed = ctx.settings.manages_local_codex
+            local_users = {u.name: u for u in ctx.list_users(ctx.settings.min_uid)} if managed else {}
+            names = set(local_users) | key_users
+            if not managed:
+                names.update((set(webauth.list_admins(ctx.conn)) - {"admin"}) | set(assigned))
             rows = []
-            for u in ctx.list_users(ctx.settings.min_uid):
-                if not show_all and u.name in hidden:
+            for name in sorted(names):
+                if not show_all and name in hidden:
                     continue
-                link = ctx.publisher.read_link(u)
+                u = local_users.get(name)
+                link = ctx.publisher.read_link(u) if u else None
                 stale = procs.stale_procs(
                     procs.list_codex_procs(u.uid, ctx.settings.codex_bin.parent, home=u.home),
-                    repo.last_assignment_change(ctx.conn, u.name),
-                )
-                used = usage.get(u.name, {})
-                account = assigned.get(u.name)
+                    repo.last_assignment_change(ctx.conn, name),
+                ) if u else []
+                used = usage.get(name, {})
+                account = assigned.get(name)
                 rows.append({
-                    "name": u.name,
+                    "name": name,
+                    "key": name in key_users,
                     "account": clean_text(account.name) if account else "",
                     "account_label": clean_text(account.label) if account and account.display_name else "",
-                    "link": clean_text(link.kind),
-                    "target": clean_text(link.target or "", 200),
+                    "link": clean_text(link.kind) if link else "—",
+                    "target": clean_text(link.target or "", 200) if link else "",
                     "t24": used.get("today", 0),
                     "t7": used.get("week", 0),
                     "c24": used.get("cost_today"),
@@ -578,6 +588,19 @@ def register(app) -> None:
         admin: tuple[str, str] = Depends(current_admin),
     ):
         name = username.strip()
+        if not ctx.settings.manages_local_codex:
+            if name in {"admin", "root"} or password != password2 or len(password) > 128:
+                return _redirect("/users", err="请使用非保留用户名，并输入两个相同的有效密码")
+            with lock:
+                try:
+                    if storage.user_key(ctx.conn, name) is not None:
+                        raise webauth.AuthError("用户已存在，请在用户详情中设置登录密码")
+                    webauth.create_admin(ctx.conn, name, password, now=ctx.now())
+                    with db.transaction(ctx.conn):
+                        storage.ensure_user_key(ctx.conn, ctx.vault, name, actor_of(admin), ctx.now())
+                except webauth.AuthError as exc:
+                    return _redirect("/users", err=str(exc))
+            return _redirect("/users", msg=f"用户 {name} 已创建，请分配账号")
         with lock:
             devlogins.sweep()
         try:
@@ -627,7 +650,7 @@ def register(app) -> None:
         msg = f"已分配 {len(ok)} 个用户到 {account}" if ok else ""
         if backups:
             msg += f"（{backups} 个用户的原 auth.json 已备份）"
-        for name in ok:
+        for name in ok if ctx.settings.manages_local_codex else ():
             n = len(assignments.stale_codex_procs(ctx, name))
             if n:
                 msg += (
@@ -652,7 +675,7 @@ def register(app) -> None:
                 except HANDLED as e:
                     bad.append(f"{clean_text(name, 32)}：{e}")
         msg = f"已回收 {ok} 个用户" if ok else ""
-        for name in done:
+        for name in done if ctx.settings.manages_local_codex else ():
             n = len(assignments.stale_codex_procs(ctx, name))
             if n:
                 msg += (
@@ -824,6 +847,18 @@ def register(app) -> None:
         if not is_admin and name != admin[0]:
             raise HTTPException(status_code=403, detail="仅可查看本人数据")
         clean_name = clean_text(name.strip(), 32)
+        if ctx.settings.gateway_enabled and name != clean_name:
+            raise HTTPException(404)
+        if not ctx.settings.manages_local_codex:
+            with lock:
+                key = storage.user_key(ctx.conn, clean_name)
+                login = webauth.get_hash(ctx.conn, clean_name) is not None and clean_name != "admin"
+                active = repo.active_assignment(ctx.conn, clean_name)
+                if key is None and not login and active is None:
+                    raise HTTPException(404)
+                account = repo.get_account_by_pk(ctx.conn, active.account_pk) if active else None
+            return render(request, "user_detail.html", admin=admin[0], csrf=admin[1], username=clean_name,
+                          account=account, api_key=key, show_api_key=True, show_web_login=True, web_login=login)
         today, week = usage_windows()
         days = days if days in (7, 30, 90) else 7
         page = max(1, page)
@@ -841,7 +876,9 @@ def register(app) -> None:
             except UserError:
                 pass
             total_sessions = repo.user_session_count(ctx.conn, clean_name)
-            if is_admin and user is None and total_sessions == 0:
+            show_api_key = ctx.settings.gateway_enabled
+            key = storage.user_key(ctx.conn, clean_name) if show_api_key else None
+            if is_admin and user is None and total_sessions == 0 and key is None:
                 return _redirect("/users", err=f"用户 {clean_name} 不存在")
 
             book = pricing.PriceBook(repo.list_prices(ctx.conn))
@@ -968,6 +1005,7 @@ def register(app) -> None:
         return render(
             request, "user_detail.html", admin=admin[0], csrf=admin[1],
             username=clean_name, user=user, account=account, link=link, stale=stale,
+            api_key=key, show_api_key=show_api_key,
             summary=summary, models=models, sessions=sessions, total_sessions=total_sessions,
             daily=daily, daily_max=daily_max, days=days, page=page, pages=pages,
             filtered_sessions=filtered_sessions, filter_models=filter_models, filter_accounts=filter_accounts,

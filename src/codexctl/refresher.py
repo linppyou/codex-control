@@ -26,19 +26,26 @@ def needs_refresh(acc: repo.Account, now: int, settings: Settings) -> bool:
     return acc.access_expires_at - now < settings.refresh_min_validity_days * 86400
 
 
-def refresh_account(ctx: Context, acc: repo.Account, actor: str = "scheduler", *, blocking: bool = True) -> bool:
+def refresh_account(
+    ctx: Context, acc: repo.Account, actor: str = "scheduler", *, blocking: bool = True,
+    observed_version: int | None = None,
+) -> bool:
     with account_lock(ctx.settings.state_dir, acc.label, blocking=blocking):
-        return _refresh_locked(ctx, acc, actor)
+        return _refresh_locked(ctx, acc, actor, observed_version)
 
 
-def _refresh_locked(ctx: Context, acc: repo.Account, actor: str) -> bool:
+def _refresh_locked(ctx: Context, acc: repo.Account, actor: str, observed_version: int | None) -> bool:
     fresh = repo.get_account(ctx.conn, acc.label)
-    if fresh is None:
+    if fresh is None or fresh.status != "active":
         return False
-    if fresh.last_refresh != acc.last_refresh:
-        return True  # 其他进程已经刷新过
-    if fresh.status == "needs_relogin":
-        return False
+    if observed_version is None:
+        if fresh.last_refresh != acc.last_refresh:
+            return True
+    else:
+        if repo.secret_version(ctx.conn, acc.id) != observed_version:
+            return True
+        if fresh.next_retry_at and fresh.next_retry_at > ctx.now():
+            return False
     acc = fresh
     now = ctx.now()
     bundle = accounts.load_bundle(ctx, acc)
@@ -90,6 +97,8 @@ def _refresh_locked(ctx: Context, acc: repo.Account, actor: str) -> bool:
             events.audit(ctx.conn, actor, "account.refresh_failed", acc.label, msg, now=now)
         log.error("刷新 %s：%s", acc.label, msg)
         return False
+    if not ctx.settings.manages_local_codex:
+        return True
     try:
         accounts.publish_account(ctx, repo.get_account(ctx.conn, acc.label), new)
     except Exception:

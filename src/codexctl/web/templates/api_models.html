@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}{{ account.label }} · 模型 - codexctl{% endblock %}
+{% block content %}
+<div class="page-head"><div><a href="/accounts">← 账号</a><h1>{{ account.display_name or account.label }} · 模型</h1>
+<div class="sub">Codex {{ version }} · {{ synced or "尚未同步" }}</div></div>
+<form method="post" action="/accounts/{{ account.label }}/models/refresh">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <button class="btn primary">刷新模型</button>
+</form></div>
+<div class="panel flush"><div class="table-wrap"><table>
+<thead><tr><th>模型</th><th>可用性</th><th>默认上下文</th><th>账号目录上限</th><th>推理档位</th><th>Fast</th><th>操作</th></tr></thead>
+<tbody>
+{% for row in rows %}
+{% set m = entries.get(row.model_id, {}) %}
+<tr>
+  <td><code>{{ row.model_id }}</code>{% if m.display_name and m.display_name != row.model_id %}<div class="muted">{{ m.display_name }}</div>{% endif %}</td>
+  <td>{% if not row.upstream_available %}上游已下架{% elif not row.selectable %}未对 API 开放
+    {% else %}{{ "已启用" if row.enabled else "未启用" }}{% if row.verified_at %} · 已通过测试{% endif %}{% endif %}</td>
+  <td class="num">{{ "{:,}".format(m.context_window) if m.context_window is integer else "—" }}</td>
+  <td class="num">{{ "{:,}".format(m.max_context_window) if m.max_context_window is integer else "—" }}</td>
+  <td>{% for level in m.supported_reasoning_levels or [] %}{{ level.effort }}{% if not loop.last %}、{% endif %}{% else %}—{% endfor %}</td>
+  <td>{{ "已验证" if row.fast_verified_at else "未验证" }}</td>
+  <td class="ops">{% if row.upstream_available and row.selectable %}<form method="post" action="/accounts/{{ account.label }}/models/action" class="inline">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="model" value="{{ row.model_id }}">
+    {% if account.status == "active" %}
+    <button class="btn small" name="action" value="test">测试模型</button>
+    {% if row.verified_at %}<button class="btn small" name="action" value="test_fast">测试 Fast</button>{% endif %}
+    {% endif %}
+    {% if row.enabled %}<button class="btn small danger" name="action" value="disable">停用</button>
+    {% else %}<button class="btn small primary" name="action" value="enable">启用</button>{% endif %}
+  </form>{% endif %}</td>
+</tr>
+{% else %}<tr><td colspan="7" class="empty">刷新账号的模型目录。</td></tr>{% endfor %}
+</tbody></table></div></div>
+{% endblock %}

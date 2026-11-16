@@ -1,0 +1,41 @@
+<section class="panel" aria-labelledby="api-key-title">
+  <div class="section-head"><span class="section-title" id="api-key-title"><span class="section-mark"></span>API Key</span>
+    {% if api_key and account and account.status == "active" %}<span class="badge active">可用</span>
+    {% elif api_key %}<span class="badge disabled">已暂停</span>{% endif %}
+  </div>
+  <div class="form-row">
+    {% if api_key %}
+      <code>cctl_{{ api_key.public_id }}…</code>
+      <span>{{ account.name if account else "未分配 Codex 账号" }}</span>
+      <a class="btn primary" href="/users/{{ username }}/api-key">查看密钥和配置</a>
+      {% if is_admin %}
+      <form method="post" action="/users/{{ username }}/api-key" data-confirm="重置后旧密钥立即失效。确定？">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <input type="hidden" name="version" value="{{ api_key.secret_version }}">
+        <button class="btn danger" name="action" value="rotate">重置密钥</button>
+      </form>
+      <form method="post" action="/users/{{ username }}/api-key">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button class="btn" name="action" value="{{ 'fast_disable' if api_key.allow_fast else 'fast_enable' }}">{{ '关闭 Fast' if api_key.allow_fast else '允许 Fast' }}</button>
+      </form>
+      {% endif %}
+    {% elif is_admin %}
+      <form method="post" action="/users/{{ username }}/api-key">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button class="btn primary" name="action" value="create">生成 API Key</button>
+      </form>
+    {% else %}<span class="muted">尚未生成，请联系管理员。</span>{% endif %}
+  </div>
+  {% if api_key and api_key.secret_ciphertext is none %}<p class="hint">旧密钥仍可用，原文需要管理员重置后才能查看。</p>{% endif %}
+</section>
+{% if is_admin and show_web_login %}
+<details class="panel user-password">
+  <summary>{{ "重置面板登录密码" if web_login else "开通面板登录" }}</summary>
+  <form class="form-row" method="post" action="/users/{{ username }}/web-password">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>密码 <input type="password" name="password" minlength="12" maxlength="128" required autocomplete="new-password"></label>
+    <label>确认密码 <input type="password" name="confirm" minlength="12" maxlength="128" required autocomplete="new-password"></label>
+    <button class="btn primary">保存登录密码</button>
+  </form>
+</details>
+{% endif %}

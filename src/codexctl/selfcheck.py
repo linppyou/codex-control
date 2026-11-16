@@ -5,7 +5,7 @@ import shutil
 import sqlite3
 from typing import Callable
 
-from . import db
+from . import db, webauth
 from . import runner as runner_mod
 from .config import Settings
 from .runner import CommandError, Runner
@@ -18,15 +18,16 @@ def selfcheck(
     which: Callable[[str], str | None] = shutil.which,
 ) -> list[str]:
     problems: list[str] = []
-    acl_tools = True
-    for tool in (settings.setfacl_bin, settings.getfacl_bin):
-        if which(tool) is None:
-            problems.append(f"未找到 {tool}，请执行 apt install acl")
-            acl_tools = False
-    if not settings.codex_bin.exists():
-        problems.append(f"未找到 codex 可执行文件：{settings.codex_bin}")
-    elif not os.access(settings.codex_bin, os.X_OK):
-        problems.append(f"codex 不可执行：{settings.codex_bin}")
+    acl_tools = settings.manages_local_codex
+    if acl_tools:
+        for tool in (settings.setfacl_bin, settings.getfacl_bin):
+            if which(tool) is None:
+                problems.append(f"未找到 {tool}，请执行 apt install acl")
+                acl_tools = False
+        if not settings.codex_bin.exists():
+            problems.append(f"未找到 codex 可执行文件：{settings.codex_bin}")
+        elif not os.access(settings.codex_bin, os.X_OK):
+            problems.append(f"codex 不可执行：{settings.codex_bin}")
     try:
         load_key(settings.key_file)
     except (OSError, VaultError) as e:
@@ -35,7 +36,12 @@ def selfcheck(
         problems.append(f"状态目录不存在：{settings.state_dir}（请先运行 codexctl init）")
         return problems
     try:
-        db.connect(settings.db_path).close()
+        conn = db.connect(settings.db_path)
+        try:
+            if settings.gateway_enabled and not webauth.has_configured_admin(conn):
+                problems.append("请通过 codexctl admin create 或 passwd admin 配置管理员密码")
+        finally:
+            conn.close()
     except sqlite3.Error as e:
         problems.append(f"数据库不可用：{e}")
     if acl_tools:

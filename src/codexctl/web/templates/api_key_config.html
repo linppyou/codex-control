@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}客户端配置 - codexctl{% endblock %}
+{% block content %}
+<div class="page-head"><div><a href="/users/{{ username }}">← {{ username }} 用户详情</a><h1>API Key 和客户端配置</h1></div></div>
+<div class="panel">
+  <h2>API Key</h2>
+  <p>当前 Codex 账号 · {{ account.name if account else "未分配" }}</p>
+  {% if token %}
+  <input class="user-api-token mono" aria-label="API Key" type="text" readonly autocomplete="off" spellcheck="false" value="{{ token }}">
+  {% else %}<p class="hint">旧版只保存了密钥的哈希。请联系管理员重置后查看新密钥。</p>{% endif %}
+</div>
+{% if profile %}
+<div class="panel">
+  <h2>Codex CLI</h2>
+  <p>将配置写入本地 <code>~/.codex/codexctl.config.toml</code>，在本地环境变量 <code>CODEXCTL_API_KEY</code> 设置密钥，运行 <code>codex --profile codexctl</code>。</p>
+  {% if max_context is integer %}<p>默认模型上下文为 {{ "{:,}".format(context_window) if context_window is integer else "—" }}，账号目录上限为 {{ "{:,}".format(max_context) }} tokens。需要使用上限时，可取消配置中 <code>model_context_window</code> 的注释。</p>{% endif %}
+  <pre class="user-api-profile">{{ profile }}</pre>
+</div>
+{% endif %}
+<div class="panel">
+  <h2>CC Switch</h2>
+  <p>在 Codex 或 DeepSeek Harness 页添加自定义供应商，协议选 OpenAI Responses。Base URL 填到 <code>/v1</code>。在 Harness 中点击「获取模型」，勾选模型后保存供应商，也可手动填入模型 ID。</p>
+  <dl><dt>Base URL</dt><dd><code>{{ base }}</code></dd>{% if model %}<dt>模型</dt><dd><code>{{ model }}</code></dd>{% endif %}<dt>API Key</dt><dd>填入该用户的密钥</dd></dl>
+</div>
+{% endblock %}

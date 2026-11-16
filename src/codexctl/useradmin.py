@@ -3,6 +3,7 @@ from __future__ import annotations
 from . import codexinstall, events, sysusers, webauth
 from .context import Context
 from .db import transaction
+from .gateway import storage
 from .publisher import PublishError
 from .sysusers import SysUser, UserError
 
@@ -46,4 +47,6 @@ def create(
         if panel_login:
             webauth.enroll_system_user(ctx.conn, user.name, user.uid)
         events.audit(ctx.conn, actor, "user.create", name, detail, now=ctx.now())
+        if ctx.settings.gateway_enabled:
+            storage.ensure_user_key(ctx.conn, ctx.vault, name, actor, ctx.now())
     return user, note
