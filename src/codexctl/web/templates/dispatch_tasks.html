@@ -7,50 +7,92 @@
   </div>
   {% if is_admin %}<div class="toolbar"><a class="btn" href="/dispatch-targets">目标站授权</a><a class="btn" href="/skills">Skill 管理</a></div>{% endif %}
 </header>
-<div class="dispatch-layout">
-  <section class="panel dispatch-compose" aria-labelledby="dispatch-compose-title">
+<div class="dispatch-layout{% if assigning %} dispatch-assignment-layout{% endif %}">
+  <section class="panel{% if assigning %} flush assignment-panel{% else %} dispatch-compose{% endif %}" aria-labelledby="dispatch-compose-title">
     {% if assigning %}
-    <h2 id="dispatch-compose-title">分配站点任务</h2>
+    <div class="panel-head"><h2 id="dispatch-compose-title">分配站点任务</h2></div>
     {% if not pending %}
-    <p class="hint">暂无待分配站点。<a href="/servers">查看服务器巡检</a></p>
+    <div class="empty-state">暂无待分配站点。<a href="/servers">查看服务器巡检</a></div>
     {% elif not users %}
-    <p class="hint">暂无可执行任务的用户。<a href="/users">管理 Codex 账号分配</a></p>
+    <div class="empty-state">暂无可执行任务的用户。<a href="/users">管理 Codex 账号分配</a></div>
     {% else %}
-    <form class="dispatch-form" method="post" action="/tasks/assign" data-site-assignment>
+    <form class="assignment-form" method="post" action="/tasks/assign" data-site-assignment>
       <input type="hidden" name="csrf" value="{{ csrf }}">
-      <label><span id="assign-server-label">服务器</span>
-        <select name="server_id" aria-labelledby="assign-server-label" required>
-          {% for server, choices in pending %}
-          <option value="{{ server.id }}"{% if server.id == selected_server %} selected{% endif %}>{{ server.name }}</option>
+      <div class="assignment-settings">
+        <div class="assignment-field">
+          <label for="assign-server">服务器</label>
+          <select id="assign-server" name="server_id" required>
+            {% for server, days in pending %}
+            <option value="{{ server.id }}"{% if server.id == selected_server %} selected{% endif %}>{{ server.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="assignment-field">
+          <label for="assign-recipient">分配给</label>
+          <select id="assign-recipient" name="recipient" required>
+            <option value="">选择用户</option>
+            {% for user in users %}<option value="{{ user }}"{% if user == selected_user %} selected{% endif %}>{{ user }}</option>{% endfor %}
+          </select>
+        </div>
+      </div>
+      {% if pending|length > 1 %}
+      <noscript>
+        <p class="assignment-servers panel-body">切换服务器
+          {% for server, days in pending %}<a href="/tasks?server_id={{ server.id }}">{{ server.name }}</a>{% endfor %}
+        </p>
+      </noscript>
+      {% endif %}
+      <section class="assignment-directory" aria-labelledby="assignment-sites-title">
+        <div class="assignment-directory-head">
+          <h3 id="assignment-sites-title">待分配站点</h3>
+          <input type="text" aria-label="搜索域名" placeholder="搜索域名" autocomplete="off" spellcheck="false" data-site-search hidden>
+        </div>
+        <div class="assignment-list-head" data-assignment-tools hidden>
+          <label><input type="checkbox" data-select-visible> 全选当前结果</label>
+          <span data-site-results></span>
+        </div>
+        <div class="assignment-list">
+          {% for server, days in pending %}
+          <fieldset class="assignment-group" data-site-server="{{ server.id }}"{% if server.id != selected_server %} hidden disabled{% endif %}>
+            <legend class="site-a11y">{{ server.name }}的待分配站点</legend>
+            {% for date, choices in days %}
+            <section class="assignment-day" data-assignment-day>
+              <h4>{{ date or '日期未知' }}</h4>
+              {% for site in choices %}
+              <label class="assignment-site" data-assignment-site>
+                <input type="checkbox" name="site_ids" value="{{ server.id }}:{{ site.id }}"{% if server.id == selected_server and site.id in selected_sites %} checked{% endif %}>
+                <span class="assignment-site-name"><strong>{{ site.domains[0] }}</strong>{% if site.domains|length > 1 %}<small>{{ site.domains[1:]|join('、') }}</small>{% endif %}</span>
+              </label>
+              {% endfor %}
+            </section>
+            {% endfor %}
+          </fieldset>
           {% endfor %}
-        </select>
-      </label>
-      <label><span id="assign-site-label">待分配站点</span>
-        <select name="site_id" aria-labelledby="assign-site-label" required>
-          <option value="">选择站点</option>
-          {% for server, choices in pending %}
-          <optgroup label="{{ server.name }}" data-server="{{ server.id }}">
-            {% for site in choices %}<option value="{{ site.id }}">{{ site.domains[0] }}</option>{% endfor %}
-          </optgroup>
-          {% endfor %}
-        </select>
-      </label>
-      <label class="dispatch-wide"><span id="assign-recipient-label">分配给</span>
-        <select name="recipient" aria-labelledby="assign-recipient-label" required>
-          <option value="">选择用户</option>
-          {% for user in users %}<option value="{{ user }}">{{ user }}</option>{% endfor %}
-        </select>
-      </label>
-      <div class="dispatch-actions dispatch-wide"><button class="btn primary" type="submit">分配任务</button></div>
+          <p class="empty-state" data-site-no-results hidden>没有匹配的域名。</p>
+        </div>
+      </section>
+      <div class="assignment-footer">
+        <div class="assignment-summary">
+          <strong data-selected-sites role="status" hidden></strong>
+          <button class="btn ghost" type="button" data-clear-sites hidden>清空</button>
+        </div>
+        <button class="btn primary" type="submit">分配任务</button>
+      </div>
     </form>
     {% endif %}
     {% else %}
     <h2 id="dispatch-compose-title">新建任务</h2>
     {% if not is_admin and assigned %}
     <h3>已分配站点</h3>
-    <ul class="dispatch-missing">
+    <ul class="dispatch-list dispatch-assigned-sites">
       {% for site in assigned %}
-      <li>{{ site.domain }} · {{ site.server_name }}{% if not site.endpoint or not site.credential_env %} <span class="badge warn">待配置部署</span>{% endif %}</li>
+      <li>
+        <strong class="dispatch-list-title">{{ site.domain }}</strong>
+        <div class="dispatch-list-meta">
+          <span>{{ site.server_name }}</span>
+          {% if not site.endpoint or not site.credential_env %}<span class="badge warn">待配置部署</span>{% endif %}
+        </div>
+      </li>
       {% endfor %}
     </ul>
     {% endif %}

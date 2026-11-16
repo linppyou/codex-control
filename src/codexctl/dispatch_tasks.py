@@ -140,33 +140,49 @@ def pending_sites(
     ).fetchall()
     assigned_domains = {row["domain"] for row in assigned}
     assigned_ids = {row["inventory_site_id"] for row in assigned}
+    assigned_aliases = assigned_domains | {
+        domain for row in inventory.rows
+        if row["id"] in assigned_ids or not assigned_domains.isdisjoint(row["domains"])
+        for domain in row["domains"]
+    }
     return sorted(
-        (row for row in inventory.rows if row["id"] not in assigned_ids
-         and assigned_domains.isdisjoint(row["domains"])),
+        (row for row in inventory.rows if assigned_aliases.isdisjoint(row["domains"])),
         key=lambda row: row["domains"][0],
     )
 
 
-def assign_site(ctx: Context, server_id: str, site_id: str, username: str) -> str:
+def assign_sites(ctx: Context, server_id: str, site_ids: list[str], username: str) -> list[str]:
+    selection = list(dict.fromkeys(site_ids))
+    if not selection:
+        raise TaskError("请至少选择一个待分配站点")
     with db.transaction(ctx.conn):
         server = site_registry.get(ctx.conn, server_id)
         if server is None:
             raise TaskError("所选服务器不存在")
-        approved = pending_sites(ctx.conn, server, sites.snapshots(ctx.conn).get(server.id))
-        site = next((row for row in approved if row["id"] == site_id), None)
-        if site is None:
-            raise TaskError("该站点已分配或已不在服务器的站点清单中")
+        inventory = sites.snapshots(ctx.conn).get(server.id)
+        pending = {row["id"]: row for row in pending_sites(ctx.conn, server, inventory)}
+        if any(site_id not in pending for site_id in selection):
+            raise TaskError("部分站点已分配或已不在服务器的站点清单中，请核对后重试")
         user, _ = recipient(ctx, username)
-        domain = site["domains"][0]
-        target_id = uuid4().hex
-        ctx.conn.execute(
-            """INSERT INTO dispatch_targets
-               (id, server_id, server_revision, domain, endpoint, credential_env, project, users, inventory_site_id)
-               VALUES (?, ?, ?, ?, '', '', '', ?, ?)""",
-            (target_id, server.id, server.revision, domain, json.dumps([user.name]), site["id"]),
-        )
-        events.audit(ctx.conn, "admin", "dispatch.site_assign", target_id, f"{domain} → {user.name}", now=ctx.now())
-    return domain
+        users = json.dumps([user.name])
+        selected_aliases: set[str] = set()
+        domains = []
+        for site_id in selection:
+            aliases = pending[site_id]["domains"]
+            if not selected_aliases.isdisjoint(aliases):
+                raise TaskError("所选站点的绑定域名有重叠，请只选择其中一个站点")
+            selected_aliases.update(aliases)
+            domain = aliases[0]
+            target_id = uuid4().hex
+            ctx.conn.execute(
+                """INSERT INTO dispatch_targets
+                   (id, server_id, server_revision, domain, endpoint, credential_env, project, users, inventory_site_id)
+                   VALUES (?, ?, ?, ?, '', '', '', ?, ?)""",
+                (target_id, server.id, server.revision, domain, users, site_id),
+            )
+            events.audit(ctx.conn, "admin", "dispatch.site_assign", target_id, f"{domain} → {user.name}", now=ctx.now())
+            domains.append(domain)
+    return domains
 
 
 def recipient(ctx: Context, username: str) -> tuple[SysUser, str]:

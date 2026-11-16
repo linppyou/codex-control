@@ -503,10 +503,67 @@ progress.bad::-moz-progress-bar { background: var(--red); }
 .dispatch-summary dl { display: grid; gap: 10px; margin: 13px 0; overflow-wrap: anywhere; }
 .dispatch-summary dt { color: var(--text-2); font-size: 12px; }
 .dispatch-summary dd { margin: 1px 0 0; }
+.dispatch-assignment-layout { grid-template-columns: minmax(0, 2.45fr) minmax(260px, 1fr); }
+.assignment-panel { --assignment-inset: 20px; }
+.assignment-form [hidden] { display: none; }
+.assignment-settings {
+  display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  gap: 12px 20px; padding: 16px var(--assignment-inset);
+}
+.assignment-field { display: grid; gap: 5px; min-width: 0; }
+.assignment-field label { color: var(--text-2); font-size: 13px; font-weight: 600; }
+.assignment-field select, .assignment-directory-head input { min-width: 0; width: 100%; min-height: 38px; }
+.assignment-servers { display: flex; gap: 8px 12px; flex-wrap: wrap; margin: 0; }
+.assignment-directory { border-block: 1px solid var(--line); }
+.assignment-directory-head, .assignment-list-head, .assignment-footer {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px 16px;
+  padding-inline: var(--assignment-inset);
+}
+.assignment-directory-head { padding-block: 12px; background: #f8f9fa; }
+.assignment-directory-head h3 { margin: 0; font-size: 14px; flex: none; }
+.assignment-directory-head input { max-width: 16rem; }
+.assignment-list-head {
+  padding-block: 4px; min-height: 38px; background: #f8f9fa; color: var(--text-2);
+  font-size: 12px; border-block: 1px solid var(--line-soft); font-variant-numeric: tabular-nums;
+}
+.assignment-list-head label, .assignment-site {
+  display: flex; align-items: center; gap: 11px; cursor: pointer;
+}
+.assignment-list-head :is(input, span) { margin: 0; }
+.assignment-list { max-height: min(44vh, 27rem); overflow-y: auto; }
+.assignment-group { border: 0; padding: 0; margin: 0; min-inline-size: 0; }
+.assignment-day h4 {
+  position: sticky; top: 0; z-index: 1;
+  margin: 0; padding: 6px var(--assignment-inset); border-bottom: 1px solid var(--line-soft);
+  background: #f4f6f7; color: var(--text-2); font-size: 12px; font-variant-numeric: tabular-nums;
+}
+.assignment-day + .assignment-day { border-top: 1px solid var(--line); }
+.assignment-site { min-height: 44px; padding: 8px var(--assignment-inset); border-bottom: 1px solid var(--line-soft); }
+.assignment-site:last-child { border-bottom: 0; }
+.assignment-site:hover { background: #f8f9fa; }
+.assignment-site:has(input:checked) { background: var(--green-soft); }
+.assignment-site:focus-within { outline: 2px solid var(--green); outline-offset: -2px; }
+.assignment-site input { flex: none; margin: 0; }
+.assignment-site-name { display: grid; gap: 1px; min-width: 0; overflow-wrap: anywhere; }
+.assignment-site-name strong { font-size: 13px; font-weight: 600; }
+.assignment-site-name small { color: var(--text-2); font-size: 12px; }
+.assignment-list .empty-state { margin: 0; }
+.assignment-footer { padding-block: 12px; min-height: 60px; }
+.assignment-summary { display: flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.assignment-summary strong { font-size: 13px; }
+.assignment-footer .btn.primary { justify-content: center; min-height: 36px; margin-left: auto; white-space: nowrap; }
+.assignment-form .btn:disabled { opacity: .56; cursor: default; }
+.assignment-form .btn.primary:disabled:hover { background: var(--green); }
+.dispatch-assigned-sites { border: 1px solid var(--line); border-radius: 6px; max-height: min(35vh, 17rem); overflow-y: auto; }
+.dispatch-assigned-sites li { padding: 9px 12px; }
 @media (max-width: 820px) {
   .dispatch-layout, .dispatch-detail { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 480px) {
   .dispatch-form { grid-template-columns: minmax(0, 1fr); }
   .dispatch-layout > .panel:not(.flush) { padding-inline: 16px; }
+  .assignment-panel { --assignment-inset: 14px; }
+  .assignment-settings { gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .assignment-directory-head, .assignment-list-head { gap: 8px 10px; }
+  .assignment-list { max-height: min(42vh, 21rem); }
 }

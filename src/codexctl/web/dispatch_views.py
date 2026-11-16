@@ -30,7 +30,7 @@ def register(app) -> None:
             raise HTTPException(404, "任务不存在")
         return row
 
-    def task_page(request, who, data=None, *, server_id="", status=200, err=""):
+    def task_page(request, who, data=None, *, server_id="", selected_sites=(), selected_user="", status=200, err=""):
         user, csrf = who
         assigning = user == "admin" and data is None
         pending = []
@@ -40,7 +40,12 @@ def register(app) -> None:
                 for server in site_registry.list_servers(ctx.conn):
                     choices = dispatch_tasks.pending_sites(ctx.conn, server, inventories.get(server.id))
                     if choices:
-                        pending.append((server, choices))
+                        by_date = {}
+                        for site in choices:
+                            date = sites.deployment_date(site.get("created_at"))
+                            by_date.setdefault(date, []).append(site)
+                        dates = sorted(by_date, key=lambda date: date or "", reverse=True)
+                        pending.append((server, [(date, by_date[date]) for date in dates]))
             assigned = [] if assigning else dispatch_tasks.list_targets(ctx.conn, user)
             catalog = [] if assigning else dispatch_skills.list_skills(ctx.conn)
             users = []
@@ -65,6 +70,7 @@ def register(app) -> None:
             request, "dispatch_tasks.html", status=status, admin=user, csrf=csrf, servers=servers,
             targets=targets, users=users, data=data or {}, catalog=catalog,
             assigning=assigning, pending=pending, selected_server=server_id, assigned=assigned,
+            selected_sites=selected_sites, selected_user=selected_user,
             status_map=STATUS, history=history, time=_time, err=err,
         )
 
@@ -84,15 +90,28 @@ def register(app) -> None:
 
     @app.post("/tasks/assign")
     def assign(
-        request: Request, server_id: str = Form(""), site_id: str = Form(""), recipient: str = Form(""),
+        request: Request, server_id: str = Form(""), site_ids: list[str] = Form(default=[]),
+        site_id: str = Form(""), recipient: str = Form(""),
         admin: tuple[str, str] = Depends(current_admin),
     ):
+        selected = []
         try:
+            for choice in site_ids:
+                choice_server, _, inventory_id = choice.partition(":")
+                if choice_server != server_id or not inventory_id:
+                    raise dispatch_tasks.TaskError("请选择当前服务器上的待分配站点")
+                selected.append(inventory_id)
+            if not site_ids and site_id:
+                selected.append(site_id)
             with lock:
-                domain = dispatch_tasks.assign_site(ctx, server_id, site_id, recipient)
+                domains = dispatch_tasks.assign_sites(ctx, server_id, selected, recipient)
         except dispatch_tasks.TaskError as exc:
-            return task_page(request, admin, server_id=server_id, status=422, err=str(exc))
-        return _redirect("/tasks?" + urlencode({"server_id": server_id}), msg=f"{domain} 已分配给 {recipient}")
+            return task_page(
+                request, admin, server_id=server_id, selected_sites=set(selected), selected_user=recipient,
+                status=422, err=str(exc),
+            )
+        message = f"{domains[0]} 已分配给 {recipient}" if len(domains) == 1 else f"已将 {len(domains)} 个站点分配给 {recipient}"
+        return _redirect("/tasks?" + urlencode({"server_id": server_id}), msg=message)
 
     @app.post("/tasks/preview")
     def preview(

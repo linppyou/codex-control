@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 import zipfile
+from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
@@ -114,6 +115,43 @@ def test_admin_assigns_only_pending_inventory_sites(ctx):
     assert ctx.conn.execute(
         "SELECT COUNT(*) FROM audit_log WHERE action='dispatch.site_assign'"
     ).fetchone()[0] == 1
+
+
+def test_admin_assigns_a_batch_or_leaves_all_sites_pending(ctx):
+    form = task_form(ctx)
+    server_id = form["server_id"]
+    ctx.conn.execute(
+        "INSERT INTO site_inventories VALUES (?, 0, ?, ?, NULL, ?)",
+        (server_id, ctx.now(), ctx.now(), json.dumps([
+            {"id": "2", "domains": ["one.example.com", "alias.example.com"],
+             "created_at": int(datetime(2026, 11, 14, 10, tzinfo=timezone.utc).timestamp())},
+            {"id": "3", "domains": ["two.example.com"],
+             "created_at": int(datetime(2026, 11, 15, 17, tzinfo=timezone.utc).timestamp())},
+            {"id": "4", "domains": ["three.example.com", "alias.example.com"]},
+        ])),
+    )
+    app = create_app(ctx)
+    admin, csrf = session(ctx, app, "admin")
+    alice, _ = session(ctx, app, "alice")
+    bob, _ = session(ctx, app, "bob")
+    page = admin.get("/tasks").text
+    assert page.index("2026-11-16</h4>") < page.index("two.example.com") < page.index("2026-11-14</h4>")
+    assert page.index("2026-11-14</h4>") < page.index("one.example.com") < page.index("日期未知</h4>")
+    base = dict(server_id=server_id, recipient="alice", csrf=csrf)
+    first, second, overlapping = (f"{server_id}:{site_id}" for site_id in ("2", "3", "4"))
+    for selection in ([], [first, "other-server:3"], [first, f"{server_id}:missing"], [first, overlapping]):
+        assert admin.post("/tasks/assign", data=dict(base, site_ids=selection)).status_code == 422
+        assert ctx.conn.execute("SELECT COUNT(*) FROM dispatch_targets").fetchone()[0] == 1
+
+    response = admin.post("/tasks/assign", data=dict(base, site_ids=[first, second, second]))
+    assert response.status_code == 303
+    pending = admin.get(response.headers["location"]).text
+    assert "已将 2 个站点分配给 alice" in pending
+    assert "one.example.com" not in pending and "two.example.com" not in pending
+    assert "暂无待分配站点" in pending
+    assert admin.post("/tasks/assign", data=dict(base, site_ids=[first, second])).status_code == 422
+    assert "one.example.com" in alice.get("/tasks").text and "two.example.com" in alice.get("/tasks").text
+    assert "one.example.com" not in bob.get("/tasks").text and "two.example.com" not in bob.get("/tasks").text
 
 
 def test_user_previews_and_confirms_exactly_once(ctx):
