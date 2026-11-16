@@ -28,13 +28,23 @@ def session(ctx, app, name):
 
 
 def task_form(ctx):
-    for name in ("alice", "bob"):
+    users = {}
+    for uid, name in enumerate(("alice", "bob"), start=1001):
         ctx.test_users.add(name)
+        users[name] = dataclasses.replace(ctx.test_users.get(name), uid=uid, gid=uid)
         account = repo.insert_account(
             ctx.conn, label=name, email=None, account_id=name, plan_type=None,
             last_refresh=ctx.now(), access_expires_at=ctx.now() + 60, now=ctx.now(),
         )
         repo.start_assignment(ctx.conn, name, account, ctx.now())
+    lookup_user = ctx.lookup_user
+
+    def lookup(name, min_uid):
+        if name in users:
+            return users[name]
+        return lookup_user(name, min_uid)
+
+    ctx.lookup_user = lookup
     server = site_registry.create(ctx, "admin", "站点服务器", "1.1.1.1", "22", "")
     dispatch_tasks.save_target(
         ctx, None, server.id, "shop.example.com",
