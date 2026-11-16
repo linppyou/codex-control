@@ -2,6 +2,9 @@ import json
 import runpy
 import sqlite3
 import subprocess
+import threading
+import time
+from collections import Counter
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -92,6 +95,50 @@ def test_ssl_failure_can_report_http_fallback(monkeypatch):
         lambda url, host, port, addresses, timeout: (0, "tls", {}) if port == 443 else (200, "", {}),
     )
     assert site_probe.probe(("example.com",)).state == "http_only"
+
+
+def test_probe_allows_slow_https_response(monkeypatch):
+    monkeypatch.setattr(site_probe, "_resolve", lambda host, timeout: (["93.184.216.34"], ""))
+
+    def request(url, host, port, addresses, timeout):
+        return (200, "", {}) if port == 443 and timeout >= 6 else (0, "timeout", {})
+
+    monkeypatch.setattr(site_probe, "_request", request)
+    assert site_probe.probe(("example.com",)).state == "up"
+
+
+def test_probe_keeps_a_timeout_when_other_alias_has_no_dns(monkeypatch):
+    monkeypatch.setattr(
+        site_probe, "_resolve", lambda host, timeout: (["93.184.216.34"], "") if host.startswith("www.") else ([], "dns"),
+    )
+    monkeypatch.setattr(site_probe, "_request", lambda *args: (0, "timeout", {}))
+    result = site_probe.probe(("example.com", "www.example.com"))
+    assert result.state == "down" and result.reason == "timeout"
+
+
+def test_probe_batches_limit_parallel_requests_per_server(monkeypatch):
+    targets = {
+        ((f"{owner}{index}.example.com",), None): owner
+        for owner in ("a", "b") for index in range(12)
+    }
+    lock = threading.Lock()
+    active = Counter()
+    peak = Counter()
+
+    def probe(domains, origin, clock):
+        owner = domains[0][0]
+        with lock:
+            active[owner] += 1
+            peak[owner] = max(peak[owner], active[owner])
+        time.sleep(0.01)
+        with lock:
+            active[owner] -= 1
+        return {}
+
+    monkeypatch.setattr(sites, "_probe", probe)
+    results = sites._probe_by_server(targets, lambda: 0, 4)
+    assert results.keys() == targets.keys()
+    assert all(0 < peak[owner] <= 4 for owner in ("a", "b"))
 
 
 def test_refresh_retains_failed_inventory_and_probes_duplicates(ctx, monkeypatch):
@@ -230,3 +277,22 @@ def test_overview_groups_filters_and_paginates(ctx, monkeypatch):
     assert "dns-error.com" in filtered and "site00.com" not in filtered
     ctx.test_clock.t += 901
     assert "结果已过期" in client.get("/servers?state=stale").text
+
+
+def test_overview_separates_timeouts_from_confirmed_failures(ctx, monkeypatch):
+    client, _ = login_client(ctx)
+    create(ctx)
+    rows = [sites.Site("1", None, ("slow.example.com",)), sites.Site("2", None, ("missing.example.com",))]
+    monkeypatch.setattr(sites, "collect", lambda *args: rows)
+    monkeypatch.setattr(
+        site_probe, "probe", lambda domains, origin: site_probe.Probe(
+            "down", reason="timeout" if domains[0] == "slow.example.com" else "dns",
+        ),
+    )
+    sites._refresh(ctx.conn, ctx)
+    pending = client.get("/servers?state=unconfirmed").text
+    assert "slow.example.com" in pending and "请求超时" in pending and "missing.example.com" not in pending
+    down = client.get("/servers?state=down").text
+    assert "missing.example.com" in down and "slow.example.com" not in down
+    ctx.test_clock.t += 901
+    assert "上次待确认" in client.get("/servers?state=stale").text

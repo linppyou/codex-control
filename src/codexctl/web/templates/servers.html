@@ -3,7 +3,7 @@
 {% macro probe_result(result, status) %}
   <span class="badge {{ statuses[status][1] }}">{{ statuses[status][0] }}</span>
   {% if result %}
-    {% if status == 'stale' %}<span class="hint">上次{{ statuses[result.state][0] }}</span>{% endif %}
+    {% if status == 'stale' %}<span class="hint">上次{{ statuses[probe_state(result)][0] }}</span>{% endif %}
     {% if result.code %}<span class="tag">HTTP {{ result.code }}</span>{% endif %}
     {% if result.reason in reasons %}<span class="hint">{{ reasons[result.reason] }}</span>{% endif %}
     {% if result.state == 'redirect' and result.final_host %}<span class="hint server-wrap">{{ result.final_host }}</span>{% endif %}
@@ -42,7 +42,7 @@
     <div class="site-totals">
       <span>站点 <strong>{{ total }}</strong></span>
       <span>访问异常 <strong{% if anomalies %} class="bad"{% endif %}>{{ anomalies }}</strong></span>
-      {% if stale %}<span>待确认 <strong>{{ stale }}</strong></span>{% endif %}
+      {% if unconfirmed %}<span>待确认 <strong>{{ unconfirmed }}</strong></span>{% endif %}
     </div>
   </div>
   <form method="get" action="/servers" class="form-row panel site-filters">

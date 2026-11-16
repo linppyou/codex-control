@@ -4,7 +4,7 @@ import json
 import logging
 import sqlite3
 import subprocess
-from collections import Counter
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from dataclasses import asdict, dataclass
@@ -22,6 +22,11 @@ log = logging.getLogger(__name__)
 INTERVAL = 300
 STALE_AFTER = 900
 BEIJING = ZoneInfo("Asia/Shanghai")
+_MAX_PROBES = 16
+_PROBES_PER_SERVER = 4
+_RETRIES_PER_SERVER = 2
+
+ProbeTarget = tuple[tuple[str, ...], str | None]
 
 
 @dataclass(frozen=True)
@@ -154,6 +159,23 @@ def _probe(domains: tuple[str, ...], origin: str | None, clock):
     return {**asdict(site_probe.probe(domains, origin)), "checked_at": clock()}
 
 
+def _probe_by_server(targets: dict[ProbeTarget, str], clock, per_server: int) -> dict[ProbeTarget, dict]:
+    batches = defaultdict(list)
+    for target, server_id in targets.items():
+        batches[server_id].append(target)
+
+    def check_batch(batch):
+        with ThreadPoolExecutor(max_workers=per_server) as workers:
+            checks = {target: workers.submit(_probe, *target, clock) for target in batch}
+            return {target: check.result() for target, check in checks.items()}
+
+    results = {}
+    with ThreadPoolExecutor(max_workers=_MAX_PROBES // per_server) as servers:
+        for batch_results in servers.map(check_batch, batches.values()):
+            results.update(batch_results)
+    return results
+
+
 def _refresh(conn: sqlite3.Connection, ctx: Context) -> None:
     previous = snapshots(conn)
     clock = ctx.now
@@ -181,45 +203,42 @@ def _refresh(conn: sqlite3.Connection, ctx: Context) -> None:
 
     counts = Counter(alias for current, *_ in inventories.values() for site in current for alias in _aliases(site))
     duplicate = {alias for alias, count in counts.items() if count > 1}
-    with ThreadPoolExecutor(max_workers=16) as pool:
-        jobs = {}
-        for server, (current, *_) in inventories.items():
-            for site in current:
-                for origin in (None, server.host) if duplicate & _aliases(site) else (None,):
-                    key = (site.domains, origin)
-                    if key not in jobs:
-                        jobs[key] = pool.submit(_probe, site.domains, origin, clock)
+    targets: dict[ProbeTarget, str] = {}
+    for server, (current, *_) in inventories.items():
+        for site in current:
+            targets.setdefault((site.domains, None), server.id)
+            if duplicate & _aliases(site):
+                targets[(site.domains, server.host)] = server.id
 
-        results = {key: job.result() for key, job in jobs.items()}
-        # Retry transport failures after the initial scan has released its connections.
-        retries = {
-            (domains, origin): pool.submit(_probe, domains, origin, clock)
-            for (domains, origin), result in results.items()
-            if origin is None and result["state"] == "down" and result["reason"] in {"timeout", "connect"}
-        }
-        results.update((key, job.result()) for key, job in retries.items())
+    results = _probe_by_server(targets, clock, _PROBES_PER_SERVER)
+    retries = {
+        (domains, origin): targets[(domains, origin)]
+        for (domains, origin), result in results.items()
+        if origin is None and result["state"] == "down" and result["reason"] in {"timeout", "connect"}
+    }
+    results.update(_probe_by_server(retries, clock, _RETRIES_PER_SERVER))
 
-        for server, (current, attempted, synced, error) in inventories.items():
-            rows = [
-                {
-                    **asdict(site),
-                    "public": results[site.domains, None],
-                    "origin": results.get((site.domains, server.host)),
-                }
-                for site in current
-            ]
-            conn.execute(
-                """
-                INSERT INTO site_inventories(server_id, revision, attempted_at, synced_at, error, snapshot)
-                SELECT id, revision, ?, ?, ?, ? FROM site_servers WHERE id = ? AND revision = ?
-                ON CONFLICT(server_id) DO UPDATE SET
-                    revision = excluded.revision, attempted_at = excluded.attempted_at,
-                    synced_at = excluded.synced_at, error = excluded.error, snapshot = excluded.snapshot
-                WHERE excluded.attempted_at >= site_inventories.attempted_at
-                """,
-                (attempted, synced, error, json.dumps(rows), server.id, server.revision),
-            )
-            log.info("服务器 %s 已巡检 %d 条站点记录", server.id, len(rows))
+    for server, (current, attempted, synced, error) in inventories.items():
+        rows = [
+            {
+                **asdict(site),
+                "public": results[site.domains, None],
+                "origin": results.get((site.domains, server.host)),
+            }
+            for site in current
+        ]
+        conn.execute(
+            """
+            INSERT INTO site_inventories(server_id, revision, attempted_at, synced_at, error, snapshot)
+            SELECT id, revision, ?, ?, ?, ? FROM site_servers WHERE id = ? AND revision = ?
+            ON CONFLICT(server_id) DO UPDATE SET
+                revision = excluded.revision, attempted_at = excluded.attempted_at,
+                synced_at = excluded.synced_at, error = excluded.error, snapshot = excluded.snapshot
+            WHERE excluded.attempted_at >= site_inventories.attempted_at
+            """,
+            (attempted, synced, error, json.dumps(rows), server.id, server.revision),
+        )
+        log.info("服务器 %s 已巡检 %d 条站点记录", server.id, len(rows))
 
 
 def refresh(ctx: Context) -> None:

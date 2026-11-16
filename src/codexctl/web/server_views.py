@@ -8,7 +8,7 @@ from urllib.parse import urlencode
 from fastapi import Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from .. import site_registry, sites
+from .. import site_probe, site_registry, sites
 from .app import current_admin
 
 PAGE_SIZE = 50
@@ -18,6 +18,7 @@ STATUSES = {
     "restricted": ("访问受限", "warn"),
     "redirect": ("跳转至其他域名", "warn"),
     "down": ("不可访问", "bad"),
+    "unconfirmed": ("待确认", "warn"),
     "pending": ("待检测", "info"),
     "stale": ("结果已过期", "warn"),
 }
@@ -45,10 +46,16 @@ def _time(ts: int | None) -> str:
     return datetime.fromtimestamp(ts, sites.BEIJING).strftime("%m-%d %H:%M") if ts is not None else ""
 
 
+def _probe_state(result: dict) -> str:
+    if result["state"] == "down" and result["reason"] in site_probe.UNCONFIRMED_REASONS:
+        return "unconfirmed"
+    return result["state"]
+
+
 def _state(result: dict | None, now: int) -> str:
     if not result:
         return "pending"
-    return "stale" if now - result["checked_at"] > sites.STALE_AFTER else result["state"]
+    return "stale" if now - result["checked_at"] > sites.STALE_AFTER else _probe_state(result)
 
 
 def _server_state(server, inv, now: int) -> tuple[str, str]:
@@ -136,9 +143,10 @@ def register(app) -> None:
         return render(
             request, "servers.html", admin=admin[0], csrf=admin[1], summary=summary, groups=groups,
             server_id=server_id, date=date, state=state, q=q, available_dates=available_dates, statuses=STATUSES,
-            reasons=REASONS, total=len(rows), filtered=len(filtered),
+            reasons=REASONS, probe_state=_probe_state, total=len(rows), filtered=len(filtered),
             anomalies=sum(counts[key] for key in ("down", "restricted", "redirect", "http_only")),
-            stale=counts["stale"] + counts["pending"], last_check=_time(last_check), page=page, pages=pages,
+            unconfirmed=counts["unconfirmed"] + counts["stale"] + counts["pending"],
+            last_check=_time(last_check), page=page, pages=pages,
             previous=page_url(page - 1) if page > 1 else None, next_page=page_url(page + 1) if page < pages else None,
         )
 

@@ -11,6 +11,9 @@ _HOSTNAME = re.compile(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)
 _LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _REDIRECTS = {301, 302, 303, 307, 308}
 _PREFERENCE = {"up": 4, "http_only": 3, "redirect": 2, "restricted": 1, "down": 0}
+_REQUEST_TIMEOUT = 10
+_SITE_TIMEOUT = 24
+UNCONFIRMED_REASONS = {"timeout", "connect", "probe_error"}
 
 
 @dataclass(frozen=True)
@@ -142,7 +145,7 @@ def _walk(entry: str, domains: tuple[str, ...], deadline: float, origin: str | N
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return Probe("down", 0, "timeout", entry, host)
-        code, reason, headers = _request(url, host, port, addresses, min(remaining, 5))
+        code, reason, headers = _request(url, host, port, addresses, min(remaining, _REQUEST_TIMEOUT))
         if code in _REDIRECTS and headers.get("location"):
             try:
                 url = urljoin(url, headers["location"]).split("#", 1)[0]
@@ -160,7 +163,7 @@ def _walk(entry: str, domains: tuple[str, ...], deadline: float, origin: str | N
 
 
 def probe(domains: tuple[str, ...], origin: str | None = None) -> Probe:
-    deadline = time.monotonic() + 14
+    deadline = time.monotonic() + _SITE_TIMEOUT
     attempts = []
     cache = {}
     for host in domains:
@@ -174,4 +177,7 @@ def probe(domains: tuple[str, ...], origin: str | None = None) -> Probe:
         if result.state == "up":
             return result
         attempts.append(result)
-    return max(attempts, key=lambda result: (_PREFERENCE[result.state], bool(result.code)))
+    return max(
+        attempts,
+        key=lambda result: (_PREFERENCE[result.state], result.reason in UNCONFIRMED_REASONS, bool(result.code)),
+    )
