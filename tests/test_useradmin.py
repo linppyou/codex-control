@@ -41,6 +41,21 @@ def test_create_user_rejects_existing_user(ctx):
     assert ctx.conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == 0
 
 
+@pytest.mark.parametrize("with_ca", [False, True])
+def test_create_user_provisions_site_ssh_when_enabled(ctx, monkeypatch, tmp_path, with_ca):
+    ctx.settings = dataclasses.replace(
+        ctx.settings, site_ssh_enabled=True, site_ssh_ca_key=tmp_path / "site-ca" if with_ca else None,
+    )
+    provisioned = []
+    monkeypatch.setattr(useradmin.site_access, "provision", lambda settings, user: provisioned.append(user))
+
+    user, note = useradmin.create(ctx, "alice", PW, PW, "web:root_admin")
+
+    assert provisioned == [user]
+    expected_note = "已签发站点 SSH 证书" if with_ca else "需在目标服务器授权公钥"
+    assert expected_note in note
+
+
 @pytest.mark.parametrize(
     "name,password,confirm,error",
     [

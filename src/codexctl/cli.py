@@ -12,7 +12,7 @@ from typing import Callable
 
 from . import (
     accounts, assignments, codexinstall, daemon, db, dispatch_worker, locks, logscan, pricing, refresher, repo,
-    selfcheck, useradmin, watcher, webauth,
+    selfcheck, site_access, useradmin, watcher, webauth,
 )
 from .authfile import AuthFileError
 from .config import Settings, load_settings
@@ -82,6 +82,8 @@ def build_parser() -> argparse.ArgumentParser:
     usr = sub.add_parser("user", help="创建 Linux 用户").add_subparsers(dest="ucmd", required=True)
     a = usr.add_parser("add", help="创建用户、设置密码并安装/初始化 codex")
     a.add_argument("name")
+    a = usr.add_parser("site-ssh", help="为现有 Linux 用户开通站点 SSH 并显示公钥")
+    a.add_argument("users", nargs="+")
     sub.add_parser("quota", help="显示各账号最新额度")
     a = sub.add_parser("usage", help="按用户汇总用量")
     a.add_argument("--days", type=_positive_int, default=7)
@@ -314,6 +316,20 @@ def dispatch(ctx: Context, args: argparse.Namespace) -> int:
 
 
 def user_cmd(ctx: Context, args: argparse.Namespace) -> int:
+    if args.ucmd == "site-ssh":
+        if not ctx.settings.manages_local_codex:
+            raise UserAdminError("站点 SSH 密钥仅适用于托管模式下的 Linux 用户")
+        failed = False
+        for name in args.users:
+            try:
+                user = ctx.lookup_user(name, ctx.settings.min_uid)
+                public_key = site_access.provision(ctx.settings, user)
+            except (UserError, OSError, ValueError) as e:
+                failed = True
+                print(_safe(f"错误：{name}：{e}"), file=sys.stderr)
+                continue
+            print(_safe(public_key))
+        return int(failed)
     if args.ucmd != "add":
         raise AssertionError(f"unhandled user command {args.ucmd}")
     password = getpass.getpass("新用户密码：")
