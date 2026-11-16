@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}{{ server.name }} · 服务器 · codexctl{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><div class="crumb"><a href="/servers">服务器</a></div><h1>{{ server.name }}</h1></div>
+  <div class="form-row">
+    <a class="btn" href="/servers?server_id={{ server.id }}">查看站点</a>
+    <a class="btn primary" href="/servers/{{ server.id }}/edit">编辑</a>
+  </div>
+</div>
+<section class="panel server-detail">
+  <h2>同步状态</h2>
+  <dl>
+    <dt>公网 IP</dt><dd class="mono">{{ server.host }}</dd>
+    <dt>SSH 端口</dt><dd class="mono">{{ server.port }}</dd>
+    <dt>状态</dt><dd><span class="badge {{ sync[1] }}">{{ sync[0] }}</span>{% if sync_error and server.host_key %} <span class="hint">{{ sync_error }}</span>{% endif %}</dd>
+    <dt>站点数</dt><dd>{{ count if count is not none else '—' }}</dd>
+    <dt>上次成功同步</dt><dd>{{ synced_at ~ '（北京时间）' if synced_at else '—' }}</dd>
+  </dl>
+</section>
+<section class="panel server-detail">
+  <h2>SSH 接入</h2>
+  {% if server.fingerprint %}<p class="hint">主机指纹 <code class="server-wrap">{{ server.fingerprint }}</code></p>{% endif %}
+  <p class="hint">在站点服务器安装只读采集脚本后，将以下一行添加到该服务器的 <code>/root/.ssh/authorized_keys</code>。</p>
+  <label class="server-key">采集授权公钥
+    <textarea readonly rows="3" spellcheck="false">{{ server.authorized_key }}</textarea>
+  </label>
+</section>
+<form method="post" action="/servers/{{ server.id }}/delete" data-confirm="删除 {{ server.name }} 及其巡检记录？">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <button class="btn danger" type="submit">删除服务器</button>
+</form>
+<script src="/static/confirm.js"></script>
+{% endblock %}

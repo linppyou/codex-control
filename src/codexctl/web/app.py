@@ -283,8 +283,9 @@ def create_app(
         resp.delete_cookie(SESSION_COOKIE, **cookie_attrs())
         return resp
 
-    from . import views
+    from . import server_views, views
 
     views.register(app)
+    server_views.register(app)
     app.add_middleware(SecurityHeadersMiddleware)
     return app

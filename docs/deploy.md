@@ -186,6 +186,18 @@ systemd 单元设置了 `TimeoutStopSec=120` 与 `KillMode=mixed`：`systemctl s
    ```
 3. 执行 `systemctl restart codexctl-web`。用户从面板登录页输入当前 Linux 用户名和密码。每次登录都由本机 PAM 验证密码及账号有效期。Linux 密码修改后，下次登录使用新密码。
 
-普通用户登录后进入「我的数据」，可以查看本人的账号分配、用量和会话。全站总览、全量导出和审计页面仅供 `admin` 访问。已有面板账号（例如 `linpp`）继续使用原有面板密码，访问范围同样限于本人数据。
+普通用户登录后进入「我的数据」，可以查看本人的账号分配、用量和会话。全站总览、全量导出、审计和服务器页面仅供 `admin` 访问。已有面板账号（例如 `linpp`）继续使用原有面板密码，访问范围同样限于本人数据。
 
 Web 面板启动时，如不存在 `admin` 登录账号，会以密码 `root@root.root` 创建该账号。首次部署后通过 `codexctl admin passwd admin` 修改初始密码。
+
+## 服务器与网站巡检
+
+安装包含服务器面板的版本后，重启 `codexctl` 和 `codexctl-web`。控制端需要 OpenSSH 客户端、`getent` 和 curl。以 `admin` 登录面板，在「服务器」页面登记名称、公网 IP 和 SSH 端口。
+
+1. 从站点服务器的可信控制台查看 `/etc/ssh/ssh_host_ed25519_key.pub`，在服务器表单中保存该主机公钥。
+2. 将仓库的 `deploy/collect-sites.py` 安装到站点服务器。确认安装路径和文件均由 root 管理，并且 SSH 服务允许 root 使用公钥认证。
+   ```bash
+   install -D -o root -g root -m 0755 collect-sites.py /usr/local/libexec/codexctl-site-inventory
+   ```
+3. 打开服务器详情，把「采集授权公钥」原样追加到站点服务器的 `/root/.ssh/authorized_keys`。该行的 `restrict` 和 `command` 限制密钥只能执行只读采集脚本。每台服务器的独立私钥由面板生成，并使用现有主密钥加密保存。
+4. 等待下一轮巡检，在详情页确认同步成功。守护进程启动后立即采集，之后每 5 分钟一次。建站日期取宝塔记录并转换为北京时间。删除服务器后，可按详情中公钥末尾的 `codexctl-site-<id>` 注释移除远端授权行。

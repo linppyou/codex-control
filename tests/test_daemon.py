@@ -4,7 +4,8 @@ from codexctl.daemon import build_scheduler, safe_job
 def test_scheduler_has_expected_jobs(ctx):
     sched = build_scheduler(ctx)
     jobs = {j.id: j.trigger.interval.total_seconds() for j in sched.get_jobs()}
-    assert jobs == {"refresh": 600, "quota": 600, "logscan": 60, "watch": 300}
+    assert jobs == {"refresh": 600, "quota": 600, "logscan": 60, "watch": 300, "sites": 300}
+    assert sched.get_job("sites").executor == "sites"
 
 
 def test_quota_interval_follows_settings(ctx):

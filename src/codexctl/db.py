@@ -117,6 +117,25 @@ CREATE TABLE IF NOT EXISTS web_system_users (
     username TEXT PRIMARY KEY,
     uid INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS site_servers (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    host TEXT NOT NULL,
+    port INTEGER NOT NULL,
+    host_key TEXT,
+    public_key TEXT NOT NULL,
+    private_key BLOB NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (host, port)
+);
+CREATE TABLE IF NOT EXISTS site_inventories (
+    server_id TEXT PRIMARY KEY REFERENCES site_servers(id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL,
+    attempted_at INTEGER NOT NULL,
+    synced_at INTEGER,
+    error TEXT,
+    snapshot TEXT NOT NULL
+);
 """
 
 

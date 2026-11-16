@@ -9,7 +9,7 @@ from typing import Callable
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.blocking import BlockingScheduler
 
-from . import logscan, quota, refresher, watcher
+from . import logscan, quota, refresher, sites, watcher
 from .context import Context
 
 log = logging.getLogger(__name__)
@@ -49,6 +49,15 @@ def build_scheduler(ctx: Context) -> BlockingScheduler:
             id=name,
             next_run_time=start + timedelta(seconds=5 * i),
         )
+    sched.add_executor(ThreadPoolExecutor(1), alias="sites")
+    sched.add_job(
+        safe_job("sites", sites.refresh, ctx),
+        "interval",
+        seconds=sites.INTERVAL,
+        id="sites",
+        executor="sites",
+        next_run_time=start,
+    )
     return sched
 
 

@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}服务器 · codexctl{% endblock %}
+{% macro probe_result(result, status) %}
+  <span class="badge {{ statuses[status][1] }}">{{ statuses[status][0] }}</span>
+  {% if result %}
+    {% if status == 'stale' %}<span class="hint">上次{{ statuses[result.state][0] }}</span>{% endif %}
+    {% if result.code %}<span class="tag">HTTP {{ result.code }}</span>{% endif %}
+    {% if result.reason in reasons %}<span class="hint">{{ reasons[result.reason] }}</span>{% endif %}
+    {% if result.state == 'redirect' and result.final_host %}<span class="hint server-wrap">{{ result.final_host }}</span>{% endif %}
+  {% endif %}
+{% endmacro %}
+{% block content %}
+<div class="page-head">
+  <h1>服务器</h1>
+  <a class="btn primary" href="/servers/new">添加服务器</a>
+</div>
+
+{% if summary %}
+<section class="panel flush">
+  <div class="panel-head"><h2>服务器清单</h2><span class="hint">{{ summary|length }} 台 · 北京时间</span></div>
+  <ul class="server-list">
+    {% for item in summary %}
+    <li>
+      <div><a class="server-name" href="/servers/{{ item.server.id }}">{{ item.server.name }}</a> <span class="badge {{ item.status[1] }}">{{ item.status[0] }}</span></div>
+      <div class="hint server-meta">
+        <span class="mono">{{ item.server.host }}</span>
+        {% if item.count is not none %}<a href="/servers?server_id={{ item.server.id }}">{{ item.count }} 个站点</a>{% endif %}
+        {% if item.synced_at %}<span>同步于 {{ item.synced_at }}</span>{% endif %}
+      </div>
+      {% if item.error and item.server.host_key %}<div class="hint">{{ item.error }}</div>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+
+<section aria-labelledby="website-heading">
+  <div class="page-head">
+    <div>
+      <h2 id="website-heading">网站巡检</h2>
+      <div class="sub">{% if last_check %}最近检测 {{ last_check }} · 北京时间{% else %}等待首次巡检{% endif %}</div>
+    </div>
+    <div class="site-totals">
+      <span>站点 <strong>{{ total }}</strong></span>
+      <span>访问异常 <strong{% if anomalies %} class="bad"{% endif %}>{{ anomalies }}</strong></span>
+      {% if stale %}<span>待确认 <strong>{{ stale }}</strong></span>{% endif %}
+    </div>
+  </div>
+  <form method="get" action="/servers" class="form-row panel site-filters">
+    <label>服务器
+      <select name="server_id" aria-label="服务器">
+        <option value="">全部</option>
+        {% for item in summary %}<option value="{{ item.server.id }}"{% if server_id == item.server.id %} selected{% endif %}>{{ item.server.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>建站日期
+      <select name="date" aria-label="建站日期">
+        <option value="">全部</option>
+        {% for day in available_dates %}<option value="{{ day }}"{% if day == date %} selected{% endif %}>{{ '日期未知' if day == 'unknown' else day }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>状态
+      <select name="state" aria-label="状态">
+        <option value="">全部</option>
+        {% for key, value in statuses.items() %}<option value="{{ key }}"{% if key == state %} selected{% endif %}>{{ value[0] }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>域名 <input type="text" name="q" value="{{ q }}" maxlength="253" spellcheck="false"></label>
+    <button class="btn" type="submit">筛选</button>
+    {% if server_id or date or state or q %}<a class="btn ghost" href="/servers">清除筛选</a>{% endif %}
+  </form>
+
+  {% for day, rows, count in groups %}
+  <section class="panel flush site-group">
+    <div class="panel-head">
+      <h2>{% if day == 'unknown' %}日期未知{% else %}<time datetime="{{ day }}">{{ day }}</time>{% endif %}</h2>
+      <span class="hint">{{ count }} 个站点</span>
+    </div>
+    <div class="site-row site-columns" aria-hidden="true">
+      <span>域名</span><span>服务器</span><span>公网状态</span><span>源站直连</span><span>检测时间</span>
+    </div>
+    <ul class="site-rows">
+      {% for row in rows %}
+      <li class="site-row">
+        <div class="site-domain">
+          <a href="{{ row.public.entry_url or ('https://' ~ row.domain ~ '/') }}" target="_blank" rel="noopener noreferrer">{{ row.domain }}</a>
+          {% if row.origin %}<span class="tag">重复域名</span>{% endif %}
+        </div>
+        <a href="/servers/{{ row.server.id }}" class="site-owner">{{ row.server.name }}</a>
+        <div class="site-result site-public"><span class="site-a11y">公网状态</span>{{ probe_result(row.public, row.status) }}</div>
+        <div class="site-result site-origin{% if not row.origin %} site-origin-empty{% endif %}">{% if row.origin %}<span class="site-a11y site-mobile-label">源站直连</span>{{ probe_result(row.origin, row.origin_status) }}{% else %}<span class="hint" aria-hidden="true">—</span>{% endif %}</div>
+        <span class="hint site-checked">{{ row.checked_at }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% else %}
+  <div class="panel empty-state">{{ '没有符合筛选条件的网站' if total else '暂无站点数据' }}</div>
+  {% endfor %}
+  {% if pages > 1 %}
+  <nav class="site-pagination" aria-label="网站分页">
+    {% if previous %}<a class="btn" href="{{ previous }}">上一页</a>{% endif %}
+    <span class="hint">第 {{ page }} / {{ pages }} 页 · 共 {{ filtered }} 条</span>
+    {% if next_page %}<a class="btn" href="{{ next_page }}">下一页</a>{% endif %}
+  </nav>
+  {% endif %}
+</section>
+{% else %}
+<div class="panel empty-state">暂无服务器。添加服务器后即可配置站点巡检。</div>
+{% endif %}
+{% endblock %}

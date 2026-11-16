@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}{{ '编辑服务器' if server else '添加服务器' }} · codexctl{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <div class="crumb"><a href="/servers">服务器</a>{% if server %} / <a href="/servers/{{ server.id }}">{{ server.name }}</a>{% endif %}</div>
+    <h1>{{ '编辑服务器' if server else '添加服务器' }}</h1>
+  </div>
+</div>
+<form class="panel server-form" method="post" action="{{ '/servers/' ~ server.id ~ '/edit' if server else '/servers' }}">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label>服务器名称 <input type="text" name="name" value="{{ fields.name }}" maxlength="60" required></label>
+  <label>公网 IP <input type="text" name="host" value="{{ fields.host }}" maxlength="45" spellcheck="false" required></label>
+  <label>SSH 端口 <input type="text" name="port" value="{{ fields.port }}" inputmode="numeric" pattern="[0-9]{1,5}" required></label>
+  <label>SSH 主机公钥
+    <textarea name="host_key" rows="3" spellcheck="false" maxlength="512" aria-describedby="host-key-help">{{ fields.host_key }}</textarea>
+  </label>
+  <p class="hint" id="host-key-help">从服务器控制台获取 <code>/etc/ssh/ssh_host_ed25519_key.pub</code>。可稍后补填，保存公钥后开始尝试连接。</p>
+  <div class="form-row">
+    <button type="submit" class="btn primary">{{ '保存' if server else '添加服务器' }}</button>
+    <a class="btn ghost" href="{{ '/servers/' ~ server.id if server else '/servers' }}">取消</a>
+  </div>
+</form>
+{% endblock %}
