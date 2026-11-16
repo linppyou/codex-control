@@ -105,10 +105,11 @@ def collect_data(root, mysql, deadline):
         address = LOCAL_DB.fullmatch(settings["DB_HOST"])
         if not address:
             return None
-        host, port = address.groups()
-        port = int(port or "3306")
+        host, configured_port = address.groups()
+        port = int(configured_port or "3306")
         if not 1 <= port <= 65535:
             return None
+        protocol = ["--protocol=TCP"] if configured_port is not None else []
         with NamedTemporaryFile(mode="w", encoding="utf-8", prefix="codexctl-site-db-") as defaults:
             defaults.write("[client]\n")
             for option in ("USER", "PASSWORD", "NAME"):
@@ -117,7 +118,7 @@ def collect_data(root, mysql, deadline):
             defaults.flush()
             result = subprocess.run(
                 [
-                    mysql, f"--defaults-file={defaults.name}", f"--host={host}", f"--port={port}",
+                    mysql, f"--defaults-file={defaults.name}", f"--host={host}", f"--port={port}", *protocol,
                     "--batch", "--skip-column-names", "--connect-timeout=1", "--skip-reconnect",
                     "--local-infile=0", "--execute", data_query(prefix),
                 ],

@@ -112,7 +112,7 @@ def test_wordpress_collection_keeps_local_credentials_out_of_process_arguments(t
 /*
 define('DB_HOST', 'elsewhere.example.com');
 */
-define('DB_HOST', '127.0.0.1:3306');
+define('DB_HOST', 'localhost:3307');
 define("DB_NAME", "shop");
 define('DB_USER', 'shop');
 define('DB_PASSWORD', 'secret#with\\and\'symbols');
@@ -120,7 +120,8 @@ $table_prefix = 'shop_';
 """)
 
     def run(args, **kwargs):
-        assert "--host=127.0.0.1" in args
+        assert "--host=localhost" in args
+        assert "--port=3307" in args and "--protocol=TCP" in args
         assert "--local-infile=0" in args
         assert all("secret" not in arg for arg in args)
         defaults = Path(args[1].removeprefix("--defaults-file="))
@@ -132,7 +133,7 @@ $table_prefix = 'shop_';
     assert collector["collect_data"](tmp_path, "/usr/bin/mysql", float("inf")) == {
         "products": 0, "importing": 3, "menus": 4,
     }
-    config.write_text(config.read_text().replace("127.0.0.1:3306", "elsewhere.example.com"))
+    config.write_text(config.read_text().replace("localhost:3307", "elsewhere.example.com"))
     assert collector["collect_data"](tmp_path, "/usr/bin/mysql", float("inf")) is None
 
 
