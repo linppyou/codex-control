@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date, datetime, time, timedelta
 from urllib.parse import urlencode
 
 from fastapi import Depends, File, Form, HTTPException, Request, UploadFile
@@ -17,6 +18,10 @@ STATUS = {
 }
 TURN_STATUS = {"inProgress": "Codex 正在处理", "completed": "Codex 轮次已结束",
                "failed": "Codex 轮次失败", "interrupted": "Codex 轮次已中断", "unknown": "Codex 轮次待核对"}
+
+
+def work_time(timestamp: int | None) -> str:
+    return datetime.fromtimestamp(timestamp, sites.BEIJING).strftime("%Y-%m-%d %H:%M") if timestamp is not None else "未知"
 
 
 def register(app) -> None:
@@ -46,7 +51,8 @@ def register(app) -> None:
                             by_date.setdefault(date, []).append(site)
                         dates = sorted(by_date, key=lambda date: date or "", reverse=True)
                         pending.append((server, [(date, by_date[date]) for date in dates]))
-            assigned = [] if assigning else dispatch_tasks.list_targets(ctx.conn, user)
+            target_user = ((data or {}).get("recipient") or user) if user == "admin" else user
+            assigned = [] if assigning else dispatch_tasks.list_targets(ctx, target_user)
             catalog = [] if assigning else dispatch_skills.list_skills(ctx.conn)
             users = []
             if user == "admin":
@@ -71,7 +77,7 @@ def register(app) -> None:
             targets=targets, users=users, data=data or {}, catalog=catalog,
             assigning=assigning, pending=pending, selected_server=server_id, assigned=assigned,
             selected_sites=selected_sites, selected_user=selected_user,
-            status_map=STATUS, history=history, time=_time, err=err,
+            status_map=STATUS, history=history, time=_time, work_time=work_time, err=err,
         )
 
     @app.get("/tasks", response_class=HTMLResponse)
@@ -87,6 +93,73 @@ def register(app) -> None:
                 recipient=task["recipient"], dispatcher=dispatcher["id"], migration=migration["id"],
             )
         return task_page(request, who, data, server_id=server_id)
+
+    @app.get("/tasks/assignments", response_class=HTMLResponse)
+    def assignments(
+        request: Request, day: str = "", status: str = "",
+        admin: tuple[str, str] = Depends(current_admin),
+    ):
+        start = stop = None
+        if day:
+            try:
+                selected = date.fromisoformat(day)
+                midnight = datetime.combine(selected, time.min, sites.BEIJING)
+                start = int(midnight.timestamp())
+                stop = int((midnight + timedelta(days=1)).timestamp())
+                day = selected.isoformat()
+            except (ValueError, OverflowError) as exc:
+                raise HTTPException(422, "分配日期格式无效") from exc
+        if status not in {"", "pending", "completed"}:
+            raise HTTPException(422, "完成状态无效")
+        with lock:
+            records = dispatch_tasks.site_work(ctx.conn, start, stop, status)
+        return render(
+            request, "dispatch_assignments.html", admin=admin[0], csrf=admin[1],
+            records=records, day=day, filter_status=status, work_time=work_time,
+        )
+
+    def deployment_editor(request, who, target, *, fields=None, err=""):
+        return render(
+            request, "dispatch_deployment.html", status=422 if err else 200, admin=who[0], csrf=who[1],
+            target=target, fields=fields if fields is not None else target, err=err,
+        )
+
+    def editable_target(username, target_id):
+        try:
+            target = dispatch_tasks.deployment_target(ctx, username, target_id)
+        except dispatch_tasks.TaskError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        if target is None:
+            raise HTTPException(404, "站点分配不存在")
+        return target
+
+    @app.get("/tasks/sites/{target_id}/deployment", response_class=HTMLResponse)
+    def edit_deployment(request: Request, target_id: str, who: tuple[str, str] = Depends(current_user)):
+        with lock:
+            target = editable_target(who[0], target_id)
+        return deployment_editor(request, who, target)
+
+    @app.post("/tasks/sites/{target_id}/deployment", response_class=HTMLResponse)
+    def save_deployment(
+        request: Request, target_id: str, endpoint: str = Form(""), credential: str = Form(""), project: str = Form(""),
+        who: tuple[str, str] = Depends(current_user),
+    ):
+        with lock:
+            target = editable_target(who[0], target_id)
+            try:
+                dispatch_tasks.save_user_deployment(ctx, target_id, who[0], endpoint, credential, project)
+            except dispatch_tasks.TaskError as exc:
+                return deployment_editor(
+                    request, who, target, fields={"endpoint": endpoint, "project": project}, err=str(exc),
+                )
+        return _redirect("/tasks", msg="部署配置已保存")
+
+    @app.post("/tasks/sites/{target_id}/complete")
+    def complete_site(target_id: str, who: tuple[str, str] = Depends(current_user)):
+        with lock:
+            if not dispatch_tasks.complete_site_work(ctx, who[0], target_id):
+                raise HTTPException(404, "站点分配不存在")
+        return _redirect("/tasks", msg="已标记完成")
 
     @app.post("/tasks/assign")
     def assign(
@@ -213,7 +286,8 @@ def register(app) -> None:
         with lock:
             servers = site_registry.list_servers(ctx.conn)
             entries = [dict(row, users=" ".join(json.loads(row["users"]))) for row in ctx.conn.execute(
-                """SELECT t.*, s.name AS server_name, t.server_revision=s.revision AS current
+                """SELECT t.*, s.name AS server_name, t.server_revision=s.revision AS current,
+                   (SELECT COUNT(*) FROM dispatch_user_deployments d WHERE d.target_id=t.id) AS self_configured
                    FROM dispatch_targets t JOIN site_servers s ON s.id=t.server_id ORDER BY s.name, t.domain"""
             )]
         entry = next((row for row in entries if row["id"] == edit), None)

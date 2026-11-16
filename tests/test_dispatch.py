@@ -1,14 +1,16 @@
 import dataclasses
 import io
 import json
+import sqlite3
 import subprocess
 import sys
 import zipfile
 from datetime import datetime, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 
-from codexctl import dispatch_skills, dispatch_tasks, dispatch_worker, repo, site_registry, webauth
+from codexctl import db, dispatch_skills, dispatch_tasks, dispatch_worker, repo, site_registry, sites, webauth
 from codexctl.web.app import SESSION_COOKIE, create_app
 
 
@@ -102,7 +104,7 @@ def test_admin_assigns_only_pending_inventory_sites(ctx):
         form, csrf=alice_csrf, target="pending.example.com",
     )).status_code == 422
 
-    target = next(row for row in dispatch_tasks.list_targets(ctx.conn, "alice") if row["domain"] == "pending.example.com")
+    target = next(row for row in dispatch_tasks.list_targets(ctx, "alice") if row["domain"] == "pending.example.com")
     dispatch_tasks.save_target(
         ctx, target["id"], first, target["domain"], "https://panel.example.com/migrate",
         "BAOTA_PENDING_API_KEY", "", "alice",
@@ -186,6 +188,82 @@ def test_user_previews_and_confirms_exactly_once(ctx):
     assert ctx.conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='dispatch.confirm'").fetchone()[0] == 1
 
 
+def test_member_configures_and_completes_only_their_assigned_site(ctx):
+    form = task_form(ctx)
+    ctx.conn.execute(
+        "INSERT INTO site_inventories VALUES (?, 0, ?, ?, NULL, ?)",
+        (form["server_id"], ctx.now(), ctx.now(), json.dumps([
+            {"id": "2", "domains": ["assigned.example.com"]},
+        ])),
+    )
+    dispatch_tasks.assign_sites(ctx, form["server_id"], ["2"], "alice")
+    target = next(row for row in dispatch_tasks.list_targets(ctx, "alice") if row["domain"] == "assigned.example.com")
+    path = f"/tasks/sites/{target['id']}"
+    app = create_app(ctx)
+    alice, csrf = session(ctx, app, "alice")
+    bob, bob_csrf = session(ctx, app, "bob")
+    admin, _ = session(ctx, app, "admin")
+    secret = "test-only-user-key"
+    deployment = {"endpoint": "https://panel.example.com/migrate", "credential": secret, "project": "独立项目"}
+
+    assert "配置部署" in alice.get("/tasks").text
+    assert bob.get(path + "/deployment").status_code == 404
+    assert admin.get(path + "/deployment").status_code == 404
+    assert bob.post(path + "/deployment", data=dict(deployment, csrf=bob_csrf)).status_code == 404
+    assert alice.post(path + "/deployment", data=deployment).status_code == 403
+    assert alice.post(path + "/deployment", data=dict(
+        deployment, csrf=csrf, endpoint="http://panel.example.com/migrate",
+    )).status_code == 422
+    assert alice.post(path + "/deployment", data=dict(deployment, csrf=csrf)).status_code == 303
+    editor = alice.get(path + "/deployment").text
+    assert "留空保留" in editor and secret not in editor
+    row = ctx.conn.execute("SELECT credential FROM dispatch_user_deployments").fetchone()
+    assert isinstance(row["credential"], bytes) and secret.encode() not in row["credential"]
+    version = ctx.conn.execute("SELECT version FROM dispatch_user_deployments").fetchone()["version"]
+    assert alice.post(path + "/deployment", data=dict(deployment, csrf=csrf, credential="")).status_code == 303
+    assert ctx.conn.execute("SELECT version FROM dispatch_user_deployments").fetchone()["version"] == version
+    preview = alice.post("/tasks/preview", data=dict(form, csrf=csrf, target="assigned.example.com"))
+    assert preview.status_code == 303
+    draft = alice.get(preview.headers["location"]).text
+    assert "https://panel.example.com/migrate" in draft and "ENV:BAOTA_DEPLOY_API_KEY" in draft and secret not in draft
+    assert alice.post(path + "/deployment", data=dict(deployment, csrf=csrf, project="更新", credential="")).status_code == 303
+    assert alice.post(preview.headers["location"] + "/confirm", data={"csrf": csrf, "confirmed": "1"}).status_code == 409
+
+    assigned_day = sites.deployment_date(ctx.now())
+    assert "assigned.example.com" in admin.get(f"/tasks/assignments?day={assigned_day}&status=pending").text
+    assert "assigned.example.com" not in admin.get("/tasks/assignments?day=2026-11-16").text
+    assert bob.get("/tasks/assignments").status_code == 403
+    assert bob.post(path + "/complete", data={"csrf": bob_csrf}).status_code == 404
+    assert alice.post(path + "/complete").status_code == 403
+    ctx.test_clock.t += 3600
+    assert alice.post(path + "/complete", data={"csrf": csrf}).status_code == 303
+    first_completion = ctx.now()
+    ctx.test_clock.t += 3600
+    assert alice.post(path + "/complete", data={"csrf": csrf}).status_code == 303
+    status = ctx.conn.execute("SELECT completed_at FROM dispatch_site_work WHERE target_id=?", (target["id"],)).fetchone()
+    assert status["completed_at"] == first_completion
+    assert 'class="badge ok">已完成' in alice.get("/tasks").text
+    assert "assigned.example.com" not in admin.get("/tasks/assignments?status=pending").text
+    completed = admin.get(f"/tasks/assignments?day={assigned_day}&status=completed").text
+    assert "assigned.example.com" in completed and 'class="badge ok">已完成' in completed
+    assert "shop.example.com" not in completed
+
+
+def test_migration_backfills_historical_assignment_dates(ctx, tmp_path):
+    task_form(ctx)
+    ctx.conn.execute("DROP TABLE dispatch_site_work")
+    file = tmp_path / "existing.db"
+    connection = sqlite3.connect(file)
+    ctx.conn.backup(connection)
+    connection.close()
+    migrated = db.connect(file)
+    try:
+        row = migrated.execute("SELECT username, assigned_at, completed_at FROM dispatch_site_work").fetchone()
+        assert tuple(row) == ("alice", ctx.now(), None)
+    finally:
+        migrated.close()
+
+
 def test_admin_skill_crud_and_stale_preview(ctx):
     form = task_form(ctx)
     app = create_app(ctx)
@@ -231,8 +309,16 @@ def test_zip_traversal_rejected(ctx):
     assert dispatch_skills.list_skills(ctx.conn) == []
 
 
-def test_worker_attaches_both_packages_and_persists_acceptance(ctx, tmp_path, monkeypatch):
+@pytest.mark.parametrize("self_configured", [False, True])
+def test_worker_attaches_both_packages_and_persists_acceptance(ctx, tmp_path, monkeypatch, self_configured):
     form = task_form(ctx)
+    credential_env = "BAOTA_SHOP_API_KEY"
+    if self_configured:
+        target = dispatch_tasks.list_targets(ctx, "alice")[0]
+        dispatch_tasks.save_user_deployment(
+            ctx, target["id"], "alice", "https://panel.example.com/migrate", "fixture-secret", "",
+        )
+        credential_env = dispatch_tasks.USER_CREDENTIAL_ENV
     task_id = dispatch_tasks.create_preview(ctx, "alice", "alice", form["server_id"], form["source"], form["target"],
                                             form["dispatcher"], form["migration"])
     row = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()
@@ -240,7 +326,8 @@ def test_worker_attaches_both_packages_and_persists_acceptance(ctx, tmp_path, mo
     task = dispatch_worker.claim(ctx)
     run_root = tmp_path / "dispatch"
     run_root.mkdir()
-    monkeypatch.setenv("BAOTA_SHOP_API_KEY", "fixture-secret")
+    monkeypatch.setenv("BAOTA_SHOP_API_KEY", "unused-admin-key" if self_configured else "fixture-secret")
+    monkeypatch.setenv(dispatch_tasks.USER_CREDENTIAL_ENV, "unused-global-key")
     monkeypatch.setattr(dispatch_worker.os, "chown", lambda *args: None)
 
     # A stdio fixture verifies the actual JSON-RPC payload and can complete the turn before its acknowledgement.
@@ -279,7 +366,7 @@ for line in sys.stdin:
     else:
         result = {}
     print(json.dumps({'id': message['id'], 'result': result}), flush=True)
-""", encoding="utf-8")
+""".replace("BAOTA_SHOP_API_KEY", credential_env), encoding="utf-8")
     popen = subprocess.Popen
 
     def launch(args, **kwargs):
@@ -287,6 +374,9 @@ for line in sys.stdin:
         assert kwargs.pop("user") == user.uid
         assert kwargs.pop("group") == user.gid
         assert kwargs.pop("extra_groups") == []
+        assert kwargs["env"][credential_env] == "fixture-secret"
+        assert "unused-admin-key" not in kwargs["env"].values()
+        assert "unused-global-key" not in kwargs["env"].values()
         assert args[-1] == "app-server"
         return popen([sys.executable, str(fake)], **kwargs)
 

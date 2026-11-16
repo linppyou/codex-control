@@ -101,6 +101,29 @@
     updateDomains();
   }
 
+  const assignmentRecords = document.querySelector("[data-assignment-records]");
+  if (assignmentRecords) {
+    async function refreshRecords() {
+      try {
+        if (!document.hidden) {
+          const response = await fetch(window.location.href, { cache: "no-store" });
+          if (response.ok) {
+            const page = new DOMParser().parseFromString(await response.text(), "text/html");
+            const records = page.querySelector("[data-assignment-records]");
+            if (records && records.innerHTML !== assignmentRecords.innerHTML) {
+              assignmentRecords.replaceChildren(...records.childNodes);
+            }
+          }
+        }
+      } catch {
+        // Keep the current list until the next refresh succeeds.
+      } finally {
+        window.setTimeout(refreshRecords, 10000);
+      }
+    }
+    window.setTimeout(refreshRecords, 10000);
+  }
+
   if (document.querySelector("[data-dispatch-refresh]")) {
     window.setTimeout(() => {
       if (!document.hidden) window.location.reload();

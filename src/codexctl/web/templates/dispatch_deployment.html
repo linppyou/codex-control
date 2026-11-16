@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}配置部署 · codexctl{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <div class="crumb"><a href="/tasks">任务</a></div>
+    <h1>配置部署</h1>
+    <div class="sub">{{ target.domain }} · {{ target.server_name }}</div>
+  </div>
+</header>
+<section class="panel dispatch-deployment">
+  <form class="dispatch-form" method="post" action="/tasks/sites/{{ target.id }}/deployment">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label class="dispatch-wide">宝塔 AI 装修 HTTPS 接口
+      <input type="url" name="endpoint" value="{{ fields.endpoint }}" maxlength="2048" required>
+    </label>
+    <label class="dispatch-wide">部署凭据
+      <input type="password" name="credential" maxlength="4096" autocomplete="new-password"{% if not target.deployment_version %} required{% endif %}>
+      {% if target.deployment_version %}<span class="hint">留空保留已保存的凭据。</span>{% endif %}
+    </label>
+    <label>Codex 项目（可选）
+      <input type="text" name="project" value="{{ fields.project }}" maxlength="128">
+    </label>
+    <div class="dispatch-actions dispatch-wide">
+      <a class="btn" href="/tasks">取消</a>
+      <button class="btn primary" type="submit">保存配置</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

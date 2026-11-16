@@ -195,6 +195,23 @@ CREATE TABLE IF NOT EXISTS dispatch_targets (
     inventory_site_id TEXT,
     UNIQUE (server_id, domain)
 );
+CREATE TABLE IF NOT EXISTS dispatch_user_deployments (
+    target_id TEXT NOT NULL REFERENCES dispatch_targets(id) ON DELETE CASCADE,
+    username TEXT NOT NULL,
+    uid INTEGER NOT NULL,
+    endpoint TEXT NOT NULL,
+    project TEXT NOT NULL,
+    credential BLOB NOT NULL,
+    version TEXT NOT NULL,
+    PRIMARY KEY (target_id, username)
+);
+CREATE TABLE IF NOT EXISTS dispatch_site_work (
+    target_id TEXT NOT NULL REFERENCES dispatch_targets(id) ON DELETE CASCADE,
+    username TEXT NOT NULL,
+    assigned_at INTEGER,
+    completed_at INTEGER,
+    PRIMARY KEY (target_id, username)
+);
 CREATE TABLE IF NOT EXISTS dispatch_tasks (
     id TEXT PRIMARY KEY,
     owner TEXT NOT NULL,
@@ -309,6 +326,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS dispatch_targets_inventory_site
             ON dispatch_targets(server_id, inventory_site_id) WHERE inventory_site_id IS NOT NULL
+        """)
+        conn.execute("""
+            INSERT OR IGNORE INTO dispatch_site_work(target_id, username, assigned_at)
+            SELECT t.id, member.value, (
+                SELECT MIN(ts) FROM audit_log
+                WHERE target=t.id AND action IN ('dispatch.site_assign', 'dispatch.target_save')
+            )
+            FROM dispatch_targets t, json_each(t.users) member
+            WHERE NOT EXISTS (
+                SELECT 1 FROM dispatch_site_work w WHERE w.target_id=t.id AND w.username=member.value
+            )
         """)
         key_columns = {r["name"] for r in conn.execute("PRAGMA table_info(api_keys)")}
         if "account_pk" in key_columns:

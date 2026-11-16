@@ -5,7 +5,7 @@
   <div>
     <h1>网站迁移</h1>
   </div>
-  {% if is_admin %}<div class="toolbar"><a class="btn" href="/dispatch-targets">目标站授权</a><a class="btn" href="/skills">Skill 管理</a></div>{% endif %}
+  {% if is_admin %}<div class="toolbar"><a class="btn" href="/tasks/assignments">分配记录</a><a class="btn" href="/dispatch-targets">目标站授权</a><a class="btn" href="/skills">Skill 管理</a></div>{% endif %}
 </header>
 <div class="dispatch-layout{% if assigning %} dispatch-assignment-layout{% endif %}">
   <section class="panel{% if assigning %} flush assignment-panel{% else %} dispatch-compose{% endif %}" aria-labelledby="dispatch-compose-title">
@@ -86,11 +86,26 @@
     <h3>已分配站点</h3>
     <ul class="dispatch-list dispatch-assigned-sites">
       {% for site in assigned %}
-      <li>
-        <strong class="dispatch-list-title">{{ site.domain }}</strong>
-        <div class="dispatch-list-meta">
-          <span>{{ site.server_name }}</span>
-          {% if not site.endpoint or not site.credential_env %}<span class="badge warn">待配置部署</span>{% endif %}
+      <li class="dispatch-site-work">
+        <div>
+          <strong class="dispatch-list-title">{{ site.domain }}</strong>
+          <div class="dispatch-list-meta">
+            <span>{{ site.server_name }}</span>
+            <span>分配于 {{ work_time(site.assigned_at) }}</span>
+            {% if site.completed_at is not none %}
+            <span class="badge ok">已完成</span><span>完成于 {{ work_time(site.completed_at) }}</span>
+            {% else %}<span class="badge info">未完成</span>{% endif %}
+            {% if not site.endpoint or not site.credential_env %}<span class="badge warn">待配置部署</span>{% endif %}
+          </div>
+        </div>
+        <div class="dispatch-item-actions">
+          <a class="btn small" href="/tasks/sites/{{ site.id }}/deployment">{{ '编辑部署配置' if site.deployment_version else '配置部署' }}</a>
+          {% if site.completed_at is none %}
+          <form method="post" action="/tasks/sites/{{ site.id }}/complete">
+            <input type="hidden" name="csrf" value="{{ csrf }}">
+            <button class="btn small" type="submit">标记完成</button>
+          </form>
+          {% endif %}
         </div>
       </li>
       {% endfor %}
@@ -103,7 +118,7 @@
     {% elif not servers or not dispatchers or not migrations or (is_admin and not users) %}
     <ul class="dispatch-missing">
       {% if not assigned %}<li>暂无已分配站点。{% if is_admin %}<a href="/tasks">分配站点</a>{% endif %}</li>
-      {% elif not servers %}<li>部署配置完成后可生成迁移任务。</li>{% endif %}
+      {% elif not servers and not is_admin %}<li>请先为已分配站点配置部署，再生成迁移任务。</li>{% endif %}
       {% if not dispatchers or not migrations %}<li>需要上架分发 Skill 和迁移 Skill。{% if is_admin %}<a href="/skills">上传 Skill</a>{% endif %}</li>{% endif %}
       {% if is_admin and not users %}<li>没有已绑定 Codex 账号的执行用户。<a href="/users">管理账号分配</a></li>{% endif %}
     </ul>

@@ -12,6 +12,9 @@ from . import db, dispatch_skills, events, repo, site_probe, site_registry, site
 from .context import Context
 from .site_registry import Server
 from .sysusers import SysUser, UserError, valid_name
+from .vault import VaultError
+
+USER_CREDENTIAL_ENV = "BAOTA_DEPLOY_API_KEY"
 
 # Keep the fields used by persisted task snapshots stable as assignment metadata changes.
 _TARGET_FIELDS = """
@@ -64,11 +67,7 @@ def target_domain(value: str) -> str:
         raise TaskError("请输入目标站域名，或从所选服务器的授权站点中选择") from exc
 
 
-def save_target(
-    ctx: Context, target_id: str | None, server_id: str, domain: str, endpoint: str,
-    credential_env: str, project: str, users: str,
-) -> None:
-    domain = target_domain(domain)
+def _deployment_fields(endpoint: str, project: str) -> tuple[str, str]:
     endpoint = endpoint.strip()
     try:
         parts = _url(endpoint)
@@ -76,14 +75,23 @@ def save_target(
             raise ValueError
     except ValueError as exc:
         raise TaskError("请输入完整的 HTTPS 部署接口地址") from exc
+    project = project.strip()
+    if len(project) > 128 or any(not char.isprintable() for char in project):
+        raise TaskError("Codex 项目名称或 ID 最多 128 个字符")
+    return endpoint, project
+
+
+def save_target(
+    ctx: Context, target_id: str | None, server_id: str, domain: str, endpoint: str,
+    credential_env: str, project: str, users: str,
+) -> None:
+    domain = target_domain(domain)
+    endpoint, project = _deployment_fields(endpoint, project)
     credential_env = credential_env.strip().removeprefix("ENV:")
     if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", credential_env) or credential_env in {
         "HOME", "PATH", "SHELL", "LANG", "USER", "LOGNAME", "CODEX_HOME",
     } or credential_env.startswith(("LD_", "PYTHON", "NODE_", "BASH_", "GIT_", "CODEX_", "OPENAI_")):
         raise TaskError("请输入专用的部署凭据环境变量名，例如 BAOTA_SHOP_API_KEY")
-    project = project.strip()
-    if len(project) > 128 or any(not char.isprintable() for char in project):
-        raise TaskError("Codex 项目名称或 ID 最多 128 个字符")
     names = set(filter(None, re.split(r"[\s,，]+", users.strip())))
     if not names or len(names) > 100 or any(
         not valid_name(name) or name in {"root", "admin"} for name in names
@@ -96,15 +104,32 @@ def save_target(
                 raise TaskError("所选服务器不存在")
             values = (server_id, server["revision"], domain, endpoint, credential_env, project, json.dumps(sorted(names)))
             if target_id:
-                updated = ctx.conn.execute(
+                previous = ctx.conn.execute(
+                    "SELECT server_id, server_revision, domain FROM dispatch_targets WHERE id=?", (target_id,),
+                ).fetchone()
+                if previous is None:
+                    raise TaskError("此目标站授权已删除")
+                ctx.conn.execute(
                     """UPDATE dispatch_targets
                        SET inventory_site_id = CASE WHEN server_id = ? AND domain = ? THEN inventory_site_id END,
                            server_id=?, server_revision=?, domain=?, endpoint=?, credential_env=?, project=?, users=?
                        WHERE id=?""",
                     (server_id, domain, *values, target_id),
                 )
-                if not updated.rowcount:
-                    raise TaskError("此目标站授权已删除")
+                if tuple(previous) != values[:3]:
+                    ctx.conn.execute("DELETE FROM dispatch_user_deployments WHERE target_id=?", (target_id,))
+                    ctx.conn.execute("DELETE FROM dispatch_site_work WHERE target_id=?", (target_id,))
+                else:
+                    ctx.conn.execute(
+                        """DELETE FROM dispatch_user_deployments WHERE target_id=?
+                           AND username NOT IN (SELECT value FROM json_each(?))""",
+                        (target_id, values[-1]),
+                    )
+                    ctx.conn.execute(
+                        """DELETE FROM dispatch_site_work WHERE target_id=?
+                           AND username NOT IN (SELECT value FROM json_each(?))""",
+                        (target_id, values[-1]),
+                    )
             else:
                 target_id = uuid4().hex
                 ctx.conn.execute(
@@ -113,7 +138,12 @@ def save_target(
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (target_id, *values),
                 )
-            events.audit(ctx.conn, "admin", "dispatch.target_save", target_id, domain, now=ctx.now())
+            now = ctx.now()
+            ctx.conn.executemany(
+                "INSERT OR IGNORE INTO dispatch_site_work(target_id, username, assigned_at) VALUES (?, ?, ?)",
+                ((target_id, name, now) for name in names),
+            )
+            events.audit(ctx.conn, "admin", "dispatch.target_save", target_id, domain, now=now)
     except sqlite3.IntegrityError as exc:
         raise TaskError("该服务器已登记此目标站") from exc
 
@@ -124,9 +154,140 @@ def delete_target(ctx: Context, target_id: str) -> None:
             events.audit(ctx.conn, "admin", "dispatch.target_delete", target_id, now=ctx.now())
 
 
-def list_targets(conn: sqlite3.Connection, username: str) -> list[sqlite3.Row]:
-    rows = conn.execute(_TARGET_FIELDS + " ORDER BY s.name, t.domain").fetchall()
-    return [row for row in rows if username == "admin" or username in json.loads(row["users"])]
+def _effective_target(conn: sqlite3.Connection, target: sqlite3.Row, user: SysUser) -> dict:
+    result = dict(target)
+    config = conn.execute(
+        """SELECT endpoint, project, version FROM dispatch_user_deployments
+           WHERE target_id=? AND username=? AND uid=?""",
+        (target["id"], user.name, user.uid),
+    ).fetchone()
+    if config is not None:
+        result.update(endpoint=config["endpoint"], project=config["project"], credential_env=USER_CREDENTIAL_ENV,
+                      deployment_version=config["version"])
+    return result
+
+
+def list_targets(ctx: Context, username: str) -> list[dict]:
+    rows = ctx.conn.execute(_TARGET_FIELDS + " ORDER BY s.name, t.domain").fetchall()
+    if username == "admin":
+        return [dict(row) for row in rows]
+    assigned = [row for row in rows if username in json.loads(row["users"])]
+    if not assigned:
+        return []
+    work = {row["target_id"]: row for row in ctx.conn.execute(
+        "SELECT target_id, assigned_at, completed_at FROM dispatch_site_work WHERE username=?", (username,),
+    )}
+    try:
+        user = _execution_user(ctx, username)
+    except TaskError:
+        user = None
+    result = []
+    for row in assigned:
+        target = _effective_target(ctx.conn, row, user) if user else dict(row)
+        status = work.get(row["id"])
+        target.update(assigned_at=status["assigned_at"] if status else None,
+                      completed_at=status["completed_at"] if status else None)
+        result.append(target)
+    return result
+
+
+def site_work(
+    conn: sqlite3.Connection, start: int | None, stop: int | None, status: str,
+) -> list[sqlite3.Row]:
+    return conn.execute(
+        """SELECT t.domain, s.name AS server_name, w.username, w.assigned_at, w.completed_at
+           FROM dispatch_site_work w
+           JOIN dispatch_targets t ON t.id=w.target_id JOIN site_servers s ON s.id=t.server_id
+           WHERE (:start IS NULL OR (w.assigned_at>=:start AND w.assigned_at<:stop))
+             AND (:status='' OR (w.completed_at IS NOT NULL)=(:status='completed'))
+           ORDER BY w.assigned_at DESC, s.name, t.domain, w.username""",
+        {"start": start, "stop": stop, "status": status},
+    ).fetchall()
+
+
+def _assigned_target(conn: sqlite3.Connection, username: str, target_id: str) -> sqlite3.Row | None:
+    target = conn.execute(_TARGET_FIELDS + " WHERE t.id=?", (target_id,)).fetchone()
+    if target is None or username not in json.loads(target["users"]):
+        return None
+    return target
+
+
+def complete_site_work(ctx: Context, username: str, target_id: str) -> bool:
+    with db.transaction(ctx.conn):
+        target = _assigned_target(ctx.conn, username, target_id)
+        if target is None:
+            return False
+        now = ctx.now()
+        updated = ctx.conn.execute(
+            """UPDATE dispatch_site_work SET completed_at=?
+               WHERE target_id=? AND username=? AND completed_at IS NULL""",
+            (now, target_id, username),
+        )
+        if updated.rowcount:
+            events.audit(ctx.conn, username, "dispatch.site_complete", target_id, target["domain"], now=now)
+        return True
+
+
+def deployment_target(ctx: Context, username: str, target_id: str) -> dict | None:
+    target = _assigned_target(ctx.conn, username, target_id)
+    return _effective_target(ctx.conn, target, _execution_user(ctx, username)) if target else None
+
+
+def _deployment_aad(target_id: str, user: SysUser) -> bytes:
+    return f"codexctl-dispatch:{target_id}:{user.name}:{user.uid}".encode()
+
+
+def save_user_deployment(
+    ctx: Context, target_id: str, username: str, endpoint: str, credential: str, project: str,
+) -> None:
+    endpoint, project = _deployment_fields(endpoint, project)
+    credential = credential.strip()
+    if len(credential) > 4096 or any(not char.isprintable() for char in credential):
+        raise TaskError("部署凭据最多 4096 个字符，且不能包含控制字符")
+    with db.transaction(ctx.conn):
+        target = _assigned_target(ctx.conn, username, target_id)
+        if target is None:
+            raise TaskError("该站点已不在你的分配列表中")
+        user = _execution_user(ctx, username)
+        if credential:
+            encrypted = ctx.vault.encrypt(credential.encode(), _deployment_aad(target_id, user))
+        else:
+            previous = ctx.conn.execute(
+                """SELECT endpoint, project, credential FROM dispatch_user_deployments
+                   WHERE target_id=? AND username=? AND uid=?""",
+                (target_id, user.name, user.uid),
+            ).fetchone()
+            if previous is None:
+                raise TaskError("请输入本站点的部署凭据")
+            if (endpoint, project) == (previous["endpoint"], previous["project"]):
+                return
+            encrypted = previous["credential"]
+        ctx.conn.execute(
+            """INSERT INTO dispatch_user_deployments(target_id, username, uid, endpoint, project, credential, version)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(target_id, username) DO UPDATE SET uid=excluded.uid, endpoint=excluded.endpoint,
+                 project=excluded.project, credential=excluded.credential, version=excluded.version""",
+            (target_id, user.name, user.uid, endpoint, project, encrypted, uuid4().hex),
+        )
+        events.audit(ctx.conn, username, "dispatch.deployment_save", target_id, target["domain"], now=ctx.now())
+
+
+def user_deployment_credential(ctx: Context, user: SysUser, target: dict) -> str | None:
+    version = target.get("deployment_version")
+    if version is None:
+        return None
+    target_id = target["id"]
+    row = ctx.conn.execute(
+        """SELECT credential FROM dispatch_user_deployments
+           WHERE target_id=? AND username=? AND uid=? AND version=?""",
+        (target_id, user.name, user.uid, version),
+    ).fetchone()
+    if row is None:
+        raise TaskError("站点的部署配置已变更，请重新预览")
+    try:
+        return ctx.vault.decrypt(row["credential"], _deployment_aad(target_id, user)).decode()
+    except (VaultError, UnicodeError) as exc:
+        raise TaskError("无法读取站点的部署凭据，请重新保存部署配置") from exc
 
 
 def pending_sites(
@@ -167,6 +328,7 @@ def assign_sites(ctx: Context, server_id: str, site_ids: list[str], username: st
         users = json.dumps([user.name])
         selected_aliases: set[str] = set()
         domains = []
+        now = ctx.now()
         for site_id in selection:
             aliases = pending[site_id]["domains"]
             if not selected_aliases.isdisjoint(aliases):
@@ -180,12 +342,16 @@ def assign_sites(ctx: Context, server_id: str, site_ids: list[str], username: st
                    VALUES (?, ?, ?, ?, '', '', '', ?, ?)""",
                 (target_id, server.id, server.revision, domain, users, site_id),
             )
-            events.audit(ctx.conn, "admin", "dispatch.site_assign", target_id, f"{domain} → {user.name}", now=ctx.now())
+            ctx.conn.execute(
+                "INSERT INTO dispatch_site_work(target_id, username, assigned_at) VALUES (?, ?, ?)",
+                (target_id, user.name, now),
+            )
+            events.audit(ctx.conn, "admin", "dispatch.site_assign", target_id, f"{domain} → {user.name}", now=now)
             domains.append(domain)
     return domains
 
 
-def recipient(ctx: Context, username: str) -> tuple[SysUser, str]:
+def _execution_user(ctx: Context, username: str) -> SysUser:
     if not ctx.settings.manages_local_codex:
         raise TaskError("此主机为纯网关模式。任务发送需要已绑定 Codex 的本机 Linux 用户")
     if not valid_name(username) or username in {"root", "admin"}:
@@ -196,6 +362,11 @@ def recipient(ctx: Context, username: str) -> tuple[SysUser, str]:
             raise UserError("无效的执行身份")
     except (UserError, OSError) as exc:
         raise TaskError("找不到有效的 Linux 执行用户") from exc
+    return user
+
+
+def recipient(ctx: Context, username: str) -> tuple[SysUser, str]:
+    user = _execution_user(ctx, username)
     binding = repo.active_assignment(ctx.conn, username)
     account = repo.get_account_by_pk(ctx.conn, binding.account_pk) if binding else None
     if account is None or account.status != "active":
@@ -203,7 +374,7 @@ def recipient(ctx: Context, username: str) -> tuple[SysUser, str]:
     return user, account.label
 
 
-def _payload(source: str, target: sqlite3.Row, skills: list[dict], task_id: str) -> tuple[str, str, str]:
+def _payload(source: str, target: dict, skills: list[dict], task_id: str) -> tuple[str, str, str]:
     dispatcher, migration = skills
     parts = urlsplit(source)
     title = f"{parts.netloc}{parts.path.rstrip('/')} 迁移 {target['domain']}"
@@ -246,11 +417,12 @@ def create_preview(
         raise TaskError("源站和目标站须使用不同域名")
     with db.transaction(ctx.conn):
         user, _ = recipient(ctx, username if owner == "admin" else owner)
-        target = ctx.conn.execute(_TARGET_FIELDS + " WHERE t.server_id=? AND t.domain=?", (server_id, domain)).fetchone()
-        if target is None or user.name not in json.loads(target["users"]):
+        row = ctx.conn.execute(_TARGET_FIELDS + " WHERE t.server_id=? AND t.domain=?", (server_id, domain)).fetchone()
+        if row is None or user.name not in json.loads(row["users"]):
             raise TaskError("所选服务器上没有授权给执行用户的目标站")
+        target = _effective_target(ctx.conn, row, user)
         if not target["endpoint"] or not target["credential_env"]:
-            raise TaskError("所选站点的部署配置待管理员补齐")
+            raise TaskError("请先在目标站点填写部署配置")
         skills = []
         for skill_id, kind in ((dispatcher_id, "dispatcher"), (migration_id, "migration")):
             skill = dispatch_skills.get(ctx.conn, skill_id)
@@ -264,7 +436,7 @@ def create_preview(
                (id, owner, recipient, recipient_uid, target_id, target_snapshot, skills,
                 source_url, title, prompt, csv, status, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'preview', ?)""",
-            (task_id, owner, user.name, user.uid, target["id"], json.dumps(dict(target)), json.dumps(skills),
+            (task_id, owner, user.name, user.uid, target["id"], json.dumps(target), json.dumps(skills),
              source, title, prompt, csv_text, ctx.now()),
         )
         return task_id
@@ -275,7 +447,10 @@ def validate_snapshot(ctx: Context, task: sqlite3.Row) -> tuple[SysUser, str]:
     if user.uid != task["recipient_uid"]:
         raise TaskError("执行用户 UID 已变化，请重新预览")
     target = ctx.conn.execute(_TARGET_FIELDS + " WHERE t.id=?", (task["target_id"],)).fetchone()
-    if target is None or dict(target) != json.loads(task["target_snapshot"]):
+    if (
+        target is None or user.name not in json.loads(target["users"])
+        or _effective_target(ctx.conn, target, user) != json.loads(task["target_snapshot"])
+    ):
         raise TaskError("目标站服务器或部署授权已变更，请重新预览")
     for approved in json.loads(task["skills"]):
         skill = dispatch_skills.get(ctx.conn, approved["id"])

@@ -121,8 +121,9 @@ def _stage(run_root: Path, task: sqlite3.Row, user: SysUser, packages: list[byte
     return inputs
 
 
-def _env(user: SysUser, name: str) -> dict[str, str]:
-    credential = os.environ.get(name, "")
+def _env(user: SysUser, name: str, credential: str | None = None) -> dict[str, str]:
+    if credential is None:
+        credential = os.environ.get(name, "")
     if not credential:
         raise DeliveryError(f"Worker 缺少部署凭据引用 ENV:{name}")
     return {
@@ -177,14 +178,15 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
                 for binding in json.loads(task["skills"])
             ]
         target = json.loads(task["target_snapshot"])
-        env = _env(user, target["credential_env"])
         cwd = str(run_root / task["id"])
         inputs = [{"type": "text", "text": task["prompt"]}, *_stage(run_root, task, user, packages)]
         # Recheck after staging in case an administrator revoked access during extraction.
         with db.transaction(ctx.conn):
             current_user, current_label = dispatch_tasks.validate_snapshot(ctx, task)
-        if (current_user, current_label) != (user, label):
-            raise DeliveryError("执行用户或 Codex 账号绑定已变更，请重新预览")
+            if (current_user, current_label) != (user, label):
+                raise DeliveryError("执行用户或 Codex 账号绑定已变更，请重新预览")
+            credential = dispatch_tasks.user_deployment_credential(ctx, user, target)
+        env = _env(user, target["credential_env"], credential)
         proc = subprocess.Popen(
             [str(ctx.settings.codex_bin), "app-server"], cwd=cwd, env=env, stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True,
