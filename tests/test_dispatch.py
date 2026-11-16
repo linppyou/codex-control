@@ -145,17 +145,26 @@ def test_import_matches_across_servers_and_renders_each_row(ctx):
         '10.1,seven.example.com,,bad.example.com\r\n'
     ).encode("gb18030")
     response = import_file(alice, csrf, form, content)
-    assert response.status_code == 200
+    assert response.status_code == 422
     for value in (
         "HTTPS://WWW.SHOP.EXAMPLE.COM./", "长备注,&lt;草稿&gt;\n下一行", "已匹配 2 行", "另一台服务器",
-        "查看批次提示词", "匹配到多个站点", "找不到该新域名", "新域名重复", "折扣须大于 0",
+        "全部站点匹配成功", "匹配到多个站点", "找不到该新域名", "新域名重复", "折扣须大于 0",
     ):
         assert value in response.text
+    assert "查看批次提示词" not in response.text
+    assert ctx.conn.execute("SELECT COUNT(*) FROM dispatch_tasks").fetchone()[0] == 0
+    content = (
+        '折扣,原域名,备注,新域名\r\n'
+        '8,one.example.com,"长备注,<草稿>\n下一行",HTTPS://WWW.SHOP.EXAMPLE.COM./\r\n'
+        ',two.example.com,,new.example.com\r\n'
+    ).encode("gb18030")
+    response = import_file(alice, csrf, form, content)
+    assert response.status_code == 200 and "查看批次提示词" in response.text
     tasks = ctx.conn.execute("SELECT * FROM dispatch_tasks ORDER BY rowid").fetchall()
     assert len(tasks) == 1
-    assert len(list(csv.reader(io.StringIO(tasks[0]["csv"])))) == 8
+    assert len(list(csv.reader(io.StringIO(tasks[0]["csv"])))) == 3
     assert len(json.loads(tasks[0]["target_snapshot"])["targets"]) == 2
-    assert "全部 7 个数据行" in tasks[0]["prompt"]
+    assert "全部 2 个数据行" in tasks[0]["prompt"]
     assert list(csv.reader(io.StringIO(tasks[0]["csv"])))[1] == [
         "https://one.example.com/", "www.shop.example.com", "长备注,<草稿>\n下一行", "8",
     ]
@@ -170,8 +179,8 @@ def test_import_matches_across_servers_and_renders_each_row(ctx):
     assert stale.status_code == 409 and "服务器绑定已变更" in stale.text
     assert import_file(alice, csrf, form, b"invalid,headers\nrow").status_code == 422
     unmatched = import_file(alice, csrf, dict(form, target="missing.example.com"))
-    assert unmatched.status_code == 200 and "已匹配 0 行" in unmatched.text
-    assert ctx.conn.execute("SELECT COUNT(*) FROM dispatch_tasks").fetchone()[0] == 2
+    assert unmatched.status_code == 422 and "已匹配 0 行" in unmatched.text
+    assert ctx.conn.execute("SELECT COUNT(*) FROM dispatch_tasks").fetchone()[0] == 1
 
 
 def workbook_bytes(rows):
@@ -227,9 +236,20 @@ def test_xlsx_import_shares_matching_and_preserves_values(ctx):
         ["=1+2", "formula.example.com", None, "other.example.com"],
     ])
     response = import_file(alice, csrf, form, raw, filename="任务.XLSX")
-    assert response.status_code == 200
+    assert response.status_code == 422
     for text in ("产品,海报\n第二行", "8.5", "已匹配 1 行", "找不到该新域名", "单元格含公式"):
         assert text in response.text
+    assert "查看批次提示词" not in response.text
+    assert ctx.conn.execute("SELECT COUNT(*) FROM dispatch_tasks").fetchone()[0] == 0
+    rows = dispatch_tasks.parse_import(raw, "任务.xlsx")
+    assert [row.line for row in rows] == [2, 4, 5]
+    assert rows[1].values[2:] == ("", "")
+    raw = workbook_bytes([
+        ["折扣", "新域名", "备注", "原域名"],
+        [8.5, form["target"], "产品,海报\n第二行", form["source"]],
+    ])
+    response = import_file(alice, csrf, form, raw, filename="任务.XLSX")
+    assert response.status_code == 200 and "查看批次提示词" in response.text
     task = ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone()
     assert task["upload"] == raw
     assert "upload.xlsx" in task["prompt"]
@@ -238,7 +258,8 @@ def test_xlsx_import_shares_matching_and_preserves_values(ctx):
     run_root = ctx.settings.state_dir / "xlsx-staging"
     run_root.mkdir()
     user = ctx.lookup_user("alice", 1000)
-    skill_packages = [package("task-dispatcher"), package("html-to-wp-engine-sol")]
+    skill_packages = [dispatch_skills.get(ctx.conn, skill["id"], with_archive=True)["archive"]
+                      for skill in json.loads(task["skills"])]
     # The upload is staged byte-for-byte alongside the normalized CSV and deployment mapping.
     from unittest.mock import patch
     with patch.object(dispatch_worker.os, "chown"):
@@ -248,9 +269,6 @@ def test_xlsx_import_shares_matching_and_preserves_values(ctx):
         form["source"], form["target"], "产品,海报\n第二行", "8.5",
     ]
     assert "忽略此表" not in response.text
-    rows = dispatch_tasks.parse_import(raw, "任务.xlsx")
-    assert [row.line for row in rows] == [2, 4, 5]
-    assert rows[1].values[2:] == ("", "")
 
 
 @pytest.mark.parametrize("raw, filename", [
@@ -452,3 +470,29 @@ def test_cancelled_claim_is_not_started(ctx, tmp_path, monkeypatch):
     monkeypatch.setattr(dispatch_worker.subprocess, "Popen", unexpected_launch)
     dispatch_worker.deliver(ctx, tmp_path, task)
     assert ctx.conn.execute("SELECT status FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()[0] == "cancelled"
+
+
+def test_old_partial_batch_cannot_be_confirmed_or_executed(ctx, tmp_path, monkeypatch):
+    form = task_form(ctx)
+    alice, csrf = session(ctx, create_app(ctx), "alice")
+    assert import_file(alice, csrf, form).status_code == 200
+    task = ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone()
+    snapshot = json.loads(task["target_snapshot"])
+    snapshot["rows"].append(dict(csv_row=2, line=3, target=None, error="站点清单中找不到该新域名"))
+    ctx.conn.execute("UPDATE dispatch_tasks SET target_snapshot=? WHERE id=?", (json.dumps(snapshot), task["id"]))
+    url = f"/tasks/{task['id']}"
+    assert "确认并发送" not in alice.get(url).text
+    response = alice.post(url + "/confirm", data={"csrf": csrf, "confirmed": "1"})
+    assert response.status_code == 409 and "未匹配或无效站点" in response.text
+    assert dispatch_worker.claim(ctx) is None
+    # Older queued partial imports are checked again before starting Codex.
+    ctx.conn.execute("UPDATE dispatch_tasks SET status='queued' WHERE id=?", (task["id"],))
+    task = dispatch_worker.claim(ctx)
+
+    def unexpected_launch(*args, **kwargs):
+        pytest.fail("Partial batch must never launch Codex")
+
+    monkeypatch.setattr(dispatch_worker.subprocess, "Popen", unexpected_launch)
+    dispatch_worker.deliver(ctx, tmp_path, task)
+    stored = ctx.conn.execute("SELECT status, error FROM dispatch_tasks WHERE id=?", (task["id"],)).fetchone()
+    assert stored["status"] == "failed" and "未匹配或无效站点" in stored["error"]

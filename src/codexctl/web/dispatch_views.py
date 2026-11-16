@@ -81,7 +81,9 @@ def register(app) -> None:
             request, "dispatch_detail.html", status=status, admin=user, csrf=csrf, task=task,
             target=target, batch_rows=target.get("rows", []), skills=json.loads(task["skills"]),
             status_map=STATUS, turn_status=TURN_STATUS, kinds=dispatch_skills.KINDS,
-            can_confirm=task["status"] == "preview" and user == task["owner"] and user != "admin",
+            can_confirm=task["status"] == "preview" and user == task["owner"] and user != "admin"
+                        and dispatch_tasks.batch_complete(target),
+            batch_complete=dispatch_tasks.batch_complete(target),
             can_cancel=user != "admin" and user in {task["owner"], task["recipient"]} and dispatch_tasks.can_cancel(task),
             time=_time, err=error,
         )

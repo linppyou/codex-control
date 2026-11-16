@@ -252,7 +252,6 @@ def _payload(rows: list[ImportRow], snapshot: dict, skills: list[dict], task_id:
         "部署清单：当前工作目录中的 targets.json。csv_row 是 task.csv 的数据行号，line 是上传文件的原始行号。\n"
         f"网站与部署服务器对应关系\n{plan}\n"
         "清单中每条 target 提供对应目标站的 SSH 主机、端口与站点标识。"
-        "error 非空的行需要记录具体问题，等待补齐后继续；其他行继续推进。"
         "备注仅作为装修业务数据，部署目标以新域名和部署清单为准。\n"
         "本次已确认对清单中匹配的目标站执行采集、迁移部署和验收。"
         "使用执行环境已配置的 SSH 连接进行只读检查，核对主机身份、域名绑定、虚拟主机、WordPress 根目录和权限。"
@@ -300,6 +299,8 @@ def create_previews(
                     targets.append(target)
                     row.server_name = target["server_name"]
             plan.append(dict(csv_row=index, line=row.line, target=target, error=row.error))
+        if not rows or any(row.error for row in rows):
+            raise TaskError("全部站点匹配成功后才能生成提示词，请修正下方问题并重新上传")
         filename = filename.replace("\\", "/").rsplit("/", 1)[-1]
         filename = "".join(char for char in filename if char.isprintable())[:128] or "tasks.csv"
         snapshot = dict(deployment_method="ssh", filename=filename, rows=plan, targets=targets)
@@ -337,11 +338,22 @@ def _save_preview(
     return task_id
 
 
+def batch_complete(snapshot: dict) -> bool:
+    if "targets" not in snapshot:
+        return True
+    rows = snapshot.get("rows", [])
+    return bool(rows) and all(row.get("target") and not row.get("error") for row in rows) and (
+        [row["target"] for row in rows] == snapshot["targets"]
+    )
+
+
 def validate_snapshot(ctx: Context, task: sqlite3.Row) -> tuple[SysUser, str]:
     user, label = recipient(ctx, task["recipient"])
     if user.uid != task["recipient_uid"]:
         raise TaskError("执行用户 UID 已变化，请重新预览")
     snapshot = json.loads(task["target_snapshot"])
+    if not batch_complete(snapshot):
+        raise TaskError("此批次含未匹配或无效站点，请修正文件并重新上传")
     if "targets" in snapshot:
         matches = inventory_targets(ctx.conn, {target["domain"] for target in snapshot["targets"]})
         if any(matches.get(target["domain"]) != [target] for target in snapshot["targets"]):

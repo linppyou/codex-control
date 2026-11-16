@@ -11,6 +11,7 @@
 </header>
 
 {% if task.error %}<p class="flash bad" role="alert">{{ task.error }}</p>{% endif %}
+{% if not batch_complete %}<p class="flash bad" role="alert">此批次含未匹配或无效站点，请修正文件并重新上传。</p>{% endif %}
 
 <div class="dispatch-layout dispatch-detail">
   <section class="panel flush" aria-labelledby="dispatch-prompt-title">

@@ -61,7 +61,7 @@
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <label class="dispatch-wide">CSV 或 XLSX 文件
         <input type="file" name="task_csv" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" aria-describedby="dispatch-csv-format" required>
-        <span class="hint" id="dispatch-csv-format">表头为 <code>{{ columns|join(',') }}</code>，最大 512 KiB。XLSX 读取首个工作表。</span>
+        <span class="hint" id="dispatch-csv-format">表头为 <code>{{ columns|join(',') }}</code>，最大 512 KiB。XLSX 读取首个工作表。全部站点匹配成功后生成批次提示词。</span>
       </label>
       {% for field, label, options in [('dispatcher', '分发 Skill', dispatchers), ('migration', '迁移 Skill', migrations)] %}
       <label>{{ label }}
