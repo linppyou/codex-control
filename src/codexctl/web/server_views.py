@@ -83,8 +83,8 @@ def register(app) -> None:
             servers = site_registry.list_servers(ctx.conn)
             inventories = sites.snapshots(ctx.conn)
         now = ctx.now()
-        labels = {server.id: server.name for server in servers}
-        server_id = server_id if server_id in labels else ""
+        server_order = {server.id: index for index, server in enumerate(servers)}
+        server_id = server_id if server_id in server_order else ""
         state = state if state in STATUSES else ""
         q = q.strip()[:253]
         summary, rows = [], []
@@ -111,15 +111,21 @@ def register(app) -> None:
             if (not date or row["date"] == date) and (not state or row["status"] == state)
             and (not q or any(q.casefold() in domain for domain in row["domains"]))
         ]
-        totals = Counter(row["date"] for row in filtered)
-        filtered.sort(key=lambda row: (row["domain"], row["server"].name, row["id"]))
+        server_totals = Counter(row["server"].id for row in filtered)
+        day_totals = Counter((row["server"].id, row["date"]) for row in filtered)
+        filtered.sort(key=lambda row: (row["domain"], row["id"]))
         filtered.sort(key=lambda row: (row["date"] != "unknown", row["date"]), reverse=True)
+        filtered.sort(key=lambda row: server_order[row["server"].id])
         pages = max(1, (len(filtered) + PAGE_SIZE - 1) // PAGE_SIZE)
         page = max(1, min(page, pages))
-        groups = [
-            (day, list(items), totals[day])
-            for day, items in groupby(filtered[(page - 1) * PAGE_SIZE:page * PAGE_SIZE], key=lambda row: row["date"])
-        ]
+        groups = []
+        page_rows = filtered[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]
+        for server, server_rows in groupby(page_rows, key=lambda row: row["server"]):
+            days = [
+                (day, list(day_rows), day_totals[server.id, day])
+                for day, day_rows in groupby(server_rows, key=lambda row: row["date"])
+            ]
+            groups.append((server, days, server_totals[server.id]))
         counts = Counter(row["status"] for row in rows)
         last_check = max((row["public"]["checked_at"] for row in rows), default=None)
         query = {key: val for key, val in {"server_id": server_id, "date": date, "state": state, "q": q}.items() if val}

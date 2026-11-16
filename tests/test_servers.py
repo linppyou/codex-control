@@ -201,11 +201,13 @@ def test_server_pages_require_admin(ctx):
 def test_overview_groups_filters_and_paginates(ctx, monkeypatch):
     client, _ = login_client(ctx)
     server = create(ctx)
+    other = create(ctx, name="另一台服务器", host="104.255.152.77")
     old = int(datetime(2026, 11, 11, tzinfo=timezone.utc).timestamp())
     new = int(datetime(2026, 11, 14, 17, tzinfo=timezone.utc).timestamp())
     known = [sites.Site(str(i), new, (f"site{i:02d}.com",)) for i in range(51)]
     rows = [*known, sites.Site("51", old, ("dns-error.com",)), sites.Site("52", None, ("unknown.com",))]
-    monkeypatch.setattr(sites, "collect", lambda *args: rows)
+    other_rows = [sites.Site("0", new, ("other-site.com",))]
+    monkeypatch.setattr(sites, "collect", lambda owner, key: rows if owner.id == server.id else other_rows)
     monkeypatch.setattr(
         site_probe, "probe",
         lambda domains, origin: site_probe.Probe("down", reason="dns") if domains[0] == "dns-error.com"
@@ -214,8 +216,16 @@ def test_overview_groups_filters_and_paginates(ctx, monkeypatch):
     sites._refresh(ctx.conn, ctx)
     first = client.get("/servers").text
     assert 'datetime="2026-11-15"' in first and "site00.com" in first and "site50.com" not in first
+    assert "other-site.com" not in first
     second = client.get("/servers?page=2").text
     assert "site50.com" in second and "日期未知" in second and "DNS 无可用地址" in second
+    first_server, next_server = second.split(f'id="site-server-{other.id}"', 1)
+    assert first_server.index(f'id="site-server-{server.id}"') < first_server.index("site50.com")
+    assert first_server.index("site50.com") < first_server.index("dns-error.com") < first_server.index("unknown.com")
+    assert 'datetime="2026-11-15"' in first_server and 'datetime="2026-11-15"' in next_server
+    assert "other-site.com" in next_server and "other-site.com" not in first_server
+    scoped = client.get(f"/servers?server_id={other.id}&date=2026-11-15").text
+    assert "other-site.com" in scoped and "site00.com" not in scoped
     filtered = client.get(f"/servers?state=down&server_id={server.id}&q=dns").text
     assert "dns-error.com" in filtered and "site00.com" not in filtered
     ctx.test_clock.t += 901

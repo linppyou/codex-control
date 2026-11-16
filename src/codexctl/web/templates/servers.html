@@ -69,29 +69,36 @@
     {% if server_id or date or state or q %}<a class="btn ghost" href="/servers">清除筛选</a>{% endif %}
   </form>
 
-  {% for day, rows, count in groups %}
-  <section class="panel flush site-group">
+  {% for server, days, count in groups %}
+  <section class="panel flush site-server" aria-labelledby="site-server-{{ server.id }}">
     <div class="panel-head">
-      <h2>{% if day == 'unknown' %}日期未知{% else %}<time datetime="{{ day }}">{{ day }}</time>{% endif %}</h2>
+      <h3 id="site-server-{{ server.id }}"><a href="/servers/{{ server.id }}">{{ server.name }}</a></h3>
       <span class="hint">{{ count }} 个站点</span>
     </div>
     <div class="site-row site-columns" aria-hidden="true">
-      <span>域名</span><span>服务器</span><span>公网状态</span><span>源站直连</span><span>检测时间</span>
+      <span>域名</span><span>公网状态</span><span>源站直连</span><span>检测时间</span>
     </div>
-    <ul class="site-rows">
-      {% for row in rows %}
-      <li class="site-row">
-        <div class="site-domain">
-          <a href="{{ row.public.entry_url or ('https://' ~ row.domain ~ '/') }}" target="_blank" rel="noopener noreferrer">{{ row.domain }}</a>
-          {% if row.origin %}<span class="tag">重复域名</span>{% endif %}
-        </div>
-        <a href="/servers/{{ row.server.id }}" class="site-owner">{{ row.server.name }}</a>
-        <div class="site-result site-public"><span class="site-a11y">公网状态</span>{{ probe_result(row.public, row.status) }}</div>
-        <div class="site-result site-origin{% if not row.origin %} site-origin-empty{% endif %}">{% if row.origin %}<span class="site-a11y site-mobile-label">源站直连</span>{{ probe_result(row.origin, row.origin_status) }}{% else %}<span class="hint" aria-hidden="true">—</span>{% endif %}</div>
-        <span class="hint site-checked">{{ row.checked_at }}</span>
-      </li>
-      {% endfor %}
-    </ul>
+    {% for day, rows, day_count in days %}
+    <section class="site-group" aria-labelledby="site-date-{{ server.id }}-{{ day }}">
+      <div class="site-day">
+        <h4 id="site-date-{{ server.id }}-{{ day }}">{% if day == 'unknown' %}日期未知{% else %}<time datetime="{{ day }}">{{ day }}</time>{% endif %}</h4>
+        <span class="hint">{{ day_count }} 个站点</span>
+      </div>
+      <ul class="site-rows">
+        {% for row in rows %}
+        <li class="site-row">
+          <div class="site-domain">
+            <a href="{{ row.public.entry_url or ('https://' ~ row.domain ~ '/') }}" target="_blank" rel="noopener noreferrer">{{ row.domain }}</a>
+            {% if row.origin %}<span class="tag">重复域名</span>{% endif %}
+          </div>
+          <div class="site-result site-public"><span class="site-a11y">公网状态</span>{{ probe_result(row.public, row.status) }}</div>
+          <div class="site-result site-origin{% if not row.origin %} site-origin-empty{% endif %}">{% if row.origin %}<span class="site-a11y site-mobile-label">源站直连</span>{{ probe_result(row.origin, row.origin_status) }}{% else %}<span class="hint" aria-hidden="true">—</span>{% endif %}</div>
+          <span class="hint site-checked"><span class="site-a11y">检测时间</span>{{ row.checked_at }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endfor %}
   </section>
   {% else %}
   <div class="panel empty-state">{{ '没有符合筛选条件的网站' if total else '暂无站点数据' }}</div>

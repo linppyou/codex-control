@@ -125,16 +125,23 @@ input[type=checkbox] { accent-color: var(--green); width: 15px; height: 15px; ve
 .site-filters { padding: 12px 16px; }
 .site-filters label { white-space: nowrap; }
 .site-filters input { min-width: 0; width: min(15rem, 55vw); }
-.site-group h2 { font-variant-numeric: tabular-nums; }
+.site-server h3, .site-day h4 { margin: 0; }
+.site-server h3 { font-size: 16px; overflow-wrap: anywhere; }
+.site-day {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  padding: 7px 20px; background: var(--bg); border-bottom: 1px solid var(--line-soft);
+}
+.site-day h4 { font-size: 13px; font-variant-numeric: tabular-nums; }
+.site-group + .site-group { border-top: 1px solid var(--line-soft); }
 .site-row {
-  display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, .9fr) minmax(0, 1.25fr) minmax(0, 1.25fr) 91px;
+  display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1.25fr) minmax(0, 1.25fr) 91px;
   gap: 4px 12px; align-items: center; padding: 10px 20px; border-bottom: 1px solid var(--line-soft);
 }
 .site-rows li:last-child { border-bottom: 0; }
 .site-columns { background: #fafbfc; color: var(--text-2); font-size: 12px; font-weight: 600; }
 .site-domain, .site-result { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; min-width: 0; }
 .site-domain a { color: var(--text); font-family: var(--mono); overflow-wrap: anywhere; }
-.site-owner, .server-wrap, .server-detail dd { overflow-wrap: anywhere; }
+.server-wrap, .server-detail dd { overflow-wrap: anywhere; }
 .site-checked { font-variant-numeric: tabular-nums; }
 .site-a11y { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .site-pagination { display: flex; justify-content: center; gap: 12px; align-items: center; }
@@ -152,10 +159,10 @@ input[type=checkbox] { accent-color: var(--green); width: 15px; height: 15px; ve
 .server-detail dd { margin: 0; min-width: 0; }
 @media (max-width: 760px) {
   .site-columns { display: none; }
+  .site-day { padding-inline: 14px; }
   .site-row:not(.site-columns) { grid-template-columns: minmax(0, 1fr) auto; gap: 7px 12px; padding: 12px 14px; }
   .site-domain { grid-column: 1 / -1; }
-  .site-owner { grid-column: 1; grid-row: 2; }
-  .site-public { grid-column: 1 / -1; }
+  .site-public { grid-column: 1; grid-row: 2; }
   .site-origin { grid-column: 1 / -1; }
   .site-origin-empty { display: none; }
   .site-checked { grid-column: 2; grid-row: 2; }
