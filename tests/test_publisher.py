@@ -92,6 +92,56 @@ def test_link_user_replaces_existing_symlink(tmp_path, pub):
     assert os.readlink(alice.home / ".codex" / "auth.json") == str(pub.account_file("acc2"))
 
 
+def test_link_skills_replaces_legacy_directories_and_is_repeatable(tmp_path, pub):
+    alice = make_user(tmp_path)
+    target = tmp_path / "admin-skills"
+    target.mkdir()
+    for directory in (".codex", ".agents"):
+        old_skill = alice.home / directory / "skills" / "old-skill"
+        old_skill.mkdir(parents=True)
+        (old_skill / "SKILL.md").write_text("old")
+        (old_skill.parent.parent / "config.toml").write_text("keep")
+    (alice.home / ".codex" / "auth.json").write_text("keep auth")
+
+    pub.link_skills(alice, target)
+    pub.link_skills(alice, target)
+
+    for directory in (".codex", ".agents"):
+        parent = alice.home / directory
+        assert (parent / "skills").is_symlink()
+        assert (parent / "skills").resolve() == target
+        assert not (parent / "skills" / "old-skill").exists()
+        assert (parent / "config.toml").read_text() == "keep"
+    assert (alice.home / ".codex" / "auth.json").read_text() == "keep auth"
+
+
+def test_link_skills_replaces_links_without_deleting_their_targets(tmp_path, pub):
+    alice = make_user(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "SKILL.md").write_text("keep")
+    target = tmp_path / "admin-skills"
+    target.mkdir()
+    for directory in (".codex", ".agents"):
+        parent = alice.home / directory
+        parent.mkdir()
+        (parent / "skills").symlink_to(elsewhere)
+    pub.link_skills(alice, target)
+    assert (elsewhere / "SKILL.md").read_text() == "keep"
+    for directory in (".codex", ".agents"):
+        assert (alice.home / directory / "skills").resolve() == target
+
+
+def test_link_skills_refuses_symlinked_parent(tmp_path, pub):
+    alice = make_user(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (alice.home / ".agents").symlink_to(elsewhere)
+    with pytest.raises(PublishError, match="不是普通目录"):
+        pub.link_skills(alice, tmp_path / "admin-skills")
+    assert list(elsewhere.iterdir()) == []
+
+
 def test_link_user_refuses_symlinked_codex_dir(tmp_path, pub):
     alice = make_user(tmp_path)
     elsewhere = tmp_path / "elsewhere"

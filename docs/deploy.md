@@ -278,3 +278,5 @@ curl -fsS -H "Authorization: Bearer ${CODEXCTL_API_KEY}" https://codex-control.p
 3. 在仅 root 可读的 `/etc/codexctl/dispatch.env` 中配置对应的专用凭据环境变量，修改后重启 `codexctl-dispatch`。Worker 只把当前任务明确引用的部署凭据传给执行用户的 Codex 进程。接口地址和提示词中只放凭据引用。
 4. 用户在「任务」填写原站网址、选择服务器及目标站和两个 Skill。核对提示词并勾选确认后，Worker 启动该用户的 Codex App Server，用任务专属目录中的 `task.csv` 与两个明确的 Skill 输入启动会话。管理员代提交时选择一个已有账号绑定且获目标站授权的普通用户。Web 进程和 Worker 可以独立重启，Worker 中断时，状态未知的发送保留原会话 ID 供核对。
 5. 面板显示实际的 Codex 会话 ID、轮次 ID 和发送回执。任务文件位于 `state_dir/dispatch/<任务ID>`，权限属于执行用户，由 Codex 使用。若所选分发 Skill 还需要创建远程项目子会话、访问浏览器或运行迁移引擎，执行用户的 Codex 环境应提供相应工具、工作目录和依赖。App Server 回执表示已交接，站点上线和验收以 Codex 后续结果为准。
+
+Worker 启动和每次任务发送前，会将管理员上传的全部 Skill 发布到 `state_dir/skills`，清理本机符合 `min_uid` 的普通用户的 `~/.codex/skills`、`~/.agents/skills`，并将这两个入口软链接到该发布目录。上传更新和删除在下一次同步时生效，已有安装目录中的自定义 Skill 也会被删除。发布目录使用完整版本原子切换，文件供用户读取和执行，历史发布版本保留供已运行会话访问。跨主机创建子会话时，分发器需传递任务中的 Skill 文件及版本。

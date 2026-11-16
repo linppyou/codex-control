@@ -1,13 +1,15 @@
 import dataclasses
 import io
 import json
+import os
+import stat
 import subprocess
 import sys
 import zipfile
 
 from fastapi.testclient import TestClient
 
-from codexctl import dispatch_skills, dispatch_tasks, dispatch_worker, repo, site_registry, webauth
+from codexctl import db, dispatch_skills, dispatch_tasks, dispatch_worker, repo, site_registry, webauth
 from codexctl.web.app import SESSION_COOKIE, create_app
 
 
@@ -136,6 +138,49 @@ def test_zip_traversal_rejected(ctx):
     assert dispatch_skills.list_skills(ctx.conn) == []
 
 
+def test_sync_user_skills_publishes_catalog_updates_and_deletions(ctx):
+    form = task_form(ctx)
+    for user in ctx.list_users(1000):
+        old = user.home / ".codex" / "skills" / "old-version"
+        old.mkdir(parents=True)
+        (old / "SKILL.md").write_text("old")
+    previous_umask = os.umask(0o077)
+    try:
+        with db.transaction(ctx.conn):
+            dispatch_skills.sync_user_skills(ctx)
+    finally:
+        os.umask(previous_umask)
+    target = ctx.settings.state_dir / "skills"
+    first_release = target.resolve()
+    assert stat.S_IMODE(first_release.stat().st_mode) == 0o755
+    assert stat.S_IMODE(first_release.parent.stat().st_mode) == 0o755
+    for user in ctx.list_users(1000):
+        for directory in (".codex", ".agents"):
+            link = user.home / directory / "skills"
+            assert link.is_symlink() and link.resolve() == first_release
+            assert not (link / "old-version").exists()
+            assert "1.0" in (link / "html-to-wp-engine-sol" / "SKILL.md").read_text()
+            assert stat.S_IMODE((link / "html-to-wp-engine-sol" / "SKILL.md").stat().st_mode) == 0o644
+            assert not (link / "install.py").exists()
+    with db.transaction(ctx.conn):
+        dispatch_skills.sync_user_skills(ctx)
+    assert target.resolve() == first_release
+
+    data = package("html-to-wp-engine-sol", "2.0")
+    dispatch_skills.save(ctx, form["migration"], "migration", "", data, dispatch_skills.inspect(data))
+    dispatch_skills.delete(ctx, form["dispatcher"])
+    ctx.test_users.add("charlie")
+    with db.transaction(ctx.conn):
+        dispatch_skills.sync_user_skills(ctx)
+    assert target.resolve() != first_release
+    assert "1.0" in (first_release / "html-to-wp-engine-sol" / "SKILL.md").read_text()
+    for user in ctx.list_users(1000):
+        for directory in (".codex", ".agents"):
+            link = user.home / directory / "skills"
+            assert "2.0" in (link / "html-to-wp-engine-sol" / "SKILL.md").read_text()
+            assert not (link / "task-dispatcher").exists()
+
+
 def test_worker_attaches_both_packages_and_persists_acceptance(ctx, tmp_path, monkeypatch):
     form = task_form(ctx)
     task_id = dispatch_tasks.create_preview(ctx, "alice", "alice", form["server_id"], form["source"], form["target"],
@@ -165,6 +210,10 @@ for line in sys.stdin:
     if method == 'thread/start':
         assert params['sandbox'] == 'workspace-write'
         assert os.environ['BAOTA_SHOP_API_KEY'] == 'fixture-secret'
+        for directory in ('.codex', '.agents'):
+            skills = Path.home() / directory / 'skills'
+            assert skills.is_symlink()
+            assert (skills / 'html-to-wp-engine-sol' / 'SKILL.md').is_file()
         result = {'thread': {'id': 'codex-thread'}}
     elif method == 'thread/name/set':
         assert params == {'threadId': 'codex-thread', 'name': 'source.example.com/home 迁移 shop.example.com'}

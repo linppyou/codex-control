@@ -153,6 +153,8 @@ def _payload(source: str, target: sqlite3.Row, skills: list[dict], task_id: str)
         f"任务 CSV：当前工作目录中的 task.csv。仅处理数据行 1，同时最多 1 个装修会话。\n"
         f"{csv_text}\n"
         f"迁移引擎目录：当前工作目录中的 .agents/skills/{migration['name']}。\n"
+        "本机用户级 Skill 已统一链接到管理员发布目录。创建子会话时显式传递本任务的两个 Skill 路径，"
+        "跨主机执行时先传递本任务的 Skill 文件并确认版本。\n"
         f"Codex 项目：{project}。查询执行环境实际提供的项目与主机标识。\n"
         f"子会话标题：{title}\n"
         f"部署服务器：{json.dumps(target['server_name'], ensure_ascii=False)}（{target['server_host']}）\n"
