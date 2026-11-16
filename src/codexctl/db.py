@@ -174,6 +174,49 @@ CREATE TABLE IF NOT EXISTS site_inventories (
     error TEXT,
     snapshot TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS dispatch_skills (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('dispatcher', 'migration')),
+    name TEXT NOT NULL UNIQUE,
+    version TEXT NOT NULL,
+    label TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    archive BLOB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS dispatch_targets (
+    id TEXT PRIMARY KEY,
+    server_id TEXT NOT NULL REFERENCES site_servers(id) ON DELETE CASCADE,
+    server_revision INTEGER NOT NULL,
+    domain TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    credential_env TEXT NOT NULL,
+    project TEXT NOT NULL,
+    users TEXT NOT NULL,
+    UNIQUE (server_id, domain)
+);
+CREATE TABLE IF NOT EXISTS dispatch_tasks (
+    id TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    recipient TEXT NOT NULL,
+    recipient_uid INTEGER NOT NULL,
+    target_id TEXT NOT NULL,
+    target_snapshot TEXT NOT NULL,
+    skills TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    title TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    csv TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    confirmed_at INTEGER,
+    account_label TEXT,
+    thread_id TEXT,
+    turn_id TEXT,
+    turn_status TEXT,
+    error TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS dispatch_tasks_owner ON dispatch_tasks(owner, created_at DESC);
+CREATE INDEX IF NOT EXISTS dispatch_tasks_queue ON dispatch_tasks(status, confirmed_at);
 CREATE TABLE IF NOT EXISTS account_models (
     account_pk INTEGER NOT NULL REFERENCES accounts(id),
     model_id TEXT NOT NULL,

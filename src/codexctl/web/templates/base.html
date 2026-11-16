@@ -24,11 +24,12 @@
     <a href="/servers"{% if path == "/servers" or path.startswith("/servers/") %} class="on" aria-current="page"{% endif %}>服务器</a>
     <a href="/wp-center"{% if path == "/wp-center" or path.startswith("/wp-center/") %} class="on" aria-current="page"{% endif %}>WP 建站中心</a>
     {% else %}
-    <a href="/users/{{ admin }}" class="on" aria-current="page">我的数据</a>
+    <a href="/users/{{ admin }}"{% if path == '/users/' ~ admin %} class="on" aria-current="page"{% endif %}>我的数据</a>
     {% endif %}
+    <a href="/tasks"{% if path == '/tasks' or path.startswith('/tasks/') %} class="on" aria-current="page"{% endif %}>任务</a>
   </nav>
   <form method="post" action="/logout" class="who">
-    <span class="avatar">{{ admin[:1]|upper }}</span><span class="name">{{ admin }} · {{ "管理员面板" if is_admin else "用户面板（只读）" }}</span>
+    <span class="avatar">{{ admin[:1]|upper }}</span><span class="name">{{ admin }} · {{ "管理员面板" if is_admin else "用户面板" }}</span>
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <button type="submit" class="btn small">退出</button>
   </form>

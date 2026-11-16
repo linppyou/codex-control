@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Skill 管理 · codexctl{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <div class="crumb"><a href="/tasks">网站迁移</a> / Skill 管理</div>
+    <h1>Skill 管理</h1>
+  </div>
+</header>
+<div class="dispatch-layout">
+  <section class="panel" aria-labelledby="skill-editor-title">
+    <h2 id="skill-editor-title">{{ '编辑 Skill' if entry else '上传 Skill' }}</h2>
+    <form class="dispatch-form" action="/skills/save" method="post" enctype="multipart/form-data">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="skill_id" value="{{ entry.id if entry else '' }}">
+      <label>类型
+        <select name="kind" required>
+          {% for kind, label in kinds.items() %}<option value="{{ kind }}"{% if entry and entry.kind == kind %} selected{% endif %}>{{ label }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>显示名称
+        <input type="text" name="label" value="{{ entry.label if entry else '' }}" maxlength="80" placeholder="默认读取 SKILL.md 中的名称">
+      </label>
+      <label class="dispatch-wide">{{ '替换 ZIP 文件' if entry else 'Skill ZIP 文件' }}
+        <input type="file" name="package" accept=".zip,application/zip"{% if not entry %} required{% endif %}>
+        <span class="hint">{% if entry %}留空保留现有 ZIP。{% else %}ZIP 应包含 SKILL.md，最大 8 MiB。{% endif %}</span>
+      </label>
+      <div class="dispatch-actions dispatch-wide">
+        {% if entry %}<a href="/skills" class="btn">取消编辑</a>{% endif %}
+        <button class="btn primary" type="submit">{{ '保存修改' if entry else '上传 Skill' }}</button>
+      </div>
+    </form>
+  </section>
+  <section class="panel flush" aria-labelledby="skill-list-title">
+    <div class="panel-head"><h2 id="skill-list-title">已上传的 Skill</h2></div>
+    {% if catalog %}
+    <ul class="dispatch-list">
+      {% for skill in catalog %}
+      <li>
+        <strong class="dispatch-list-title">{{ skill.label }}</strong>
+        <div class="dispatch-list-meta"><span class="badge info">{{ kinds[skill.kind] }}</span><span>{{ skill.name }}{% if skill.version %} · {{ skill.version }}{% endif %}</span></div>
+        <div class="dispatch-item-actions">
+          <a class="btn small" href="/skills?edit={{ skill.id }}">编辑</a>
+          <a class="btn small" href="/skills/{{ skill.id }}/download">下载 ZIP</a>
+          <form action="/skills/{{ skill.id }}/delete" method="post" data-confirm="删除这个 Skill？">
+            <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn danger small" type="submit">删除</button>
+          </form>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="empty-state">暂无 Skill</p>{% endif %}
+  </section>
+</div>
+<script src="/static/confirm.js" defer></script>
+{% endblock %}

@@ -216,7 +216,7 @@ def test_existing_web_user_is_limited_to_own_panel(client, ctx):
     assert client.get("/").headers["location"] == "/users/linpp"
     page = client.get("/users/linpp")
     assert page.status_code == 200
-    assert "用户面板（只读）" in page.text
+    assert "用户面板" in page.text and 'href="/tasks"' in page.text
     assert 'method="post" action="/logout"' in page.text
     assert client.get("/users/alice").status_code == 403
     csrf = re.search(r'name="csrf" value="([^"]+)"', page.text).group(1)
