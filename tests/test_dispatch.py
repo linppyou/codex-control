@@ -399,8 +399,6 @@ def test_worker_attaches_both_packages_and_persists_acceptance(ctx, tmp_path, mo
     fake.write_text("""
 import json
 import os
-import stat
-import os
 import sys
 from pathlib import Path
 for line in sys.stdin:
@@ -544,3 +542,30 @@ def test_old_partial_batch_cannot_be_confirmed_or_executed(ctx, tmp_path, monkey
     dispatch_worker.deliver(ctx, tmp_path, task)
     stored = ctx.conn.execute("SELECT status, error FROM dispatch_tasks WHERE id=?", (task["id"],)).fetchone()
     assert stored["status"] == "failed" and "未匹配或无效站点" in stored["error"]
+
+
+def test_legacy_preview_rechecks_assignment_before_confirmation(ctx):
+    form = task_form(ctx)
+    rows = dispatch_tasks.parse_import(
+        f'原域名,新域名,备注,折扣\n{form["source"]},{form["target"]},,\n'.encode()
+    )
+    task_id = dispatch_tasks.create_previews(ctx, "alice", rows, form["dispatcher"], form["migration"])
+    target_id = "a" * 32
+    server = site_registry.get(ctx.conn, form["server_id"])
+    ctx.conn.execute(
+        "INSERT INTO dispatch_targets VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (target_id, server.id, server.revision, form["target"], "https://deploy.example.com", "DEPLOY_KEY", "", '["alice"]'),
+    )
+    snapshot = dict(ctx.conn.execute(dispatch_tasks._LEGACY_TARGET_FIELDS, (target_id,)).fetchone())
+    snapshot.pop("server_port")
+    ctx.conn.execute("UPDATE dispatch_tasks SET target_id=?, target_snapshot=? WHERE id=?",
+                     (target_id, json.dumps(snapshot), task_id))
+    task = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()
+    assert dispatch_tasks.validate_snapshot(ctx, task)[0].name == "alice"
+    ctx.conn.execute("UPDATE dispatch_targets SET users='[\"bob\"]' WHERE id=?", (target_id,))
+    snapshot["users"] = '["bob"]'
+    ctx.conn.execute("UPDATE dispatch_tasks SET target_snapshot=? WHERE id=?", (json.dumps(snapshot), task_id))
+    task = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()
+    with pytest.raises(dispatch_tasks.TaskError, match="部署配置已变更"):
+        dispatch_tasks.confirm(ctx, task, "alice")
+    assert ctx.conn.execute("SELECT status FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()[0] == "preview"

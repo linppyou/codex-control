@@ -365,7 +365,7 @@ def validate_snapshot(ctx: Context, task: sqlite3.Row) -> tuple[SysUser, str]:
         if matches.get(snapshot["domain"]) != [snapshot]:
             raise TaskError("目标站或服务器绑定已变更，请重新导入 CSV")
     else:
-        _validate_legacy_target(ctx.conn, task["target_id"], snapshot)
+        _validate_legacy_target(ctx.conn, task["target_id"], snapshot, user.name)
     for approved in json.loads(task["skills"]):
         skill = dispatch_skills.get(ctx.conn, approved["id"])
         if skill is None or dict(skill) != approved:
@@ -373,13 +373,15 @@ def validate_snapshot(ctx: Context, task: sqlite3.Row) -> tuple[SysUser, str]:
     return user, label
 
 
-def _validate_legacy_target(conn: sqlite3.Connection, target_id: str, snapshot: dict) -> None:
+def _validate_legacy_target(conn: sqlite3.Connection, target_id: str, snapshot: dict, username: str) -> None:
     target = conn.execute(_LEGACY_TARGET_FIELDS, (target_id,)).fetchone()
     # Older SSH tasks may carry a project override and have no API credential.
     fields = set(snapshot) - {"deployment_method", "inventory_site_id"}
     if snapshot.get("deployment_method") == "ssh":
         fields.discard("project")
-    if target is None or any(target[key] != snapshot[key] for key in fields):
+    if target is None or username not in json.loads(target["users"]) or any(
+        key not in target.keys() or target[key] != snapshot[key] for key in fields
+    ):
         raise TaskError("目标站服务器或部署配置已变更，请重新导入 CSV")
 
 
