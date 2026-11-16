@@ -121,9 +121,10 @@ def main(argv: list[str] | None = None, context_factory: Callable[[Settings], Co
 
 def cmd_init(settings: Settings) -> int:
     settings.state_dir.mkdir(parents=True, exist_ok=True)
-    settings.state_dir.chmod(0o711)
-    settings.accounts_dir.mkdir(exist_ok=True)
-    settings.accounts_dir.chmod(0o711)
+    settings.state_dir.chmod(0o711 if settings.manages_local_codex else 0o700)
+    if settings.manages_local_codex:
+        settings.accounts_dir.mkdir(exist_ok=True)
+        settings.accounts_dir.chmod(0o711)
     settings.staging_dir.mkdir(exist_ok=True)
     settings.staging_dir.chmod(0o700)
     if not settings.key_file.exists():
@@ -181,6 +182,10 @@ def fmt_ts(ts: int | None) -> str:
 
 
 def dispatch(ctx: Context, args: argparse.Namespace) -> int:
+    if not ctx.settings.manages_local_codex and args.cmd in {
+        "assign", "unassign", "fix", "restart-codex", "users", "user", "check", "backfill-models",
+    }:
+        raise accounts.AccountError("此命令仅用于 managed 模式")
     if args.cmd == "web":
         from .web import server
 
@@ -344,7 +349,7 @@ def account_cmd(ctx: Context, args: argparse.Namespace) -> int:
         accounts.require_account(ctx, args.label)
         data = args.file.read_bytes() if args.file else accounts.device_login(ctx, args.label)
         accounts.relogin_account(ctx, args.label, data, ACTOR)
-        print(f"{args.label} 已重新登录并发布")
+        print(f"{args.label} 已重新登录" + ("并发布" if ctx.settings.manages_local_codex else ""))
         return 0
     if c == "refresh":
         try:

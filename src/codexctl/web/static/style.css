@@ -346,3 +346,8 @@ progress.bad::-moz-progress-bar { background: var(--red); }
 .compare-plot [data-series] { transition: opacity .15s; }
 .compare-plot [data-series].is-muted { opacity: .12; }
 .compare-plot [data-series].is-hidden { display: none; }
+
+.user-api-token { width: min(100%, 76ch); }
+.user-api-profile { overflow-x: auto; }
+.user-password summary { width: fit-content; font-weight: 600; cursor: pointer; }
+.user-password form { margin-top: 12px; }

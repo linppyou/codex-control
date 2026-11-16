@@ -3,9 +3,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from . import accounts, events, procs, repo
+from . import accounts, events, procs, repo, webauth
 from .context import Context
 from .db import transaction
+from .gateway import storage
 from .locks import account_lock
 from .sysusers import UserError
 
@@ -23,23 +24,32 @@ def _sync_acl(ctx: Context, account_pk: int) -> None:
 
 def assign(ctx: Context, username: str, label: str, actor: str) -> Path | None:
     """分配或切换。顺序：写数据库 → 给新账号加读权限 → 改链接 → 撤销旧账号读权限。返回备份文件路径（如有）。"""
-    user = ctx.lookup_user(username, ctx.settings.min_uid)
+    managed = ctx.settings.manages_local_codex
+    user = ctx.lookup_user(username, ctx.settings.min_uid) if managed else None
+    if not managed and (username == "admin" or (
+        webauth.get_hash(ctx.conn, username) is None and storage.user_key(ctx.conn, username) is None
+    )):
+        raise AssignError(f"用户不存在：{username}")
     acc = repo.get_account(ctx.conn, label)
     if acc is None:
         raise AssignError(f"账号不存在：{label}")
     if acc.status == "disabled":
         raise AssignError(f"账号 {label} 已停用，不能分配")
-    current = repo.active_assignment(ctx.conn, username)
-    switching = current is not None and current.account_pk != acc.id
     now = ctx.now()
-    if current is None or switching:
-        with transaction(ctx.conn):
+    with transaction(ctx.conn):
+        current = repo.active_assignment(ctx.conn, username)
+        switching = current is not None and current.account_pk != acc.id
+        if current is None or switching:
             old_label = "-"
             if current is not None:
                 old_label = repo.get_account_by_pk(ctx.conn, current.account_pk).label
                 repo.end_assignment(ctx.conn, username, now)
             repo.start_assignment(ctx.conn, username, acc.id, now)
             events.audit(ctx.conn, actor, "assign", username, f"{old_label} -> {label}", now=now)
+        if ctx.settings.gateway_enabled:
+            storage.ensure_user_key(ctx.conn, ctx.vault, username, actor, now)
+    if user is None:
+        return None
     try:
         _sync_acl(ctx, acc.id)
         backup = ctx.publisher.link_user(user, label, now)
@@ -52,14 +62,16 @@ def assign(ctx: Context, username: str, label: str, actor: str) -> Path | None:
 
 def unassign(ctx: Context, username: str, actor: str) -> bool:
     """回收：删除软链接并撤销读权限。绝不调用 codex logout（会吊销同账号所有用户共用的 token）。"""
-    current = repo.active_assignment(ctx.conn, username)
-    if current is None:
-        return False
     now = ctx.now()
     with transaction(ctx.conn):
+        current = repo.active_assignment(ctx.conn, username)
+        if current is None:
+            return False
         repo.end_assignment(ctx.conn, username, now)
         label = repo.get_account_by_pk(ctx.conn, current.account_pk).label
         events.audit(ctx.conn, actor, "unassign", username, label, now=now)
+    if not ctx.settings.manages_local_codex:
+        return True
     try:
         try:
             user = ctx.lookup_user(username, ctx.settings.min_uid)

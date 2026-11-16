@@ -2,8 +2,11 @@
 {% block title %}用户 - codexctl{% endblock %}
 {% block content %}
 <div class="page-head">
-  <div><h1>用户</h1><div class="sub">{{ rows|length }} 个系统用户{% if is_admin %} · 勾选后批量分配或回收{% endif %}</div></div>
-  <span class="seg">{% if show_all %}<a href="/users">隐藏内置用户</a><strong>显示全部</strong>{% else %}<strong>常规用户</strong><a href="/users?all=1">显示全部用户</a>{% endif %}</span>
+  <div><h1>用户</h1><div class="sub">{{ rows|length }} 个用户{% if is_admin %} · 勾选后批量分配或回收{% endif %}</div></div>
+  <div class="toolbar">
+    {% if gateway_enabled and is_admin %}<a class="btn" href="/usage/api">API 用量</a>{% endif %}
+    {% if managed %}<span class="seg">{% if show_all %}<a href="/users">隐藏内置用户</a><strong>显示全部</strong>{% else %}<strong>常规用户</strong><a href="/users?all=1">显示全部用户</a>{% endif %}</span>{% endif %}
+  </div>
 </div>
 <div class="panel flush">
 {% if is_admin %}<form method="post" id="bulk" class="panel-head">
@@ -18,19 +21,22 @@
   </div>
 </form>{% endif %}
 <div class="table-wrap"><table>
-  <thead><tr>{% if is_admin %}<th class="sel"></th>{% endif %}<th>用户名</th><th>当前账号</th><th>链接</th><th>旧 codex 进程</th><th class="num">24 小时 tokens / 费用</th><th class="num">7 天 tokens / 费用</th>{% if is_admin %}<th>操作</th>{% endif %}</tr></thead>
+  <thead><tr>{% if is_admin %}<th class="sel"></th>{% endif %}<th>用户名</th><th>当前账号</th>{% if gateway_enabled %}<th>API Key</th>{% endif %}{% if managed %}<th>链接</th><th>旧 codex 进程</th><th class="num">24 小时 tokens / 费用</th><th class="num">7 天 tokens / 费用</th>{% if is_admin %}<th>操作</th>{% endif %}{% endif %}</tr></thead>
   <tbody>
   {% for r in rows %}
   <tr>
     {% if is_admin %}<td class="sel"><input type="checkbox" name="users" value="{{ r.name }}" form="bulk"></td>{% endif %}
     <td><a href="/users/{{ r.name }}" class="user-link"><b>{{ r.name }}</b></a></td><td>{% if r.account %}<span class="tag">{{ r.account }}</span>{% if r.account_label %} <span class="tag">{{ r.account_label }}</span>{% endif %}{% else %}<span class="muted">-</span>{% endif %}</td>
+    {% if gateway_enabled %}<td>{% if r.key %}<a href="/users/{{ r.name }}/api-key" class="btn small" aria-label="查看 {{ r.name }} 的 API Key">查看</a>{% else %}<span class="muted">未生成</span>{% endif %}</td>{% endif %}
+    {% if managed %}
     <td class="mono">{{ r.link }}{% if r.target %} <span class="muted">{{ r.target }}</span>{% endif %}</td>
     <td>{% if r.stale %}<span class="badge bad" title="{{ r.stale_title }}">{{ r.stale|length }} 个旧进程（仍用旧账号）</span>{% else %}<span class="muted">-</span>{% endif %}</td>
     <td class="num" title="{{ '{:,}'.format(r.t24) }} tokens{% if r.c24 is not none %} · 估算 {{ r.c24|usd }}{% endif %}{% if r.u24 %} · {{ r.u24 }} 个模型未定价{% endif %}">{{ r.t24|tokens }}{% if r.t24 %}<div class="cost{% if r.c24 is none %} muted{% endif %}">{% if r.c24 is not none %}{{ r.c24|usd }}{% if r.u24 %}*{% endif %}{% else %}未定价{% endif %}</div>{% endif %}</td><td class="num" title="{{ '{:,}'.format(r.t7) }} tokens{% if r.c7 is not none %} · 估算 {{ r.c7|usd }}{% endif %}{% if r.u7 %} · {{ r.u7 }} 个模型未定价{% endif %}">{{ r.t7|tokens }}{% if r.t7 %}<div class="cost{% if r.c7 is none %} muted{% endif %}">{% if r.c7 is not none %}{{ r.c7|usd }}{% if r.u7 %}*{% endif %}{% else %}未定价{% endif %}</div>{% endif %}</td>
     {% if is_admin %}<td class="ops">{% if r.stale %}<form method="post" action="/users/{{ r.name }}/restart-codex" class="inline" data-confirm="将结束 {{ r.name }} 的 {{ r.stale|length }} 个旧 codex 进程，会中断其正在运行的任务。确定？"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn small danger">重启 codex</button></form>{% endif %}<form method="post" action="/users/{{ r.name }}/fix" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn small">修复</button></form></td>{% endif %}
+    {% endif %}
   </tr>
   {% else %}
-  <tr><td colspan="8" class="empty">没有用户</td></tr>
+  <tr><td colspan="{{ 2 + (1 if gateway_enabled else 0) + (4 if managed else 0) + (1 if is_admin else 0) + (1 if is_admin and managed else 0) }}" class="empty">没有用户</td></tr>
   {% endfor %}
   </tbody>
 </table></div>
@@ -40,10 +46,10 @@
   <form method="post" action="/users/create" class="form-row" autocomplete="off">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <label>用户名 <input type="text" name="username" maxlength="32" pattern="[a-z_][a-z0-9_.-]*" placeholder="如 alice" required autocomplete="off"></label>
-    <label>密码 <input type="password" name="password" minlength="8" maxlength="128" required autocomplete="new-password"></label>
-    <label>确认密码 <input type="password" name="password2" minlength="8" maxlength="128" required autocomplete="new-password"></label>
+    <label>密码 <input type="password" name="password" minlength="{{ 8 if managed else 12 }}" maxlength="128" required autocomplete="new-password"></label>
+    <label>确认密码 <input type="password" name="password2" minlength="{{ 8 if managed else 12 }}" maxlength="128" required autocomplete="new-password"></label>
     <button class="btn primary">创建用户</button>
-    <span class="hint form-hint">创建家目录与登录 shell，设置密码，并安装/初始化 codex（首次可能下载安装包，耗时较长）。创建后仍需在列表中分配 codex 账号；密码只经 stdin 传给 chpasswd，不写入日志。</span>
+    <span class="hint form-hint">{% if managed %}创建 Linux 用户并初始化 Codex。{% endif %}新用户可用此用户名和密码登录面板。创建后请分配 Codex 账号。</span>
   </form>
 </div>
 {% endif %}<script src="/static/confirm.js"></script>

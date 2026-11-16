@@ -16,6 +16,7 @@ MIN_PASSWORD_LEN = 12
 MAX_LOGIN_PASSWORD_LEN = 1024
 MAX_LOGIN_USERNAME_LEN = 64
 MAX_LIMITER_KEYS = 10_000
+DEFAULT_ADMIN_PASSWORD = "root@root.root"
 _NAME_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}$")
 _hasher = PasswordHasher()
 _DUMMY_HASH = _hasher.hash("codexctl-dummy-password")
@@ -34,7 +35,7 @@ def _check_password(password: str) -> None:
         raise AuthError(f"密码至少 {MIN_PASSWORD_LEN} 个字符")
 
 
-def create_admin(conn: sqlite3.Connection, username: str, password: str, *, now: int) -> None:
+def create_admin(conn: sqlite3.Connection, username: str, password: str, *, now: int, configured: bool = True) -> None:
     if not _NAME_RE.fullmatch(username):
         raise AuthError("管理员用户名只能包含小写字母、数字、_ . -，且以字母或下划线开头，最长 32 位")
     _check_password(password)
@@ -42,8 +43,8 @@ def create_admin(conn: sqlite3.Connection, username: str, password: str, *, now:
         if conn.execute("SELECT 1 FROM admins WHERE username = ?", (username,)).fetchone():
             raise AuthError(f"管理员已存在：{username}")
         conn.execute(
-            "INSERT INTO admins(username, password_hash, created_at) VALUES (?, ?, ?)",
-            (username, _hasher.hash(password), now),
+            "INSERT INTO admins(username, password_hash, created_at, password_configured) VALUES (?, ?, ?, ?)",
+            (username, _hasher.hash(password), now, configured),
         )
 
 
@@ -51,7 +52,8 @@ def set_password(conn: sqlite3.Connection, username: str, password: str, *, now:
     _check_password(password)
     with transaction(conn):
         cur = conn.execute(
-            "UPDATE admins SET password_hash = ? WHERE username = ?", (_hasher.hash(password), username)
+            "UPDATE admins SET password_hash = ?, password_configured = 1 WHERE username = ?",
+            (_hasher.hash(password), username),
         )
         if cur.rowcount == 0:
             raise AuthError(f"管理员不存在：{username}")
@@ -78,6 +80,13 @@ def get_hash(conn: sqlite3.Connection, username: str) -> str | None:
         return None
     row = conn.execute("SELECT password_hash FROM admins WHERE username = ?", (username,)).fetchone()
     return row["password_hash"] if row else None
+
+
+def has_configured_admin(conn: sqlite3.Connection) -> bool:
+    admin = conn.execute("SELECT password_hash, password_configured FROM admins WHERE username = 'admin'").fetchone()
+    return admin is not None and (
+        bool(admin["password_configured"]) or not check_password(admin["password_hash"], DEFAULT_ADMIN_PASSWORD)
+    )
 
 
 def rehash_if_needed(conn: sqlite3.Connection, username: str, stored: str, password: str) -> None:

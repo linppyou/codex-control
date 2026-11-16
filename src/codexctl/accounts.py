@@ -58,12 +58,16 @@ def load_bundle(ctx: Context, acc: repo.Account) -> AuthBundle:
 
 
 def publish_account(ctx: Context, acc: repo.Account, bundle: AuthBundle | None = None) -> None:
+    if not ctx.settings.manages_local_codex:
+        return
     bundle = bundle or load_bundle(ctx, acc)
     ctx.publisher.publish(acc.label, bundle.to_bytes(), readers_for(ctx, acc.id))
 
 
 def republish_account(ctx: Context, label: str) -> None:
     """加账号锁后重新读取账号与保险库内容再发布，避免用过期 token 覆盖刚刷新的凭证。"""
+    if not ctx.settings.manages_local_codex:
+        raise AccountError("网关模式只使用保险库凭证")
     require_account(ctx, label)
     with account_lock(ctx.settings.state_dir, label):
         acc = require_account(ctx, label)
@@ -146,7 +150,7 @@ def set_display_name(ctx: Context, label: str, name: str, actor: str) -> str | N
 def set_disabled(ctx: Context, label: str, disabled: bool, actor: str) -> None:
     acc = require_account(ctx, label)
     now = ctx.now()
-    with transaction(ctx.conn):
+    with account_lock(ctx.settings.state_dir, label, blocking=False), transaction(ctx.conn):
         if disabled:
             repo.set_status(ctx.conn, acc.id, "disabled")
         elif acc.status == "disabled":
@@ -156,6 +160,8 @@ def set_disabled(ctx: Context, label: str, disabled: bool, actor: str) -> None:
 
 def device_login(ctx: Context, label: str) -> bytes:
     """在临时 CODEX_HOME 中运行真实 codex 的 device-auth 登录（交互：验证码打印在终端），返回生成的 auth.json。"""
+    if not ctx.settings.manages_local_codex:
+        raise AccountError("网关模式请在本地电脑登录，再导入 auth.json")
     _check_label(label)
     ctx.settings.staging_dir.mkdir(parents=True, exist_ok=True)
     ctx.settings.staging_dir.chmod(0o700)
