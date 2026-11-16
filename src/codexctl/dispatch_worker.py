@@ -18,6 +18,7 @@ from pathlib import Path
 
 from . import db, dispatch_skills, dispatch_tasks, events
 from .context import Context
+from .publisher import PublishError
 from .sysusers import SysUser
 
 log = logging.getLogger(__name__)
@@ -216,6 +217,7 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
         check_cancel()
         with db.transaction(ctx.conn):
             user, label = dispatch_tasks.validate_snapshot(ctx, task)
+            dispatch_skills.sync_user_skills(ctx)
             packages = [
                 dispatch_skills.get(ctx.conn, binding["id"], with_archive=True)["archive"]
                 for binding in json.loads(task["skills"])
@@ -264,8 +266,8 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
                 client.call("turn/interrupt", {"threadId": thread_id, "turnId": turn_id})
             except (OSError, ValueError):
                 cancel_error = "已停止本机任务进程，中断回执未确认，请核对保留的 Codex 会话"
-    except (OSError, ValueError, sqlite3.Error) as exc:
-        message = str(exc) if isinstance(exc, (DeliveryError, dispatch_tasks.TaskError)) else "无法启动或读取 Codex App Server"
+    except (OSError, ValueError, sqlite3.Error, PublishError) as exc:
+        message = str(exc) if isinstance(exc, (DeliveryError, dispatch_tasks.TaskError, dispatch_skills.SkillError, PublishError)) else "无法同步 Skill 或启动、读取 Codex App Server"
         if accepted:
             _record(ctx, task, "sent", message, turn_status="unknown")
         else:
@@ -320,6 +322,8 @@ def run(ctx: Context) -> None:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise DeliveryError("任务 Worker 已在运行") from exc
+        with db.transaction(ctx.conn):
+            dispatch_skills.sync_user_skills(ctx)
         ctx.conn.execute(
             "UPDATE dispatch_tasks SET status='unknown', error=? WHERE status='sending'",
             ("发送期间 Worker 中断，请先核对原 Codex 会话",),

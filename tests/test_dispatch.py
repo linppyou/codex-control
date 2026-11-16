@@ -2,6 +2,8 @@ import csv
 import dataclasses
 import io
 import json
+import os
+import stat
 import subprocess
 import sys
 import zipfile
@@ -10,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
-from codexctl import dispatch_skills, dispatch_tasks, dispatch_worker, repo, site_registry, webauth
+from codexctl import db, dispatch_skills, dispatch_tasks, dispatch_worker, repo, site_registry, webauth
 from codexctl.web.app import SESSION_COOKIE, create_app
 
 
@@ -313,6 +315,49 @@ def test_admin_skill_crud_and_stale_preview(ctx):
     assert admin.get(download).status_code == 404
 
 
+def test_sync_user_skills_publishes_catalog_updates_and_deletions(ctx):
+    form = task_form(ctx)
+    for user in ctx.list_users(1000):
+        old = user.home / ".codex" / "skills" / "old-version"
+        old.mkdir(parents=True)
+        (old / "SKILL.md").write_text("old")
+    previous_umask = os.umask(0o077)
+    try:
+        with db.transaction(ctx.conn):
+            dispatch_skills.sync_user_skills(ctx)
+    finally:
+        os.umask(previous_umask)
+    target = ctx.settings.state_dir / "skills"
+    first_release = target.resolve()
+    assert stat.S_IMODE(first_release.stat().st_mode) == 0o755
+    assert stat.S_IMODE(first_release.parent.stat().st_mode) == 0o755
+    for user in ctx.list_users(1000):
+        for directory in (".codex", ".agents"):
+            link = user.home / directory / "skills"
+            assert link.is_symlink() and link.resolve() == first_release
+            assert not (link / "old-version").exists()
+            assert "1.0" in (link / "html-to-wp-engine-sol" / "SKILL.md").read_text()
+            assert stat.S_IMODE((link / "html-to-wp-engine-sol" / "SKILL.md").stat().st_mode) == 0o644
+            assert not (link / "install.py").exists()
+    with db.transaction(ctx.conn):
+        dispatch_skills.sync_user_skills(ctx)
+    assert target.resolve() == first_release
+
+    data = package("html-to-wp-engine-sol", "2.0")
+    dispatch_skills.save(ctx, form["migration"], "migration", "", data, dispatch_skills.inspect(data))
+    dispatch_skills.delete(ctx, form["dispatcher"])
+    ctx.test_users.add("charlie")
+    with db.transaction(ctx.conn):
+        dispatch_skills.sync_user_skills(ctx)
+    assert target.resolve() != first_release
+    assert "1.0" in (first_release / "html-to-wp-engine-sol" / "SKILL.md").read_text()
+    for user in ctx.list_users(1000):
+        for directory in (".codex", ".agents"):
+            link = user.home / directory / "skills"
+            assert "2.0" in (link / "html-to-wp-engine-sol" / "SKILL.md").read_text()
+            assert not (link / "task-dispatcher").exists()
+
+
 def test_zip_traversal_rejected(ctx):
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w") as archive:
@@ -347,11 +392,14 @@ def test_worker_attaches_both_packages_and_persists_acceptance(ctx, tmp_path, mo
     run_root.mkdir()
     monkeypatch.setenv("BAOTA_SHOP_API_KEY", "fixture-secret")
     monkeypatch.setattr(dispatch_worker.os, "chown", lambda *args: None)
+    monkeypatch.setattr(ctx.publisher, "link_skills", lambda *args: None)
 
     # A stdio fixture verifies the actual JSON-RPC payload and can complete the turn before its acknowledgement.
     fake = tmp_path / "app-server.py"
     fake.write_text("""
 import json
+import os
+import stat
 import os
 import sys
 from pathlib import Path

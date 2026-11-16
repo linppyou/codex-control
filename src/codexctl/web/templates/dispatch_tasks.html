@@ -3,7 +3,7 @@
 {% block content %}
 <header class="page-head">
   <div><h1>网站迁移</h1></div>
-  {% if is_admin %}<div class="toolbar"><a class="btn" href="/tasks/assignments">分配记录</a><a class="btn" href="/dispatch-targets">目标站授权</a><a class="btn" href="/skills">Skill 管理</a></div>{% endif %}
+  {% if is_admin %}<div class="toolbar"><a class="btn" href="/skills">Skill 管理</a></div>{% endif %}
 </header>
 {% if rows %}
 <section class="panel flush dispatch-import-results" aria-labelledby="dispatch-results-title">
@@ -46,112 +46,10 @@
 </section>
 {% endif %}
 
-<div class="dispatch-layout{% if is_admin %} dispatch-assignment-layout{% endif %}">
-  {% if is_admin %}
-  <section class="panel flush assignment-panel" aria-labelledby="dispatch-compose-title">
-    <div class="panel-head"><h2 id="dispatch-compose-title">分配站点任务</h2></div>
-    {% if not pending %}
-    <div class="empty-state">暂无待分配站点。<a href="/servers">查看服务器巡检</a></div>
-    {% elif not users %}
-    <div class="empty-state">暂无可执行任务的用户。<a href="/users">管理 Codex 账号分配</a></div>
-    {% else %}
-    <form class="assignment-form" method="post" action="/tasks/assign" data-site-assignment>
-      <input type="hidden" name="csrf" value="{{ csrf }}">
-      <div class="assignment-settings">
-        <div class="assignment-field">
-          <label for="assign-server">服务器</label>
-          <select id="assign-server" name="server_id" required>
-            {% for server, days in pending %}
-            <option value="{{ server.id }}"{% if server.id == selected_server %} selected{% endif %}>{{ server.name }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div class="assignment-field">
-          <label for="assign-recipient">分配给</label>
-          <select id="assign-recipient" name="recipient" required>
-            <option value="">选择用户</option>
-            {% for user in users %}<option value="{{ user }}"{% if user == selected_user %} selected{% endif %}>{{ user }}</option>{% endfor %}
-          </select>
-        </div>
-      </div>
-      {% if pending|length > 1 %}
-      <noscript>
-        <p class="assignment-servers panel-body">切换服务器
-          {% for server, days in pending %}<a href="/tasks?server_id={{ server.id }}">{{ server.name }}</a>{% endfor %}
-        </p>
-      </noscript>
-      {% endif %}
-      <section class="assignment-directory" aria-labelledby="assignment-sites-title">
-        <div class="assignment-directory-head">
-          <h3 id="assignment-sites-title">待分配站点</h3>
-          <input type="text" aria-label="搜索域名" placeholder="搜索域名" autocomplete="off" spellcheck="false" data-site-search hidden>
-        </div>
-        <div class="assignment-list-head" data-assignment-tools hidden>
-          <label><input type="checkbox" data-select-visible> 全选当前结果</label>
-          <span data-site-results></span>
-        </div>
-        <div class="assignment-list">
-          {% for server, days in pending %}
-          <fieldset class="assignment-group" data-site-server="{{ server.id }}"{% if server.id != selected_server %} hidden disabled{% endif %}>
-            <legend class="site-a11y">{{ server.name }}的待分配站点</legend>
-            {% for date, choices in days %}
-            <section class="assignment-day" data-assignment-day>
-              <h4>{{ date or '日期未知' }}</h4>
-              {% for site in choices %}
-              <label class="assignment-site" data-assignment-site>
-                <input type="checkbox" name="site_ids" value="{{ server.id }}:{{ site.id }}"{% if server.id == selected_server and site.id in selected_sites %} checked{% endif %}>
-                <span class="assignment-site-name"><strong>{{ site.domains[0] }}</strong>{% if site.domains|length > 1 %}<small>{{ site.domains[1:]|join('、') }}</small>{% endif %}</span>
-              </label>
-              {% endfor %}
-            </section>
-            {% endfor %}
-          </fieldset>
-          {% endfor %}
-          <p class="empty-state" data-site-no-results hidden>没有匹配的域名。</p>
-        </div>
-      </section>
-      <div class="assignment-footer">
-        <div class="assignment-summary">
-          <strong data-selected-sites role="status" hidden></strong>
-          <button class="btn ghost" type="button" data-clear-sites hidden>清空</button>
-        </div>
-        <button class="btn primary" type="submit">分配任务</button>
-      </div>
-    </form>
-    {% endif %}
-  </section>
-  {% endif %}
+<div class="{% if not is_admin %}dispatch-layout{% endif %}">
   {% if not is_admin %}
   <section class="panel" aria-labelledby="dispatch-compose-title">
     <h2 id="dispatch-compose-title">导入任务</h2>
-    {% if not is_admin and assigned %}
-    <h3>已分配站点</h3>
-    <ul class="dispatch-list dispatch-assigned-sites">
-      {% for site in assigned %}
-      <li class="dispatch-site-work">
-        <div>
-          <strong class="dispatch-list-title">{{ site.domain }}</strong>
-          <div class="dispatch-list-meta">
-            <span>{{ site.server_name }}</span>
-            <span>分配于 {{ work_time(site.assigned_at) }}</span>
-            {% if site.completed_at is not none %}
-            <span class="badge ok">已完成</span><span>完成于 {{ work_time(site.completed_at) }}</span>
-            {% else %}<span class="badge info">未完成</span>{% endif %}
-          </div>
-        </div>
-        <div class="dispatch-item-actions">
-          <a class="btn small" href="/tasks/sites/{{ site.id }}/deployment">SSH 部署</a>
-          {% if site.completed_at is none %}
-          <form method="post" action="/tasks/sites/{{ site.id }}/complete">
-            <input type="hidden" name="csrf" value="{{ csrf }}">
-            <button class="btn small" type="submit">标记完成</button>
-          </form>
-          {% endif %}
-        </div>
-      </li>
-      {% endfor %}
-    </ul>
-    {% endif %}
     {% set dispatchers = catalog | selectattr('kind', 'equalto', 'dispatcher') | list %}
     {% set migrations = catalog | selectattr('kind', 'equalto', 'migration') | list %}
     {% if not managed %}
@@ -206,5 +104,4 @@
     {% else %}<p class="empty-state">暂无任务记录</p>{% endif %}
   </section>
 </div>
-<script src="/static/dispatch.js" defer></script>
 {% endblock %}

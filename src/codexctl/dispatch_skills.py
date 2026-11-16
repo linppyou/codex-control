@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import re
 import sqlite3
 import stat
+import tempfile
 import zipfile
 import zlib
 from pathlib import Path
@@ -112,6 +114,40 @@ def list_skills(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 def get(conn: sqlite3.Connection, skill_id: str, *, with_archive: bool = False) -> sqlite3.Row | None:
     fields = "*" if with_archive else _FIELDS
     return conn.execute(f"SELECT {fields} FROM dispatch_skills WHERE id = ?", (skill_id,)).fetchone()
+
+
+def sync_user_skills(ctx: Context) -> None:
+    """在数据库事务内发布完整目录，并将本机普通用户链接到管理员版本。"""
+    catalog = ctx.conn.execute("SELECT * FROM dispatch_skills ORDER BY name").fetchall()
+    digest = hashlib.sha256()
+    for skill in catalog:
+        digest.update(f"{skill['name']}:{skill['sha256']}\n".encode())
+    releases = ctx.settings.state_dir / "skill-releases"
+    releases.mkdir(mode=0o755, exist_ok=True)
+    releases.chmod(0o755)
+    release = releases / digest.hexdigest()
+    if not release.exists():
+        with tempfile.TemporaryDirectory(dir=releases) as temporary:
+            staged = Path(temporary) / "skills"
+            staged.mkdir(mode=0o755)
+            staged.chmod(0o755)
+            for skill in catalog:
+                if hashlib.sha256(skill["archive"]).hexdigest() != skill["sha256"]:
+                    raise SkillError("Skill ZIP 校验失败")
+                unpack(skill["archive"], staged)
+            for path in staged.rglob("*"):
+                mode = path.stat().st_mode
+                path.chmod(0o755 if path.is_dir() or mode & stat.S_IXUSR else 0o644)
+            staged.rename(release)
+    # Keep older releases available to sessions that already resolved their paths.
+    target = ctx.settings.state_dir / "skills"
+    temporary_link = ctx.settings.state_dir / ".skills.tmp"
+    temporary_link.unlink(missing_ok=True)
+    temporary_link.symlink_to(release, target_is_directory=True)
+    os.replace(temporary_link, target)
+    for user in ctx.list_users(max(1, ctx.settings.min_uid)):
+        if user.name not in {"root", "admin"} and user.home.is_dir():
+            ctx.publisher.link_skills(user, target)
 
 
 def save(

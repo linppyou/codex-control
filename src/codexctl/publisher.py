@@ -3,7 +3,9 @@ from __future__ import annotations
 import errno
 import os
 import re
+import shutil
 import stat
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -105,34 +107,65 @@ class Publisher:
             os.close(fd)
 
     def _open_codex_dir(self, user: SysUser, create: bool) -> int:
+        return self._open_user_dir(user, ".codex", create)
+
+    def _open_user_dir(self, user: SysUser, name: str, create: bool) -> int:
         home_fd = os.open(user.home, os.O_RDONLY | os.O_DIRECTORY)
         flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
         try:
             try:
-                fd = os.open(".codex", flags, dir_fd=home_fd)
+                fd = os.open(name, flags, dir_fd=home_fd)
             except FileNotFoundError:
                 if not create:
                     raise
-                os.mkdir(".codex", 0o700, dir_fd=home_fd)
+                os.mkdir(name, 0o700, dir_fd=home_fd)
                 try:
-                    fd = os.open(".codex", flags, dir_fd=home_fd)
+                    fd = os.open(name, flags, dir_fd=home_fd)
                 except OSError as e2:
                     if e2.errno in (errno.ELOOP, errno.ENOTDIR):
-                        raise PublishError(f"{user.home}/.codex 不是普通目录（可能是软链接），拒绝操作") from e2
+                        raise PublishError(f"{user.home}/{name} 不是普通目录（可能是软链接），拒绝操作") from e2
                     raise
                 st = os.fstat(fd)
                 if stat.S_ISDIR(st.st_mode) and st.st_uid == os.geteuid():
                     os.fchown(fd, user.uid, user.gid)
             except OSError as e:
                 if e.errno in (errno.ELOOP, errno.ENOTDIR):
-                    raise PublishError(f"{user.home}/.codex 不是普通目录（可能是软链接），拒绝操作") from e
+                    raise PublishError(f"{user.home}/{name} 不是普通目录（可能是软链接），拒绝操作") from e
                 raise
         finally:
             os.close(home_fd)
         if os.fstat(fd).st_uid != user.uid:
             os.close(fd)
-            raise PublishError(f"{user.home}/.codex 的属主不是 {user.name}，拒绝操作")
+            raise PublishError(f"{user.home}/{name} 的属主不是 {user.name}，拒绝操作")
         return fd
+
+    def link_skills(self, user: SysUser, target: Path) -> None:
+        """替换用户的新旧 Skill 目录，目录操作不跟随用户提供的软链接。"""
+        for name in (".codex", ".agents"):
+            fd = self._open_user_dir(user, name, create=True)
+            try:
+                try:
+                    if os.readlink("skills", dir_fd=fd) == str(target):
+                        continue
+                except OSError:
+                    pass
+                temporary = ".skills.codexctl.tmp"
+                with suppress(FileNotFoundError):
+                    os.unlink(temporary, dir_fd=fd)
+                os.symlink(str(target), temporary, dir_fd=fd)
+                try:
+                    try:
+                        existing = os.stat("skills", dir_fd=fd, follow_symlinks=False)
+                    except FileNotFoundError:
+                        existing = None
+                    if existing is not None and stat.S_ISDIR(existing.st_mode):
+                        shutil.rmtree("skills", dir_fd=fd)
+                    os.rename(temporary, "skills", src_dir_fd=fd, dst_dir_fd=fd)
+                finally:
+                    with suppress(FileNotFoundError):
+                        os.unlink(temporary, dir_fd=fd)
+            finally:
+                os.close(fd)
 
     def link_user(self, user: SysUser, label: str, now: int) -> Path | None:
         """把 ~/.codex/auth.json 原子地指向账号文件；原有普通文件改名备份并返回备份路径。"""
