@@ -13,7 +13,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from zoneinfo import ZoneInfo
 
-from . import db, site_probe, site_registry
+from . import db, site_probe, site_registry, site_ssh
 from .context import Context
 from .site_registry import Server
 from .vault import VaultError
@@ -97,25 +97,12 @@ def parse_inventory(payload: str) -> list[Site]:
 def collect(server: Server, key: bytes) -> list[Site]:
     if not server.host_key:
         raise InventoryError("待配置 SSH 主机公钥")
-    host = server.host if server.port == 22 else f"[{server.host}]:{server.port}"
     try:
         with TemporaryDirectory(prefix="codexctl-site-ssh-") as directory:
-            key_path, known_hosts = Path(directory) / "key", Path(directory) / "known_hosts"
+            key_path = Path(directory) / "key"
             key_path.touch(mode=0o600)
             key_path.write_bytes(key)
-            known_hosts.write_text(f"{host} {server.host_key}\n", encoding="ascii")
-            proc = subprocess.run(
-                [
-                    "ssh", "-F", "/dev/null", "-T", "-o", "BatchMode=yes",
-                    "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known_hosts}",
-                    "-o", "GlobalKnownHostsFile=/dev/null", "-o", "UpdateHostKeys=no",
-                    "-o", "HostKeyAlgorithms=ssh-ed25519", "-o", "IdentitiesOnly=yes",
-                    "-o", "IdentityAgent=none", "-o", "ConnectTimeout=6",
-                    "-i", str(key_path), "-p", str(server.port),
-                    f"root@{server.host}", "codexctl-site-inventory",
-                ],
-                stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", timeout=15,
-            )
+            proc = site_ssh.run(server, key_path, "codexctl-site-inventory", timeout=15)
     except subprocess.TimeoutExpired as exc:
         raise InventoryError("SSH 采集超时") from exc
     except (OSError, UnicodeError) as exc:

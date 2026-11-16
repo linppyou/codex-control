@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}WP 建站中心 · codexctl{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>WP 建站中心</h1>
+    <div class="sub">从服务器上的模板创建 WordPress 站点，并跟进 SSL 证书。</div>
+  </div>
+</div>
+
+{% if server %}
+<div class="wp-layout" id="wp-center" data-server="{{ server.id }}" data-page="{{ page }}">
+  <nav class="wp-servers panel flush" aria-label="建站服务器">
+    <div class="panel-head"><h2>目标服务器</h2></div>
+    <ul>
+      {% for item in servers %}
+      <li><a href="{{ page_url(item.id) }}"{% if item.id == server.id %} aria-current="page"{% endif %}>
+        <strong>{{ item.name }}</strong><span class="mono">{{ item.host }}</span>
+      </a></li>
+      {% endfor %}
+    </ul>
+    <div class="wp-server-footer"><a href="/servers/{{ server.id }}">服务器设置</a></div>
+  </nav>
+
+  <div class="wp-workspace">
+    <section class="panel flush" aria-labelledby="wp-create-title">
+      <div class="panel-head">
+        <h2 id="wp-create-title">创建站点</h2>
+        <button type="button" class="btn small" id="wp-refresh-catalog">刷新模板</button>
+      </div>
+      <form class="panel-body wp-form" id="wp-create" method="post" action="/wp-center/{{ server.id }}/create">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <label class="wp-field">新站域名
+          <input type="text" name="domain" maxlength="253" placeholder="shop.example.com" autocapitalize="none" spellcheck="false" required>
+        </label>
+        <label class="wp-field">网站模板
+          <select name="template" required disabled><option value="">正在读取模板…</option></select>
+        </label>
+        <label class="wp-field">数据库 SQL
+          <select name="sql" disabled><option value="">自动选择模板内 SQL</option></select>
+        </label>
+        <label class="wp-field">模板原站域名
+          <input type="text" name="old_domain" maxlength="253" placeholder="可自动识别时留空" autocapitalize="none" spellcheck="false">
+        </label>
+        <p class="wp-full hint" id="wp-template-note" aria-live="polite" hidden></p>
+        <label class="wp-full wp-check"><input type="checkbox" name="www" value="true"> 同时绑定 www 子域名</label>
+        <div class="wp-full wp-actions">
+          <p class="hint">证书会在建站后自动申请。请将域名解析到目标服务器。</p>
+          <button type="submit" class="btn primary" disabled>创建站点</button>
+        </div>
+        <div id="wp-submit-note" class="wp-full flash" role="status" hidden></div>
+      </form>
+    </section>
+
+    <section class="panel flush" id="wp-tasks" aria-labelledby="wp-tasks-title">
+      <div class="panel-head">
+        <h2 id="wp-tasks-title">建站与证书任务</h2>
+        <button type="button" class="btn small" id="wp-refresh">刷新任务</button>
+      </div>
+      <div id="wp-history" aria-busy="true"><p class="empty-state" role="status">正在读取任务…</p></div>
+    </section>
+  </div>
+</div>
+<noscript><p class="flash bad">启用 JavaScript 后即可读取模板和任务。</p></noscript>
+<script src="/static/wp-center.js" defer></script>
+{% else %}
+<p class="panel empty-state">请先在<a href="/servers">服务器</a>页面登记一台宝塔服务器。</p>
+{% endif %}
+{% endblock %}

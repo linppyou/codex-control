@@ -316,10 +316,11 @@ def create_app(
         resp.delete_cookie(SESSION_COOKIE, **cookie_attrs())
         return resp
 
-    from . import server_views, views
+    from . import server_views, views, wp_views
 
     views.register(app)
     server_views.register(app)
+    wp_views.register(app)
     if gateway:
         from . import gateway as gateway_views
 
