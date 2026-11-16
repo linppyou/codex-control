@@ -204,6 +204,24 @@ Web 面板启动时，如不存在 `admin` 登录账号，会以密码 `root@roo
 
 已有站点服务器也需用第 2 步更新采集脚本。脚本从宝塔记录的站点根目录读取 WordPress 的静态数据库配置，通过服务器上的 MySQL 或 MariaDB 客户端只读查询本机数据库。「产品」统计已发布的 WooCommerce 产品，另行显示状态为 `importing` 的记录数。「菜单」统计含站点新增菜单项的经典导航菜单和含导航链接的已发布区块菜单。经典菜单查询按菜单标识和菜单项 ID 排除两种共享模板的预置项。旧采集器、缺少 WordPress 配置和查询失败会显示「导入情况待确认」。SSH 同步失败或超过巡检有效期时，面板会标明保留的上次数据。
 
+## WP 建站中心
+
+总控使用「服务器」里登记的 SSH 地址和已固定的主机公钥。每台目标服务器需要已安装宝塔 WP 建站中心（`ai_center`），并已配置可用的 PHP 和数据库环境。
+
+1. 在总控主机以 root 生成一把建站专用密钥。默认路径可通过 `wp_ssh_key` 修改。已存在的密钥可继续使用。
+   ```bash
+   ssh-keygen -t ed25519 -N '' -C codexctl-wp-center -f /etc/codexctl/wp-center.key
+   ```
+2. 把 `deploy/wp-center.py` 安装到每台目标服务器。将下面这条授权行追加到目标服务器的 `/root/.ssh/authorized_keys`，用总控生成的完整公钥替换 `<公钥>`。确保脚本由 root 所有。
+   ```bash
+   install -D -o root -g root -m 0755 wp-center.py /usr/local/libexec/codexctl-wp-center
+   ```
+   ```text
+   restrict,command="/usr/local/libexec/codexctl-wp-center" <公钥>
+   ```
+3. 升级总控 Python 包，重启 `codexctl-web`。用 `admin` 打开「WP 建站中心」，切换到目标服务器，选择已登记的模板 ZIP，或放在目标服务器 `/www/wwwroot/default` 供建站中心发现的 ZIP。SQL 可从模板内选择，也可选已登记的独立 SQL。总控能从 SQL 唯一识别原域名时，该字段可留空。
+4. 将新域名解析到目标服务器后提交建站。宝塔后台负责创建站点、恢复模板和申请证书。在任务列表中查看当前状态。站点建成后证书申请、安装或覆盖失败时，点击对应域名旁的「重试 SSL」。使用「下一页」查找较早的宝塔任务。
+
 ## API 网关
 
 ### 启用

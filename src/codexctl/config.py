@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .sysusers import valid_name
 
-_PATH_KEYS = {"state_dir", "key_file", "codex_bin", "codex_wrapper", "codex_requirements"}
+_PATH_KEYS = {"state_dir", "key_file", "codex_bin", "codex_wrapper", "codex_requirements", "wp_ssh_key"}
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,7 @@ class Settings:
     web_cookie_secure: bool = True
     web_socket: str = "/run/codexctl/web.sock"
     web_socket_group: str = "www"
+    wp_ssh_key: Path = Path("/etc/codexctl/wp-center.key")
     web_system_users: tuple[str, ...] = ()
     hidden_users: tuple[str, ...] = ()
     codex_wrapper: Path = Path("/usr/local/bin/codex")

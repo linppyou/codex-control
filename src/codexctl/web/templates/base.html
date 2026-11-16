@@ -22,6 +22,7 @@
     {% endif %}
     {% endfor %}
     <a href="/servers"{% if path == "/servers" or path.startswith("/servers/") %} class="on" aria-current="page"{% endif %}>服务器</a>
+    <a href="/wp-center"{% if path == "/wp-center" or path.startswith("/wp-center/") %} class="on" aria-current="page"{% endif %}>WP 建站中心</a>
     {% else %}
     <a href="/users/{{ admin }}" class="on" aria-current="page">我的数据</a>
     {% endif %}
