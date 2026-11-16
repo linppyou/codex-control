@@ -288,7 +288,7 @@ curl -fsS -H "Authorization: Bearer ${CODEXCTL_API_KEY}" https://codex-control.p
 任务面板在 managed 模式下使用本机 Linux 用户及其已有 Codex 账号绑定。任务预览和确认由 Web 服务处理，发送由独立的 `codexctl-dispatch.service` 处理。升级 Python 包和 Nginx 配置，校验 Nginx 后重新加载，再把 `deploy/codexctl-dispatch.service` 安装到 `/etc/systemd/system/`，执行 `systemctl daemon-reload` 及 `systemctl enable --now codexctl-dispatch`。升级后重启 Web 服务以初始化新表。
 
 1. 管理员在「任务 → Skill 管理」分别上传分发 Skill 和迁移 Skill 的 ZIP。ZIP 可直接使用发布包，最多 8 MiB，面板从 `SKILL.md` 读取名称及版本。包作为该任务的工程文件交给 Codex，发布包的安装器由面板跳过。
-2. 成员在「任务」上传 CSV 或 XLSX，最大 512 KiB，表头为 `原域名,新域名,备注,折扣`。CSV 支持 UTF-8 或 GB18030 编码，XLSX 读取首个工作表，公式单元格需先粘贴为值。系统按新域名查询所有服务器最近一次成功巡检的绑定域名。结果同时显示导入内容与逐行匹配结果，全部行有效且站点匹配唯一时生成一份批次提示词。出现未匹配、重复或无效数据时，修正并重新上传后生成和执行；旧批次中的未匹配站点也需修正后重新上传。备注可留空。折扣可填写 `3` 或 `8.5折` 等数值，留空时保留目标站的真实商品价格与配送配置。
+2. 成员在「任务」上传 CSV 或 XLSX，最大 512 KiB，须包含 `网站,新域名,备注,折扣` 四列表头，顺序不限，其他列自动忽略。CSV 支持 UTF-8 或 GB18030 编码，XLSX 读取首个工作表，公式单元格需先粘贴为值。系统按新域名查询所有服务器最近一次成功巡检的绑定域名。结果同时显示导入内容与逐行匹配结果，全部行有效且站点匹配唯一时生成一份批次提示词。出现未匹配、重复或无效数据时，修正并重新上传后生成和执行；旧批次中的未匹配站点也需修正后重新上传。备注可留空。折扣可填写 `3` 或 `8.5折` 等数值，留空默认 `3`（3 折）。
 3. 生成的提示词提供目标服务器的 SSH 主机及端口。实际部署使用执行环境中配置的 SSH 登录，独立子会话也需要能连接同一目标。站点清单的受限 SSH 密钥用于巡检。升级前已经确认的宝塔 API 任务继续使用原有凭据环境变量。
 4. 成员核对批次提示词并确认后，Worker 启动该成员的 Codex App Server。原始上传文件以 `upload.csv` 或 `upload.xlsx` 原样存入任务目录，同时提供包含全部任务的 `task.csv`、逐行部署清单 `targets.json` 和所选 Skill。提示词引用文件路径，并列出各目标域名对应的部署服务器及 SSH 端口。Web 进程和 Worker 可以独立重启，Worker 中断时，状态未知的发送保留原会话 ID 供核对。
 5. 面板显示实际的 Codex 会话 ID、轮次 ID 和发送回执。任务文件位于 `state_dir/dispatch/<任务ID>`，权限属于执行用户。App Server 回执表示已交接，站点上线和验收以 Codex 后续结果为准。

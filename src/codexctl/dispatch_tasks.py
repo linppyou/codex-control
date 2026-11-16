@@ -21,7 +21,7 @@ from .context import Context
 from .sysusers import SysUser, UserError, valid_name
 
 MAX_CSV_UPLOAD = 512 * 1024
-IMPORT_COLUMNS = ("原域名", "新域名", "备注", "折扣")
+IMPORT_COLUMNS = ("网站", "新域名", "备注", "折扣")
 _LEGACY_TARGET_FIELDS = """
     SELECT t.id, t.server_id, t.server_revision, t.domain, t.endpoint, t.credential_env,
            t.project, t.users, s.name AS server_name, s.host AS server_host, s.port AS server_port
@@ -108,12 +108,12 @@ def parse_import(raw: bytes, filename: str = "tasks.csv") -> list[ImportRow]:
     rows = []
     try:
         header = [value.strip() for value in next(reader, [])]
-        if len(header) != len(IMPORT_COLUMNS) or set(header) != set(IMPORT_COLUMNS):
-            raise TaskError("CSV 表头须包含原域名、新域名、备注、折扣四列")
+        columns = _import_columns(header, "CSV")
         line = reader.line_num + 1
         for values in reader:
+            values = [values[index] if index < len(values) else "" for index in columns]
             if any(value.strip() for value in values):
-                rows.append(_import_row(line, header, values))
+                rows.append(_import_row(line, values))
             line = reader.line_num + 1
     except csv.Error as exc:
         raise TaskError(f"CSV 第 {reader.line_num} 行格式有误，请检查引号及字段长度") from exc
@@ -135,20 +135,15 @@ def _parse_xlsx(raw: bytes) -> list[ImportRow]:
         sheet.reset_dimensions()
         cells = sheet.iter_rows()
         header = [str(cell.value).strip() if cell.value is not None else "" for cell in next(cells, ())]
-        while header and not header[-1]:
-            header.pop()
-        if len(header) != len(IMPORT_COLUMNS) or set(header) != set(IMPORT_COLUMNS):
-            raise TaskError("XLSX 首个工作表的表头须包含原域名、新域名、备注、折扣四列")
+        columns = _import_columns(header, "XLSX 首个工作表")
         rows = []
         for line, values in enumerate(cells, start=2):
-            fields = [str(cell.value) if cell.value is not None else "" for cell in values]
+            selected = [values[index] if index < len(values) else None for index in columns]
+            fields = [str(cell.value) if cell is not None and cell.value is not None else "" for cell in selected]
             if not any(value.strip() for value in fields):
                 continue
-            while len(fields) > len(header) and not fields[-1]:
-                fields.pop()
-            fields.extend([""] * max(0, len(header) - len(fields)))
-            row = _import_row(line, header, fields)
-            if any(cell.data_type in {"f", "e"} for cell in values):
+            row = _import_row(line, fields)
+            if any(cell is not None and cell.data_type in {"f", "e"} for cell in selected):
                 row.error = "单元格含公式或错误值，请粘贴为值后重新导入"
             rows.append(row)
         if not rows:
@@ -163,23 +158,24 @@ def _parse_xlsx(raw: bytes) -> list[ImportRow]:
             workbook.close()
 
 
-def _import_row(line: int, header: list[str], values: list[str]) -> ImportRow:
-    fields = dict(zip(header, values))
-    row = ImportRow(line, tuple(fields.get(column, "") for column in IMPORT_COLUMNS))
-    row.notes = fields.get("备注", "")
-    row.discount = fields.get("折扣", "").strip()
-    if len(values) != len(header):
-        row.error = "须包含原域名、新域名、备注、折扣 4 列"
-        return row
+def _import_columns(header: list[str], label: str) -> list[int]:
+    if any(header.count(column) != 1 for column in IMPORT_COLUMNS):
+        raise TaskError(f"{label}表头须包含网站、新域名、备注、折扣四列，且各列只能出现一次")
+    return [header.index(column) for column in IMPORT_COLUMNS]
+
+
+def _import_row(line: int, values: list[str]) -> ImportRow:
+    fields = dict(zip(IMPORT_COLUMNS, values))
+    discount = fields["折扣"].strip() or "3"
+    row = ImportRow(line, (*values[:3], discount), notes=fields["备注"], discount=discount)
     try:
         row.domain = target_domain(fields["新域名"])
-        row.source = source_url(fields["原域名"])
+        row.source = source_url(fields["网站"])
         if urlsplit(row.source).hostname == row.domain:
-            raise TaskError("原域名和新域名须不同")
-        if row.discount:
-            discount = Decimal(row.discount.removesuffix("折"))
-            if not discount.is_finite() or not 0 < discount <= 10:
-                raise InvalidOperation
+            raise TaskError("网站和新域名须不同")
+        discount = Decimal(row.discount.removesuffix("折"))
+        if not discount.is_finite() or not 0 < discount <= 10:
+            raise InvalidOperation
     except TaskError as exc:
         row.error = str(exc)
     except InvalidOperation:
@@ -227,7 +223,7 @@ def _payload(rows: list[ImportRow], snapshot: dict, skills: list[dict], task_id:
     title = f"{snapshot['filename']} · {len(rows)} 个任务"
     table = io.StringIO(newline="")
     writer = csv.writer(table)
-    writer.writerow(("网站", "新域名", "备注", "折扣"))
+    writer.writerow(IMPORT_COLUMNS)
     writer.writerows((row.source or row.values[0], row.domain or row.values[1], row.notes, row.discount)
                      for row in rows)
     csv_text = table.getvalue()
@@ -259,7 +255,7 @@ def _payload(rows: list[ImportRow], snapshot: dict, skills: list[dict], task_id:
         "使用执行环境已配置的 SSH 连接进行只读检查，核对主机身份、域名绑定、虚拟主机、WordPress 根目录和权限。"
         "SSH 连接不可用、身份无法核实或权限不足时，完成可进行的采集和准备，暂停该站远端写入并记录阻塞，继续其他站。"
         "每行明确填写的折扣按所选迁移 Skill 的规则处理，核对适用商品并保留更低的现有促销价。"
-        "折扣留空的行保留目标站的真实商品价格与配送配置。\n"
+        "导入时折扣留空的行已按 3 折填入 task.csv，执行时以 task.csv 中的折扣为准。\n"
         "首次交接每站时提供两个 Skill 的必要文件、本行备注与折扣、目标域名和 SSH 主机与端口。"
         "子会话使用自身执行环境中配置的 SSH 连接。同站写入互斥。"
         "记录真实会话标识并持续跟进全部任务。创建结果不明时先查询，避免重复派发。"

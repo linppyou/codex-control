@@ -71,7 +71,7 @@ def inventory(ctx, server, *sites):
 
 def import_file(client, csrf, form, content=None, filename="tasks.csv", **extra):
     if content is None:
-        content = f'原域名,新域名,备注,折扣\n{form["source"]},{form["target"]},"产品, 海报",8.5折\n'.encode()
+        content = f'网站,新域名,备注,折扣\n{form["source"]},{form["target"]},"产品, 海报",8.5折\n'.encode()
     return client.post(
         "/tasks/import", data=dict(csrf=csrf, dispatcher=form["dispatcher"], migration=form["migration"], **extra),
         files={"task_csv": (filename, content, "application/octet-stream")},
@@ -137,7 +137,7 @@ def test_import_matches_across_servers_and_renders_each_row(ctx):
     inventory(ctx, second, ("8", ["shared.example.com"]), ("10", ["new.example.com"]))
     alice, csrf = session(ctx, create_app(ctx), "alice")
     content = (
-        '折扣,原域名,备注,新域名\r\n'
+        '折扣,网站,备注,新域名\r\n'
         '8,one.example.com,"长备注,<草稿>\n下一行",HTTPS://WWW.SHOP.EXAMPLE.COM./\r\n'
         ',two.example.com,,new.example.com\r\n'
         '3,three.example.com,,shared.example.com\r\n'
@@ -156,7 +156,7 @@ def test_import_matches_across_servers_and_renders_each_row(ctx):
     assert "查看批次提示词" not in response.text
     assert ctx.conn.execute("SELECT COUNT(*) FROM dispatch_tasks").fetchone()[0] == 0
     content = (
-        '折扣,原域名,备注,新域名\r\n'
+        '折扣,网站,备注,新域名\r\n'
         '8,one.example.com,"长备注,<草稿>\n下一行",HTTPS://WWW.SHOP.EXAMPLE.COM./\r\n'
         ',two.example.com,,new.example.com\r\n'
     ).encode("gb18030")
@@ -196,12 +196,63 @@ def workbook_bytes(rows):
     return stream.getvalue()
 
 
+@pytest.mark.parametrize("extension", ["csv", "xlsx"])
+def test_import_ignores_extra_columns_and_defaults_discount(ctx, extension):
+    form = task_form(ctx)
+    data = [
+        ["额外列", " 折扣 ", "备注", "网站", "新域名", "额外列", ""],
+        ["=1/0", "  ", "产品,海报\n第二行", form["source"], form["target"], "#VALUE!", "忽略末列"],
+        ["仅额外列有值", "", "", "", "", "=1/0"],
+    ]
+    if extension == "xlsx":
+        raw = workbook_bytes(data)
+    else:
+        stream = io.StringIO(newline="")
+        csv.writer(stream).writerows(data)
+        raw = stream.getvalue().encode("utf-8-sig")
+    rows = dispatch_tasks.parse_import(raw, f"tasks.{extension}")
+    assert len(rows) == 1
+    assert rows[0].line == 2 and rows[0].error == ""
+    assert rows[0].discount == "3"
+    assert rows[0].values == (form["source"], form["target"], "产品,海报\n第二行", "3")
+
+    alice, csrf = session(ctx, create_app(ctx), "alice")
+    response = import_file(alice, csrf, form, raw, filename=f"tasks.{extension}")
+    assert response.status_code == 200 and "已匹配 1 行" in response.text
+    assert "仅额外列有值" not in response.text
+    task = ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone()
+    assert list(csv.reader(io.StringIO(task["csv"])))[1][-1] == "3"
+    assert "已按 3 折填入 task.csv" in task["prompt"]
+    assert task["upload"] == raw
+
+
+@pytest.mark.parametrize("extension", ["csv", "xlsx"])
+@pytest.mark.parametrize("header", [
+    ["原域名", "新域名", "备注", "折扣"],
+    ["网站", "新域名", "折扣"],
+    ["网站", "新域名", "备注", "折扣", "网站"],
+])
+def test_import_requires_unique_required_headers(extension, header):
+    raw = workbook_bytes([header]) if extension == "xlsx" else (",".join(header) + "\n").encode()
+    with pytest.raises(dispatch_tasks.TaskError, match="网站、新域名、备注、折扣"):
+        dispatch_tasks.parse_import(raw, f"tasks.{extension}")
+
+
+def test_csv_import_pads_empty_trailing_fields_and_ignores_unheaded_values():
+    rows = dispatch_tasks.parse_import(
+        "网站,新域名,备注,折扣,其他\nsource.example.com,shop.example.com\n"
+        "other.example.com,new.example.com,,8.5折,忽略,也忽略\n".encode()
+    )
+    assert [row.error for row in rows] == ["", ""]
+    assert [row.discount for row in rows] == ["3", "8.5折"]
+
+
 def test_batch_queue_blocks_overlapping_site_and_accepts_legacy_task(ctx):
     form = task_form(ctx)
     server = site_registry.get(ctx.conn, form["server_id"])
     inventory(ctx, server, ("8", ["shop.example.com"]), ("9", ["second.example.com", "www.second.example.com"]))
     content = (
-        "原域名,新域名,备注,折扣\n"
+        "网站,新域名,备注,折扣\n"
         "source.example.com,shop.example.com,,\n"
         "other.example.com,second.example.com,,\n"
     ).encode()
@@ -212,7 +263,7 @@ def test_batch_queue_blocks_overlapping_site_and_accepts_legacy_task(ctx):
     assert dispatch_worker.claim(ctx)["id"] == alice_id
 
     rows = dispatch_tasks.parse_import(
-        "原域名,新域名,备注,折扣\nsource.example.com,www.second.example.com,,\n".encode()
+        "网站,新域名,备注,折扣\nsource.example.com,www.second.example.com,,\n".encode()
     )
     bob_id = dispatch_tasks.create_previews(ctx, "bob", rows, form["dispatcher"], form["migration"])
     bob_task = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (bob_id,)).fetchone()
@@ -231,7 +282,7 @@ def test_xlsx_import_shares_matching_and_preserves_values(ctx):
     form = task_form(ctx)
     alice, csrf = session(ctx, create_app(ctx), "alice")
     raw = workbook_bytes([
-        ["折扣", "新域名", "备注", "原域名"],
+        ["折扣", "新域名", "备注", "网站"],
         [8.5, form["target"], "产品,海报\n第二行", form["source"]],
         [],
         [None, "missing.example.com", None, "other.example.com"],
@@ -245,9 +296,9 @@ def test_xlsx_import_shares_matching_and_preserves_values(ctx):
     assert ctx.conn.execute("SELECT COUNT(*) FROM dispatch_tasks").fetchone()[0] == 0
     rows = dispatch_tasks.parse_import(raw, "任务.xlsx")
     assert [row.line for row in rows] == [2, 4, 5]
-    assert rows[1].values[2:] == ("", "")
+    assert rows[1].values[2:] == ("", "3")
     raw = workbook_bytes([
-        ["折扣", "新域名", "备注", "原域名"],
+        ["折扣", "新域名", "备注", "网站"],
         [8.5, form["target"], "产品,海报\n第二行", form["source"]],
     ])
     response = import_file(alice, csrf, form, raw, filename="任务.XLSX")
@@ -379,7 +430,7 @@ def test_worker_attaches_both_packages_and_persists_acceptance(ctx, tmp_path, mo
     second = site_registry.create(ctx, "admin", "第二台", "8.8.8.8", "2222", "")
     inventory(ctx, second, ("9", ["second.example.com"]))
     raw = (
-        f'原域名,新域名,备注,折扣\n{form["source"]},{form["target"]},产品海报,8.5折\n'
+        f'网站,新域名,备注,折扣\n{form["source"]},{form["target"]},产品海报,8.5折\n'
         'other.example.com,second.example.com,第二站,3\n'
     ).encode("utf-8-sig")
     rows = dispatch_tasks.parse_import(raw)
@@ -426,7 +477,7 @@ for line in sys.stdin:
         assert targets[1]['target']['server_port'] == 2222
         assert len(Path('task.csv').read_text().splitlines()) == 3
         assert Path('upload.csv').read_bytes().startswith(bytes([239, 187, 191]))
-        assert Path('upload.csv').read_text(encoding='utf-8-sig').startswith('原域名,新域名,备注,折扣')
+        assert Path('upload.csv').read_text(encoding='utf-8-sig').startswith('网站,新域名,备注,折扣')
         assert '产品海报' not in prompt['text'] and 'other.example.com' not in prompt['text']
         assert 'shop.example.com' in prompt['text'] and 'second.example.com' in prompt['text']
         for item in (dispatcher, migration):
@@ -503,7 +554,7 @@ def test_members_cancel_own_tasks_only(ctx, status):
 
 def test_cancelled_claim_is_not_started(ctx, tmp_path, monkeypatch):
     form = task_form(ctx)
-    rows = dispatch_tasks.parse_import(f'原域名,新域名,备注,折扣\n{form["source"]},{form["target"]},,\n'.encode())
+    rows = dispatch_tasks.parse_import(f'网站,新域名,备注,折扣\n{form["source"]},{form["target"]},,\n'.encode())
     task_id = dispatch_tasks.create_previews(ctx, "alice", rows, form["dispatcher"], form["migration"])
     task = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()
     dispatch_tasks.confirm(ctx, task, "alice")
@@ -547,7 +598,7 @@ def test_old_partial_batch_cannot_be_confirmed_or_executed(ctx, tmp_path, monkey
 def test_legacy_preview_rechecks_assignment_before_confirmation(ctx):
     form = task_form(ctx)
     rows = dispatch_tasks.parse_import(
-        f'原域名,新域名,备注,折扣\n{form["source"]},{form["target"]},,\n'.encode()
+        f'网站,新域名,备注,折扣\n{form["source"]},{form["target"]},,\n'.encode()
     )
     task_id = dispatch_tasks.create_previews(ctx, "alice", rows, form["dispatcher"], form["migration"])
     target_id = "a" * 32
