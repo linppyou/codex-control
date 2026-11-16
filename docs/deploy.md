@@ -271,10 +271,10 @@ curl -fsS -H "Authorization: Bearer ${CODEXCTL_API_KEY}" https://codex-control.p
 
 ## 网站迁移任务面板
 
-任务面板在 managed 模式下使用本机 Linux 用户及其已有 Codex 账号绑定。任务预览和确认由 Web 服务处理，发送由独立的 `codexctl-dispatch.service` 处理。升级 Python 包和 Nginx 配置，校验 Nginx 后重新加载，再把 `deploy/codexctl-dispatch.service` 安装到 `/etc/systemd/system/`，执行 `systemctl daemon-reload` 及 `systemctl enable --now codexctl-dispatch`。升级后重启 Web 服务以初始化新表。
+任务面板在 managed 模式下使用本机 Linux 用户及其已有 Codex 账号绑定。任务预览和确认由 Web 服务处理，发送由独立的 `codexctl-dispatch.service` 处理。升级 Python 包和 Nginx 配置，校验 Nginx 后重新加载，再把 `deploy/codexctl-dispatch.service` 安装到 `/etc/systemd/system/`，执行 `systemctl daemon-reload` 及 `systemctl enable --now codexctl-dispatch`。升级已有部署时重启 Web 和任务发送服务以应用数据库迁移。
 
 1. 管理员在「任务 → Skill 管理」分别上传分发 Skill 和迁移 Skill 的 ZIP。ZIP 可直接使用发布包，最多 8 MiB，面板从 `SKILL.md` 读取名称及版本。包作为该任务的工程文件交给 Codex，发布包的安装器由面板跳过。
-2. 管理员在「任务 → 目标站授权」选择现有服务器，填写目标域名、宝塔 AI 装修 HTTPS 接口、凭据环境变量名、允许执行的用户名。远程分发时填写执行用户的 Codex 环境可访问的项目名称或 ID。站点清单的 SSH 密钥仅供采集。部署接口的凭据应限定在授权站点，并允许指定的 Linux 执行用户使用。
-3. 在仅 root 可读的 `/etc/codexctl/dispatch.env` 中配置对应的专用凭据环境变量，修改后重启 `codexctl-dispatch`。Worker 只把当前任务明确引用的部署凭据传给执行用户的 Codex 进程。接口地址和提示词中只放凭据引用。
-4. 用户在「任务」填写原站网址、选择服务器及目标站和两个 Skill。核对提示词并勾选确认后，Worker 启动该用户的 Codex App Server，用任务专属目录中的 `task.csv` 与两个明确的 Skill 输入启动会话。管理员代提交时选择一个已有账号绑定且获目标站授权的普通用户。Web 进程和 Worker 可以独立重启，Worker 中断时，状态未知的发送保留原会话 ID 供核对。
+2. 管理员在「任务」选择服务器和执行用户，可勾选同一台服务器的多个待分配站点一起提交。站点来自最近一次成功巡检，并按北京时间的建站日期分组。成员可手动标记完成，管理员通过「分配记录」查看分配时间、完成时间，并按分配日期和完成状态筛选。
+3. 用户在已分配站点旁打开「SSH 部署」查看主机和端口，并在实际执行部署的用户环境中配置 SSH 登录。独立子会话也需要能连接同一目标。可以先生成和发送任务，远端部署通过 SSH 直接操作 WordPress、站点文件和数据库。执行前需核对主机身份、目标域名、站点目录和权限。站点巡检的受限密钥仅供采集。升级后，旧部署方式生成的预览或待发送任务需重新生成 SSH 预览。
+4. 用户在「任务」填写原站网址、选择服务器、已分配的目标站和两个 Skill。核对提示词并勾选确认后，Worker 启动该用户的 Codex App Server，用任务专属目录中的 `task.csv` 与两个明确的 Skill 输入启动会话。Web 进程和 Worker 可以独立重启，Worker 中断时，状态未知的发送保留原会话 ID 供核对。
 5. 面板显示实际的 Codex 会话 ID、轮次 ID 和发送回执。任务文件位于 `state_dir/dispatch/<任务ID>`，权限属于执行用户，由 Codex 使用。若所选分发 Skill 还需要创建远程项目子会话、访问浏览器或运行迁移引擎，执行用户的 Codex 环境应提供相应工具、工作目录和依赖。App Server 回执表示已交接，站点上线和验收以 Codex 后续结果为准。

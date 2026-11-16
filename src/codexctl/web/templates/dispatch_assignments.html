@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}分配记录 · codexctl{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <div class="crumb"><a href="/tasks">任务</a></div>
+    <h1>分配记录</h1>
+  </div>
+</header>
+<section class="panel flush">
+  <form class="panel-body form-row dispatch-work-filters" method="get" action="/tasks/assignments">
+    <label>分配日期 <input type="date" name="day" value="{{ day }}"></label>
+    <label>完成状态
+      <select name="status">
+        <option value="">全部</option>
+        <option value="pending"{% if filter_status == 'pending' %} selected{% endif %}>未完成</option>
+        <option value="completed"{% if filter_status == 'completed' %} selected{% endif %}>已完成</option>
+      </select>
+    </label>
+    <button class="btn" type="submit">筛选</button>
+    {% if day or filter_status %}<a class="btn ghost" href="/tasks/assignments">清除筛选</a>{% endif %}
+  </form>
+  <div class="table-wrap" data-assignment-records>
+    {% if records %}
+    <table class="dispatch-work-table" role="table">
+      <thead><tr><th>站点</th><th>负责人</th><th>状态</th><th>分配时间</th><th>完成时间</th></tr></thead>
+      <tbody>
+        {% for record in records %}
+        <tr role="row">
+          <td role="cell"><strong>{{ record.domain }}</strong><div class="hint">{{ record.server_name }}</div></td>
+          <td role="cell" data-label="负责人">{{ record.username }}</td>
+          <td role="cell" data-label="状态">{% if record.completed_at is not none %}<span class="badge ok">已完成</span>{% else %}<span class="badge info">未完成</span>{% endif %}</td>
+          <td role="cell" class="nowrap" data-label="分配时间">{{ work_time(record.assigned_at) }}</td>
+          <td role="cell" class="nowrap" data-label="完成时间">{{ work_time(record.completed_at) if record.completed_at is not none else '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<p class="empty-state">{{ '没有符合条件的分配记录' if day or filter_status else '暂无分配记录' }}</p>{% endif %}
+  </div>
+</section>
+<script src="/static/dispatch.js" defer></script>
+{% endblock %}

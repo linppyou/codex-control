@@ -27,12 +27,6 @@
       <label>目标站域名
         <input type="text" name="domain" value="{{ entry.domain if entry else '' }}" maxlength="253" placeholder="shop.example.com" required>
       </label>
-      <label class="dispatch-wide">宝塔 AI 装修接口
-        <input type="url" name="endpoint" value="{{ entry.endpoint if entry else '' }}" maxlength="2048" placeholder="https://panel.example.com/plugin?…" required>
-      </label>
-      <label>凭据环境变量
-        <input type="text" name="credential_env" value="{{ entry.credential_env if entry else '' }}" maxlength="68" placeholder="BAOTA_SHOP_API_KEY" required>
-      </label>
       <label>Codex 项目（可选）
         <input type="text" name="project" value="{{ entry.project if entry else '' }}" maxlength="128" placeholder="项目名称或 ID">
       </label>

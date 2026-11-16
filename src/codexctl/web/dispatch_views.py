@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from datetime import date, datetime, time, timedelta
+from urllib.parse import urlencode
 
 from fastapi import Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
-from .. import dispatch_skills, dispatch_tasks, repo, site_registry
+from .. import dispatch_skills, dispatch_tasks, repo, site_registry, sites
 from .app import current_admin, current_user
 from .server_views import _time
 from .views import _redirect
@@ -16,6 +18,10 @@ STATUS = {
 }
 TURN_STATUS = {"inProgress": "Codex 正在处理", "completed": "Codex 轮次已结束",
                "failed": "Codex 轮次失败", "interrupted": "Codex 轮次已中断", "unknown": "Codex 轮次待核对"}
+
+
+def work_time(timestamp: int | None) -> str:
+    return datetime.fromtimestamp(timestamp, sites.BEIJING).strftime("%Y-%m-%d %H:%M") if timestamp is not None else "未知"
 
 
 def register(app) -> None:
@@ -29,27 +35,52 @@ def register(app) -> None:
             raise HTTPException(404, "任务不存在")
         return row
 
-    def task_page(request, who, data=None, *, status=200, err=""):
+    def task_page(request, who, data=None, *, server_id="", selected_sites=(), selected_user="", status=200, err=""):
         user, csrf = who
+        assigning = user == "admin" and data is None
+        pending = []
         with lock:
-            targets = dispatch_tasks.list_targets(ctx.conn, user)
-            catalog = dispatch_skills.list_skills(ctx.conn)
-            users = [item.username for item in repo.all_active(ctx.conn)] if user == "admin" else []
+            if assigning:
+                inventories = sites.snapshots(ctx.conn)
+                for server in site_registry.list_servers(ctx.conn):
+                    choices = dispatch_tasks.pending_sites(ctx.conn, server, inventories.get(server.id))
+                    if choices:
+                        by_date = {}
+                        for site in choices:
+                            date = sites.deployment_date(site.get("created_at"))
+                            by_date.setdefault(date, []).append(site)
+                        dates = sorted(by_date, key=lambda date: date or "", reverse=True)
+                        pending.append((server, [(date, by_date[date]) for date in dates]))
+            target_user = ((data or {}).get("recipient") or user) if user == "admin" else user
+            assigned = [] if assigning else dispatch_tasks.list_targets(ctx, target_user)
+            catalog = [] if assigning else dispatch_skills.list_skills(ctx.conn)
+            users = []
+            if user == "admin":
+                for item in repo.all_active(ctx.conn):
+                    try:
+                        dispatch_tasks.recipient(ctx, item.username)
+                    except dispatch_tasks.TaskError:
+                        continue
+                    users.append(item.username)
             history = ctx.conn.execute(
                 """SELECT id, recipient, source_url, title, status, created_at FROM dispatch_tasks
                    WHERE ?='admin' OR owner=? OR recipient=?
                    ORDER BY created_at DESC, rowid DESC LIMIT 50""",
                 (user, user, user),
             ).fetchall()
-        servers = {row["server_id"]: row["server_name"] for row in targets}
+        servers = {row["server_id"]: row["server_name"] for row in assigned}
+        if pending and not any(server.id == server_id for server, _ in pending):
+            server_id = pending[0][0].id
         return render(
             request, "dispatch_tasks.html", status=status, admin=user, csrf=csrf, servers=servers,
-            targets=targets, users=users, data=data or {}, catalog=catalog,
-            status_map=STATUS, history=history, time=_time, err=err,
+            users=users, data=data or {}, catalog=catalog,
+            assigning=assigning, pending=pending, selected_server=server_id, assigned=assigned,
+            selected_sites=selected_sites, selected_user=selected_user,
+            status_map=STATUS, history=history, time=_time, work_time=work_time, err=err,
         )
 
     @app.get("/tasks", response_class=HTMLResponse)
-    def tasks(request: Request, draft: str = "", who: tuple[str, str] = Depends(current_user)):
+    def tasks(request: Request, draft: str = "", server_id: str = "", who: tuple[str, str] = Depends(current_user)):
         data = None
         if draft:
             with lock:
@@ -60,7 +91,71 @@ def register(app) -> None:
                 server_id=target["server_id"], target=target["domain"], source=task["source_url"],
                 recipient=task["recipient"], dispatcher=dispatcher["id"], migration=migration["id"],
             )
-        return task_page(request, who, data)
+        return task_page(request, who, data, server_id=server_id)
+
+    @app.get("/tasks/assignments", response_class=HTMLResponse)
+    def assignments(
+        request: Request, day: str = "", status: str = "",
+        admin: tuple[str, str] = Depends(current_admin),
+    ):
+        start = stop = None
+        if day:
+            try:
+                selected = date.fromisoformat(day)
+                midnight = datetime.combine(selected, time.min, sites.BEIJING)
+                start = int(midnight.timestamp())
+                stop = int((midnight + timedelta(days=1)).timestamp())
+                day = selected.isoformat()
+            except (ValueError, OverflowError) as exc:
+                raise HTTPException(422, "分配日期格式无效") from exc
+        if status not in {"", "pending", "completed"}:
+            raise HTTPException(422, "完成状态无效")
+        with lock:
+            records = dispatch_tasks.site_work(ctx.conn, start, stop, status)
+        return render(
+            request, "dispatch_assignments.html", admin=admin[0], csrf=admin[1],
+            records=records, day=day, filter_status=status, work_time=work_time,
+        )
+
+    @app.get("/tasks/sites/{target_id}/deployment", response_class=HTMLResponse)
+    def deployment(request: Request, target_id: str, who: tuple[str, str] = Depends(current_user)):
+        with lock:
+            target = dispatch_tasks.deployment_target(ctx, who[0], target_id)
+        if target is None:
+            raise HTTPException(404, "站点分配不存在")
+        return render(request, "dispatch_deployment.html", admin=who[0], csrf=who[1], target=target)
+
+    @app.post("/tasks/sites/{target_id}/complete")
+    def complete_site(target_id: str, who: tuple[str, str] = Depends(current_user)):
+        with lock:
+            if not dispatch_tasks.complete_site_work(ctx, who[0], target_id):
+                raise HTTPException(404, "站点分配不存在")
+        return _redirect("/tasks", msg="已标记完成")
+
+    @app.post("/tasks/assign")
+    def assign(
+        request: Request, server_id: str = Form(""), site_ids: list[str] = Form(default=[]),
+        site_id: str = Form(""), recipient: str = Form(""),
+        admin: tuple[str, str] = Depends(current_admin),
+    ):
+        selected = []
+        try:
+            for choice in site_ids:
+                choice_server, _, inventory_id = choice.partition(":")
+                if choice_server != server_id or not inventory_id:
+                    raise dispatch_tasks.TaskError("请选择当前服务器上的待分配站点")
+                selected.append(inventory_id)
+            if not site_ids and site_id:
+                selected.append(site_id)
+            with lock:
+                domains = dispatch_tasks.assign_sites(ctx, server_id, selected, recipient)
+        except dispatch_tasks.TaskError as exc:
+            return task_page(
+                request, admin, server_id=server_id, selected_sites=set(selected), selected_user=recipient,
+                status=422, err=str(exc),
+            )
+        message = f"{domains[0]} 已分配给 {recipient}" if len(domains) == 1 else f"已将 {len(domains)} 个站点分配给 {recipient}"
+        return _redirect("/tasks?" + urlencode({"server_id": server_id}), msg=message)
 
     @app.post("/tasks/preview")
     def preview(
@@ -81,11 +176,13 @@ def register(app) -> None:
 
     def task_detail(request, who, task, *, status=200, error=""):
         user, csrf = who
+        target = json.loads(task["target_snapshot"])
         return render(
             request, "dispatch_detail.html", status=status, admin=user, csrf=csrf, task=task,
-            target=json.loads(task["target_snapshot"]), skills=json.loads(task["skills"]),
+            target=target, skills=json.loads(task["skills"]),
             status_map=STATUS, turn_status=TURN_STATUS, kinds=dispatch_skills.KINDS,
             can_confirm=task["status"] == "preview" and user == task["owner"],
+            uses_ssh=target.get("deployment_method") == dispatch_tasks.DEPLOYMENT_METHOD,
             time=_time, err=error,
         )
 
@@ -162,7 +259,8 @@ def register(app) -> None:
         with lock:
             servers = site_registry.list_servers(ctx.conn)
             entries = [dict(row, users=" ".join(json.loads(row["users"]))) for row in ctx.conn.execute(
-                """SELECT t.*, s.name AS server_name, t.server_revision=s.revision AS current
+                """SELECT t.id, t.server_id, t.domain, t.users, t.project, s.name AS server_name,
+                          t.server_revision=s.revision AS current
                    FROM dispatch_targets t JOIN site_servers s ON s.id=t.server_id ORDER BY s.name, t.domain"""
             )]
         entry = next((row for row in entries if row["id"] == edit), None)
@@ -174,13 +272,11 @@ def register(app) -> None:
     @app.post("/dispatch-targets/save")
     def save_target(
         target_id: str = Form(""), server_id: str = Form(""), domain: str = Form(""),
-        endpoint: str = Form(""), credential_env: str = Form(""), project: str = Form(""),
-        users: str = Form(""), admin: tuple[str, str] = Depends(current_admin),
+        project: str = Form(""), users: str = Form(""), admin: tuple[str, str] = Depends(current_admin),
     ):
         try:
             with lock:
-                dispatch_tasks.save_target(ctx, target_id or None, server_id, domain, endpoint,
-                                           credential_env, project, users)
+                dispatch_tasks.save_target(ctx, target_id or None, server_id, domain, project, users)
         except dispatch_tasks.TaskError as exc:
             return _redirect(f"/dispatch-targets?edit={target_id}" if target_id.isalnum() else "/dispatch-targets",
                              err=str(exc))
