@@ -75,6 +75,16 @@ def test_migrates_existing_web_sessions(tmp_path):
         assert tuple(conn.execute("SELECT username, system_uid FROM web_sessions").fetchone()) == ("admin", None)
 
 
+def test_migrates_dispatch_upload_column(tmp_path):
+    path = tmp_path / "tasks.db"
+    with db.connect(path) as conn:
+        conn.execute("ALTER TABLE dispatch_tasks DROP COLUMN upload")
+    for _ in range(2):
+        with db.connect(path) as conn:
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(dispatch_tasks)")}
+            assert "upload" in columns
+
+
 def test_migrates_old_accounts_table(tmp_path):
     path = tmp_path / "old.db"
     old = sqlite3.connect(path)

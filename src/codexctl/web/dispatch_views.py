@@ -15,6 +15,7 @@ from .views import _redirect
 STATUS = {
     "preview": ("待人工确认", "info"), "queued": ("排队发送", "info"), "sending": ("正在发送", "warn"),
     "sent": ("已发送给 Codex", "ok"), "failed": ("发送失败", "bad"), "unknown": ("发送结果待核对", "warn"),
+    "cancelling": ("正在取消", "warn"), "cancelled": ("已取消", "info"),
 }
 TURN_STATUS = {"inProgress": "Codex 正在处理", "completed": "Codex 轮次已结束",
                "failed": "Codex 轮次失败", "interrupted": "Codex 轮次已中断", "unknown": "Codex 轮次待核对"}
@@ -35,25 +36,22 @@ def register(app) -> None:
             raise HTTPException(404, "任务不存在")
         return row
 
-    def task_page(request, who, data=None, *, server_id="", selected_sites=(), selected_user="", status=200, err=""):
+    def task_page(request, who, selections=None, *, rows=(), server_id="", selected_sites=(), selected_user="", status=200, err=""):
         user, csrf = who
-        assigning = user == "admin" and data is None
         pending = []
         with lock:
-            if assigning:
+            if user == "admin":
                 inventories = sites.snapshots(ctx.conn)
                 for server in site_registry.list_servers(ctx.conn):
                     choices = dispatch_tasks.pending_sites(ctx.conn, server, inventories.get(server.id))
                     if choices:
                         by_date = {}
                         for site in choices:
-                            date = sites.deployment_date(site.get("created_at"))
-                            by_date.setdefault(date, []).append(site)
-                        dates = sorted(by_date, key=lambda date: date or "", reverse=True)
-                        pending.append((server, [(date, by_date[date]) for date in dates]))
-            target_user = ((data or {}).get("recipient") or user) if user == "admin" else user
-            assigned = [] if assigning else dispatch_tasks.list_targets(ctx, target_user)
-            catalog = [] if assigning else dispatch_skills.list_skills(ctx.conn)
+                            day = sites.deployment_date(site.get("created_at"))
+                            by_date.setdefault(day, []).append(site)
+                        days = sorted(by_date, key=lambda day: day or "", reverse=True)
+                        pending.append((server, [(day, by_date[day]) for day in days]))
+            assigned = dispatch_tasks.list_targets(ctx, user) if user != "admin" else []
             users = []
             if user == "admin":
                 for item in repo.all_active(ctx.conn):
@@ -62,36 +60,50 @@ def register(app) -> None:
                     except dispatch_tasks.TaskError:
                         continue
                     users.append(item.username)
+            catalog = dispatch_skills.list_skills(ctx.conn)
             history = ctx.conn.execute(
-                """SELECT id, recipient, source_url, title, status, created_at FROM dispatch_tasks
+                """SELECT id, owner, recipient, title, status, turn_status, created_at FROM dispatch_tasks
                    WHERE ?='admin' OR owner=? OR recipient=?
                    ORDER BY created_at DESC, rowid DESC LIMIT 50""",
                 (user, user, user),
             ).fetchall()
-        servers = {row["server_id"]: row["server_name"] for row in assigned}
         if pending and not any(server.id == server_id for server, _ in pending):
             server_id = pending[0][0].id
         return render(
-            request, "dispatch_tasks.html", status=status, admin=user, csrf=csrf, servers=servers,
-            users=users, data=data or {}, catalog=catalog,
-            assigning=assigning, pending=pending, selected_server=server_id, assigned=assigned,
-            selected_sites=selected_sites, selected_user=selected_user,
-            status_map=STATUS, history=history, time=_time, work_time=work_time, err=err,
+            request, "dispatch_tasks.html", status=status, admin=user, csrf=csrf,
+            selections=selections or {}, catalog=catalog, rows=rows, columns=dispatch_tasks.IMPORT_COLUMNS,
+            matched=sum(bool(row.server_name) for row in rows),
+            batch_id=next((row.task_id for row in rows if row.task_id), ""),
+            status_map=STATUS, history=history, time=_time, err=err,
+            can_cancel=dispatch_tasks.can_cancel, pending=pending, assigned=assigned, users=users,
+            selected_server=server_id, selected_sites=selected_sites, selected_user=selected_user,
+            work_time=work_time,
         )
 
     @app.get("/tasks", response_class=HTMLResponse)
-    def tasks(request: Request, draft: str = "", server_id: str = "", who: tuple[str, str] = Depends(current_user)):
-        data = None
-        if draft:
+    def tasks(request: Request, server_id: str = "", who: tuple[str, str] = Depends(current_user)):
+        return task_page(request, who, server_id=server_id)
+
+    @app.post("/tasks/import", response_class=HTMLResponse)
+    def import_tasks(
+        request: Request, task_csv: UploadFile | None = File(None),
+        dispatcher: str = Form(""), migration: str = Form(""),
+        who: tuple[str, str] = Depends(current_user),
+    ):
+        if who[0] == "admin":
+            raise HTTPException(403, "请使用成员账号导入任务")
+        selections = dict(dispatcher=dispatcher, migration=migration)
+        rows = ()
+        try:
+            if task_csv is None or not task_csv.filename:
+                raise dispatch_tasks.TaskError("请选择要导入的 CSV 或 XLSX 文件")
+            upload = task_csv.file.read(dispatch_tasks.MAX_CSV_UPLOAD + 1)
+            rows = dispatch_tasks.parse_import(upload, task_csv.filename)
             with lock:
-                task = get_task(draft, who[0])
-            target = json.loads(task["target_snapshot"])
-            dispatcher, migration = json.loads(task["skills"])
-            data = dict(
-                server_id=target["server_id"], target=target["domain"], source=task["source_url"],
-                recipient=task["recipient"], dispatcher=dispatcher["id"], migration=migration["id"],
-            )
-        return task_page(request, who, data, server_id=server_id)
+                dispatch_tasks.create_previews(ctx, who[0], rows, dispatcher, migration, task_csv.filename, upload)
+        except dispatch_tasks.TaskError as exc:
+            return task_page(request, who, selections, rows=rows, status=422, err=str(exc))
+        return task_page(request, who, selections, rows=rows)
 
     @app.get("/tasks/assignments", response_class=HTMLResponse)
     def assignments(
@@ -171,7 +183,7 @@ def register(app) -> None:
         except dispatch_tasks.TaskError as exc:
             data = dict(server_id=server_id, target=target, source=source, recipient=recipient,
                         dispatcher=dispatcher, migration=migration)
-            return task_page(request, who, data, status=422, err=str(exc))
+            return task_page(request, who, status=422, err=str(exc))
         return RedirectResponse(f"/tasks/{task_id}", status_code=303)
 
     def task_detail(request, who, task, *, status=200, error=""):
@@ -179,10 +191,12 @@ def register(app) -> None:
         target = json.loads(task["target_snapshot"])
         return render(
             request, "dispatch_detail.html", status=status, admin=user, csrf=csrf, task=task,
-            target=target, skills=json.loads(task["skills"]),
+            target=target, batch_rows=target.get("rows", []), skills=json.loads(task["skills"]),
             status_map=STATUS, turn_status=TURN_STATUS, kinds=dispatch_skills.KINDS,
-            can_confirm=task["status"] == "preview" and user == task["owner"],
-            uses_ssh=target.get("deployment_method") == dispatch_tasks.DEPLOYMENT_METHOD,
+            can_confirm=task["status"] == "preview" and user == task["owner"] and user != "admin"
+                        and dispatch_tasks.batch_complete(target),
+            batch_complete=dispatch_tasks.batch_complete(target),
+            can_cancel=user != "admin" and user in {task["owner"], task["recipient"]} and dispatch_tasks.can_cancel(task),
             time=_time, err=error,
         )
 
@@ -200,8 +214,8 @@ def register(app) -> None:
         error = ""
         with lock:
             task = get_task(task_id, who[0])
-            if task["owner"] != who[0]:
-                raise HTTPException(403, "仅生成此预览的用户可以确认发送")
+            if task["owner"] != who[0] or who[0] == "admin":
+                raise HTTPException(403, "仅任务所属成员可以确认发送")
             if confirmed != "1":
                 error = "请先核对提示词并勾选确认"
             else:
@@ -211,6 +225,15 @@ def register(app) -> None:
                     error = str(exc)
         if error:
             return task_detail(request, who, task, status=409, error=error)
+        return RedirectResponse(f"/tasks/{task_id}", status_code=303)
+
+    @app.post("/tasks/{task_id}/cancel")
+    def cancel_task(task_id: str, who: tuple[str, str] = Depends(current_user)):
+        with lock:
+            task = get_task(task_id, who[0])
+            if who[0] == "admin" or who[0] not in {task["owner"], task["recipient"]}:
+                raise HTTPException(403, "仅任务所属成员可以取消任务")
+            dispatch_tasks.cancel(ctx, task_id, who[0])
         return RedirectResponse(f"/tasks/{task_id}", status_code=303)
 
     @app.get("/skills", response_class=HTMLResponse)
@@ -253,7 +276,6 @@ def register(app) -> None:
         with lock:
             dispatch_skills.delete(ctx, skill_id)
         return _redirect("/skills", msg="Skill 已删除")
-
     @app.get("/dispatch-targets", response_class=HTMLResponse)
     def targets(request: Request, edit: str = "", admin: tuple[str, str] = Depends(current_admin)):
         with lock:

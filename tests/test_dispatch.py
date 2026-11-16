@@ -1,15 +1,16 @@
+import csv
 import dataclasses
 import io
 import json
-import sqlite3
 import subprocess
 import sys
 import zipfile
-from datetime import datetime, timezone
 
+import pytest
 from fastapi.testclient import TestClient
+from openpyxl import Workbook
 
-from codexctl import db, dispatch_skills, dispatch_tasks, dispatch_worker, repo, site_registry, sites, webauth
+from codexctl import dispatch_skills, dispatch_tasks, dispatch_worker, repo, site_registry, webauth
 from codexctl.web.app import SESSION_COOKIE, create_app
 
 
@@ -47,8 +48,8 @@ def task_form(ctx):
         return lookup_user(name, min_uid)
 
     ctx.lookup_user = lookup
-    server = site_registry.create(ctx, "admin", "站点服务器", "1.1.1.1", "2242", "")
-    dispatch_tasks.save_target(ctx, None, server.id, "shop.example.com", "试点项目", "alice")
+    server = site_registry.create(ctx, "admin", "站点服务器", "1.1.1.1", "22", "")
+    inventory(ctx, server, ("8", ["shop.example.com", "www.shop.example.com"]))
     selections = {}
     for kind, name in (("dispatcher", "task-dispatcher"), ("migration", "html-to-wp-engine-sol")):
         data = package(name)
@@ -57,89 +58,22 @@ def task_form(ctx):
                 target="shop.example.com", **selections)
 
 
-def test_admin_assigns_only_pending_inventory_sites(ctx):
-    form = task_form(ctx)
-    second = site_registry.create(ctx, "admin", "第二台服务器", "8.8.8.8", "22", "")
-
-    def inventory(server_id, rows):
-        ctx.conn.execute(
-            "INSERT OR REPLACE INTO site_inventories VALUES (?, 0, ?, ?, NULL, ?)",
-            (server_id, ctx.now(), ctx.now(), json.dumps([
-                {"id": site_id, "domains": domains} for site_id, domains in rows
-            ])),
-        )
-
-    first = form["server_id"]
-    inventory(first, [
-        ("1", ["www.shop.example.com", "shop.example.com"]),
-        ("2", ["pending.example.com", "www.pending.example.com"]),
-    ])
-    inventory(second.id, [("2", ["other.example.com"])])
-    app = create_app(ctx)
-    admin, csrf = session(ctx, app, "admin")
-    alice, alice_csrf = session(ctx, app, "alice")
-    bob, _ = session(ctx, app, "bob")
-    page = admin.get("/tasks").text
-    assert 'action="/tasks/assign"' in page and 'name="source"' not in page
-    assert "www.shop.example.com" not in page
-    assert "pending.example.com" in page and "other.example.com" in page
-    payload = dict(server_id=first, site_id="2", recipient="alice")
-    assert alice.post("/tasks/assign", data=dict(payload, csrf=alice_csrf)).status_code == 403
-    assert admin.post("/tasks/assign", data=payload).status_code == 403
-    assert admin.post("/tasks/assign", data=dict(payload, csrf=csrf, site_id="missing")).status_code == 422
-    assert admin.post("/tasks/assign", data=dict(payload, csrf=csrf)).status_code == 303
-    assert admin.post("/tasks/assign", data=dict(payload, csrf=csrf, recipient="bob")).status_code == 422
-
-    page = admin.get("/tasks").text
-    assert "pending.example.com" not in page and "other.example.com" in page
-    assert "pending.example.com" in alice.get("/tasks").text
-    assert "待配置部署" not in alice.get("/tasks").text
-    assert "pending.example.com" not in bob.get("/tasks").text
-    assert alice.post("/tasks/preview", data=dict(
-        form, csrf=alice_csrf, target="pending.example.com",
-    )).status_code == 303
-    inventory(first, [("2", ["renamed.example.com"])])
-    assert "renamed.example.com" not in admin.get("/tasks").text
-    assert ctx.conn.execute(
-        "SELECT COUNT(*) FROM audit_log WHERE action='dispatch.site_assign'"
-    ).fetchone()[0] == 1
-
-
-def test_admin_assigns_a_batch_or_leaves_all_sites_pending(ctx):
-    form = task_form(ctx)
-    server_id = form["server_id"]
+def inventory(ctx, server, *sites):
+    now = ctx.now()
+    snapshot = [{"id": site_id, "domains": domains} for site_id, domains in sites]
     ctx.conn.execute(
-        "INSERT INTO site_inventories VALUES (?, 0, ?, ?, NULL, ?)",
-        (server_id, ctx.now(), ctx.now(), json.dumps([
-            {"id": "2", "domains": ["one.example.com", "alias.example.com"],
-             "created_at": int(datetime(2026, 11, 14, 10, tzinfo=timezone.utc).timestamp())},
-            {"id": "3", "domains": ["two.example.com"],
-             "created_at": int(datetime(2026, 11, 15, 17, tzinfo=timezone.utc).timestamp())},
-            {"id": "4", "domains": ["three.example.com", "alias.example.com"]},
-        ])),
+        "INSERT OR REPLACE INTO site_inventories VALUES (?, ?, ?, ?, NULL, ?)",
+        (server.id, server.revision, now, now, json.dumps(snapshot)),
     )
-    app = create_app(ctx)
-    admin, csrf = session(ctx, app, "admin")
-    alice, _ = session(ctx, app, "alice")
-    bob, _ = session(ctx, app, "bob")
-    page = admin.get("/tasks").text
-    assert page.index("2026-11-16</h4>") < page.index("two.example.com") < page.index("2026-11-14</h4>")
-    assert page.index("2026-11-14</h4>") < page.index("one.example.com") < page.index("日期未知</h4>")
-    base = dict(server_id=server_id, recipient="alice", csrf=csrf)
-    first, second, overlapping = (f"{server_id}:{site_id}" for site_id in ("2", "3", "4"))
-    for selection in ([], [first, "other-server:3"], [first, f"{server_id}:missing"], [first, overlapping]):
-        assert admin.post("/tasks/assign", data=dict(base, site_ids=selection)).status_code == 422
-        assert ctx.conn.execute("SELECT COUNT(*) FROM dispatch_targets").fetchone()[0] == 1
 
-    response = admin.post("/tasks/assign", data=dict(base, site_ids=[first, second, second]))
-    assert response.status_code == 303
-    pending = admin.get(response.headers["location"]).text
-    assert "已将 2 个站点分配给 alice" in pending
-    assert "one.example.com" not in pending and "two.example.com" not in pending
-    assert "暂无待分配站点" in pending
-    assert admin.post("/tasks/assign", data=dict(base, site_ids=[first, second])).status_code == 422
-    assert "one.example.com" in alice.get("/tasks").text and "two.example.com" in alice.get("/tasks").text
-    assert "one.example.com" not in bob.get("/tasks").text and "two.example.com" not in bob.get("/tasks").text
+
+def import_file(client, csrf, form, content=None, filename="tasks.csv", **extra):
+    if content is None:
+        content = f'原域名,新域名,备注,折扣\n{form["source"]},{form["target"]},"产品, 海报",8.5折\n'.encode()
+    return client.post(
+        "/tasks/import", data=dict(csrf=csrf, dispatcher=form["dispatcher"], migration=form["migration"], **extra),
+        files={"task_csv": (filename, content, "application/octet-stream")},
+    )
 
 
 def test_user_previews_and_confirms_exactly_once(ctx):
@@ -148,18 +82,29 @@ def test_user_previews_and_confirms_exactly_once(ctx):
     app = create_app(ctx)
     alice, csrf = session(ctx, app, "alice")
     bob, bob_csrf = session(ctx, app, "bob")
-    assert "shop.example.com" in alice.get("/tasks").text
-    assert "shop.example.com" not in bob.get("/tasks").text
-    assert bob.post("/tasks/preview", data=dict(form, recipient="alice", csrf=bob_csrf)).status_code == 422
+    admin, admin_csrf = session(ctx, app, "admin")
+    assert "CSV 或 XLSX 文件" in alice.get("/tasks").text
+    assert "CSV 或 XLSX 文件" in bob.get("/tasks").text
+    assert "CSV 或 XLSX 文件" not in admin.get("/tasks").text
+    assert import_file(admin, admin_csrf, form, recipient="alice").status_code == 403
+    assert import_file(alice, "invalid", form).status_code == 403
 
-    response = alice.post("/tasks/preview", data=dict(form, recipient="bob", csrf=csrf))
-    assert response.status_code == 303
-    url = response.headers["location"]
+    for _ in range(2):
+        response = import_file(alice, csrf, form, recipient="bob")
+        assert response.status_code == 200
+        assert "产品, 海报" in response.text and "8.5折" in response.text and "已匹配" in response.text
+    rows = ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchall()
+    assert len(rows) == 1 and rows[0]["owner"] == "alice"
+    assert list(csv.reader(io.StringIO(rows[0]["csv"]))) == [
+        ["网站", "新域名", "备注", "折扣"], [form["source"], form["target"], "产品, 海报", "8.5折"],
+    ]
+    url = f"/tasks/{rows[0]['id']}"
     draft = alice.get(url)
-    assert "source.example.com/home 迁移 shop.example.com" in draft.text
-    assert "网站,新域名,备注,折扣" in draft.text
-    assert "部署方式：SSH。目标主机 1.1.1.1，SSH 端口 2242" in draft.text
-    assert "capabilities" not in draft.text and "宝塔" not in draft.text
+    assert "tasks.csv · 1 个任务" in draft.text
+    assert "网站,新域名,备注,折扣" not in rows[0]["prompt"]
+    assert "产品, 海报" not in rows[0]["prompt"]
+    assert "source.example.com" not in rows[0]["prompt"]
+    assert "SSH 主机 1.1.1.1，端口 22" in draft.text
     assert "确认并发送" in draft.text
     assert dispatch_worker.claim(ctx) is None
     assert bob.get(url).status_code == 404
@@ -173,69 +118,169 @@ def test_user_previews_and_confirms_exactly_once(ctx):
     assert task["source_url"] == form["source"]
     assert dispatch_worker.claim(ctx) is None
     assert ctx.conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='dispatch.confirm'").fetchone()[0] == 1
+    assert import_file(bob, bob_csrf, dict(form, target="www.shop.example.com")).status_code == 200
+    assert ctx.conn.execute("SELECT COUNT(*) FROM dispatch_targets").fetchone()[0] == 0
+    bob_task = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE owner='bob'").fetchone()
+    assert bob_task["recipient"] == "bob"
+    assert json.loads(bob_task["target_snapshot"])["targets"][0]["id"] == json.loads(task["target_snapshot"])["targets"][0]["id"]
+    assert bob.post(f"/tasks/{bob_task['id']}/confirm", data={"csrf": bob_csrf, "confirmed": "1"}).status_code == 303
+    assert dispatch_worker.claim(ctx) is None
 
 
-def test_member_views_ssh_and_completes_only_their_assigned_site(ctx):
+def test_import_matches_across_servers_and_renders_each_row(ctx):
     form = task_form(ctx)
-    ctx.conn.execute(
-        "INSERT INTO site_inventories VALUES (?, 0, ?, ?, NULL, ?)",
-        (form["server_id"], ctx.now(), ctx.now(), json.dumps([
-            {"id": "2", "domains": ["assigned.example.com"]},
-        ])),
+    first = site_registry.get(ctx.conn, form["server_id"])
+    second = site_registry.create(ctx, "admin", "另一台服务器", "8.8.8.8", "2222", "")
+    inventory(ctx, first, ("8", ["shop.example.com", "www.shop.example.com"]), ("9", ["shared.example.com"]))
+    inventory(ctx, second, ("8", ["shared.example.com"]), ("10", ["new.example.com"]))
+    alice, csrf = session(ctx, create_app(ctx), "alice")
+    content = (
+        '折扣,原域名,备注,新域名\r\n'
+        '8,one.example.com,"长备注,<草稿>\n下一行",HTTPS://WWW.SHOP.EXAMPLE.COM./\r\n'
+        ',two.example.com,,new.example.com\r\n'
+        '3,three.example.com,,shared.example.com\r\n'
+        '3,four.example.com,,missing.example.com\r\n'
+        '3,five.example.com,,dupe.example.com\r\n'
+        '3,six.example.com,,DUPE.EXAMPLE.COM\r\n'
+        '10.1,seven.example.com,,bad.example.com\r\n'
+    ).encode("gb18030")
+    response = import_file(alice, csrf, form, content)
+    assert response.status_code == 422
+    for value in (
+        "HTTPS://WWW.SHOP.EXAMPLE.COM./", "长备注,&lt;草稿&gt;\n下一行", "已匹配 2 行", "另一台服务器",
+        "全部站点匹配成功", "匹配到多个站点", "找不到该新域名", "新域名重复", "折扣须大于 0",
+    ):
+        assert value in response.text
+    assert "查看批次提示词" not in response.text
+    assert ctx.conn.execute("SELECT COUNT(*) FROM dispatch_tasks").fetchone()[0] == 0
+    content = (
+        '折扣,原域名,备注,新域名\r\n'
+        '8,one.example.com,"长备注,<草稿>\n下一行",HTTPS://WWW.SHOP.EXAMPLE.COM./\r\n'
+        ',two.example.com,,new.example.com\r\n'
+    ).encode("gb18030")
+    response = import_file(alice, csrf, form, content)
+    assert response.status_code == 200 and "查看批次提示词" in response.text
+    tasks = ctx.conn.execute("SELECT * FROM dispatch_tasks ORDER BY rowid").fetchall()
+    assert len(tasks) == 1
+    assert len(list(csv.reader(io.StringIO(tasks[0]["csv"])))) == 3
+    assert len(json.loads(tasks[0]["target_snapshot"])["targets"]) == 2
+    assert "全部 2 个数据行" in tasks[0]["prompt"]
+    assert list(csv.reader(io.StringIO(tasks[0]["csv"])))[1] == [
+        "https://one.example.com/", "www.shop.example.com", "长备注,<草稿>\n下一行", "8",
+    ]
+    assert "2222" in tasks[0]["prompt"]
+    assert "missing.example.com" not in tasks[0]["prompt"]
+    assert "单站任务" not in tasks[0]["prompt"]
+    assert "长备注" not in tasks[0]["prompt"]
+    assert tasks[0]["upload"] == content
+
+    inventory(ctx, second, ("10", ["new.example.com", "www.shop.example.com"]))
+    stale = alice.post(f"/tasks/{tasks[0]['id']}/confirm", data={"csrf": csrf, "confirmed": "1"})
+    assert stale.status_code == 409 and "服务器绑定已变更" in stale.text
+    assert import_file(alice, csrf, form, b"invalid,headers\nrow").status_code == 422
+    unmatched = import_file(alice, csrf, dict(form, target="missing.example.com"))
+    assert unmatched.status_code == 422 and "已匹配 0 行" in unmatched.text
+    assert ctx.conn.execute("SELECT COUNT(*) FROM dispatch_tasks").fetchone()[0] == 1
+
+
+def workbook_bytes(rows):
+    workbook = Workbook()
+    for row in rows:
+        workbook.active.append(row)
+    workbook.create_sheet("说明").append(["忽略此表"])
+    stream = io.BytesIO()
+    workbook.save(stream)
+    workbook.close()
+    return stream.getvalue()
+
+
+def test_batch_queue_blocks_overlapping_site_and_accepts_legacy_task(ctx):
+    form = task_form(ctx)
+    server = site_registry.get(ctx.conn, form["server_id"])
+    inventory(ctx, server, ("8", ["shop.example.com"]), ("9", ["second.example.com", "www.second.example.com"]))
+    content = (
+        "原域名,新域名,备注,折扣\n"
+        "source.example.com,shop.example.com,,\n"
+        "other.example.com,second.example.com,,\n"
+    ).encode()
+    rows = dispatch_tasks.parse_import(content)
+    alice_id = dispatch_tasks.create_previews(ctx, "alice", rows, form["dispatcher"], form["migration"])
+    alice_task = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (alice_id,)).fetchone()
+    dispatch_tasks.confirm(ctx, alice_task, "alice")
+    assert dispatch_worker.claim(ctx)["id"] == alice_id
+
+    rows = dispatch_tasks.parse_import(
+        "原域名,新域名,备注,折扣\nsource.example.com,www.second.example.com,,\n".encode()
     )
-    dispatch_tasks.assign_sites(ctx, form["server_id"], ["2"], "alice")
-    target = next(row for row in dispatch_tasks.list_targets(ctx, "alice") if row["domain"] == "assigned.example.com")
-    path = f"/tasks/sites/{target['id']}"
-    app = create_app(ctx)
-    alice, csrf = session(ctx, app, "alice")
-    bob, bob_csrf = session(ctx, app, "bob")
-    admin, _ = session(ctx, app, "admin")
-    assert "SSH 部署" in alice.get("/tasks").text
-    assert bob.get(path + "/deployment").status_code == 404
-    assert admin.get(path + "/deployment").status_code == 404
-    deployment = alice.get(path + "/deployment")
-    assert deployment.status_code == 200 and "1.1.1.1" in deployment.text and "2242" in deployment.text
-    assert 'name="endpoint"' not in deployment.text and 'name="credential"' not in deployment.text
-    target_editor = admin.get(f"/dispatch-targets?edit={target['id']}").text
-    assert 'name="endpoint"' not in target_editor and 'name="credential_env"' not in target_editor
-    preview = alice.post("/tasks/preview", data=dict(form, csrf=csrf, target="assigned.example.com"))
-    assert preview.status_code == 303
-    draft = alice.get(preview.headers["location"]).text
-    assert "SSH 尚未配置" in draft and "部署方式：SSH" in draft
-
-    assigned_day = sites.deployment_date(ctx.now())
-    assert "assigned.example.com" in admin.get(f"/tasks/assignments?day={assigned_day}&status=pending").text
-    assert "assigned.example.com" not in admin.get("/tasks/assignments?day=2026-11-16").text
-    assert bob.get("/tasks/assignments").status_code == 403
-    assert bob.post(path + "/complete", data={"csrf": bob_csrf}).status_code == 404
-    assert alice.post(path + "/complete").status_code == 403
-    ctx.test_clock.t += 3600
-    assert alice.post(path + "/complete", data={"csrf": csrf}).status_code == 303
-    first_completion = ctx.now()
-    ctx.test_clock.t += 3600
-    assert alice.post(path + "/complete", data={"csrf": csrf}).status_code == 303
-    status = ctx.conn.execute("SELECT completed_at FROM dispatch_site_work WHERE target_id=?", (target["id"],)).fetchone()
-    assert status["completed_at"] == first_completion
-    assert 'class="badge ok">已完成' in alice.get("/tasks").text
-    assert "assigned.example.com" not in admin.get("/tasks/assignments?status=pending").text
-    completed = admin.get(f"/tasks/assignments?day={assigned_day}&status=completed").text
-    assert "assigned.example.com" in completed and 'class="badge ok">已完成' in completed
-    assert "shop.example.com" not in completed
+    bob_id = dispatch_tasks.create_previews(ctx, "bob", rows, form["dispatcher"], form["migration"])
+    bob_task = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (bob_id,)).fetchone()
+    # A persisted single-site SSH preview must still validate and share the site's queue lock.
+    legacy_target = json.loads(bob_task["target_snapshot"])["targets"][0]
+    ctx.conn.execute("UPDATE dispatch_tasks SET target_snapshot=?, target_id=? WHERE id=?",
+                     (json.dumps(legacy_target), legacy_target["id"], bob_id))
+    bob_task = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (bob_id,)).fetchone()
+    dispatch_tasks.confirm(ctx, bob_task, "bob")
+    assert dispatch_worker.claim(ctx) is None
+    ctx.conn.execute("UPDATE dispatch_tasks SET status='sent', turn_status='completed' WHERE id=?", (alice_id,))
+    assert dispatch_worker.claim(ctx)["id"] == bob_id
 
 
-def test_migration_backfills_historical_assignment_dates(ctx, tmp_path):
-    task_form(ctx)
-    ctx.conn.execute("DROP TABLE dispatch_site_work")
-    file = tmp_path / "existing.db"
-    connection = sqlite3.connect(file)
-    ctx.conn.backup(connection)
-    connection.close()
-    migrated = db.connect(file)
-    try:
-        row = migrated.execute("SELECT username, assigned_at, completed_at FROM dispatch_site_work").fetchone()
-        assert tuple(row) == ("alice", ctx.now(), None)
-    finally:
-        migrated.close()
+def test_xlsx_import_shares_matching_and_preserves_values(ctx):
+    form = task_form(ctx)
+    alice, csrf = session(ctx, create_app(ctx), "alice")
+    raw = workbook_bytes([
+        ["折扣", "新域名", "备注", "原域名"],
+        [8.5, form["target"], "产品,海报\n第二行", form["source"]],
+        [],
+        [None, "missing.example.com", None, "other.example.com"],
+        ["=1+2", "formula.example.com", None, "other.example.com"],
+    ])
+    response = import_file(alice, csrf, form, raw, filename="任务.XLSX")
+    assert response.status_code == 422
+    for text in ("产品,海报\n第二行", "8.5", "已匹配 1 行", "找不到该新域名", "单元格含公式"):
+        assert text in response.text
+    assert "查看批次提示词" not in response.text
+    assert ctx.conn.execute("SELECT COUNT(*) FROM dispatch_tasks").fetchone()[0] == 0
+    rows = dispatch_tasks.parse_import(raw, "任务.xlsx")
+    assert [row.line for row in rows] == [2, 4, 5]
+    assert rows[1].values[2:] == ("", "")
+    raw = workbook_bytes([
+        ["折扣", "新域名", "备注", "原域名"],
+        [8.5, form["target"], "产品,海报\n第二行", form["source"]],
+    ])
+    response = import_file(alice, csrf, form, raw, filename="任务.XLSX")
+    assert response.status_code == 200 and "查看批次提示词" in response.text
+    task = ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone()
+    assert task["upload"] == raw
+    assert "upload.xlsx" in task["prompt"]
+    assert "产品,海报" not in task["prompt"]
+    assert "8.5" not in task["prompt"]
+    run_root = ctx.settings.state_dir / "xlsx-staging"
+    run_root.mkdir()
+    user = ctx.lookup_user("alice", 1000)
+    skill_packages = [dispatch_skills.get(ctx.conn, skill["id"], with_archive=True)["archive"]
+                      for skill in json.loads(task["skills"])]
+    # The upload is staged byte-for-byte alongside the normalized CSV and deployment mapping.
+    from unittest.mock import patch
+    with patch.object(dispatch_worker.os, "chown"):
+        dispatch_worker._stage(run_root, task, user, skill_packages)
+    assert (run_root / task["id"] / "upload.xlsx").read_bytes() == raw
+    assert list(csv.reader(io.StringIO(task["csv"])))[1] == [
+        form["source"], form["target"], "产品,海报\n第二行", "8.5",
+    ]
+    assert "忽略此表" not in response.text
+
+
+@pytest.mark.parametrize("raw, filename", [
+    (b"broken", "broken.xlsx"),
+    (b"broken", "broken.xls"),
+    (workbook_bytes([["wrong header"]]), "header.xlsx"),
+    (workbook_bytes([dispatch_tasks.IMPORT_COLUMNS]), "empty.xlsx"),
+    (b"x" * (dispatch_tasks.MAX_CSV_UPLOAD + 1), "large.xlsx"),
+])
+def test_bad_spreadsheets_report_validation_error(raw, filename):
+    with pytest.raises(dispatch_tasks.TaskError):
+        dispatch_tasks.parse_import(raw, filename)
 
 
 def test_admin_skill_crud_and_stale_preview(ctx):
@@ -243,8 +288,8 @@ def test_admin_skill_crud_and_stale_preview(ctx):
     app = create_app(ctx)
     admin, csrf = session(ctx, app, "admin")
     alice, alice_csrf = session(ctx, app, "alice")
-    response = alice.post("/tasks/preview", data=dict(form, csrf=alice_csrf))
-    url = response.headers["location"]
+    assert import_file(alice, alice_csrf, form).status_code == 200
+    url = "/tasks/" + ctx.conn.execute("SELECT id FROM dispatch_tasks").fetchone()[0]
 
     original = package("skill-example")
     data = dict(csrf=csrf, kind="migration", label="示例 Skill")
@@ -283,52 +328,24 @@ def test_zip_traversal_rejected(ctx):
     assert dispatch_skills.list_skills(ctx.conn) == []
 
 
-def test_legacy_deployment_requires_a_new_preview_and_worker_never_launches_it(ctx, tmp_path, monkeypatch):
+@pytest.mark.parametrize("cancel_running", [False, True])
+def test_worker_attaches_both_packages_and_persists_acceptance(ctx, tmp_path, monkeypatch, cancel_running):
     form = task_form(ctx)
-    app = create_app(ctx)
-    alice, csrf = session(ctx, app, "alice")
-    preview = alice.post("/tasks/preview", data=dict(form, csrf=csrf))
-    url = preview.headers["location"]
-    task_id = url.rsplit("/", 1)[-1]
-    draft = ctx.conn.execute("SELECT target_snapshot FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()
-    legacy = json.loads(draft["target_snapshot"])
-    del legacy["deployment_method"]
-    legacy.update(endpoint="https://legacy.example.com/deploy", credential_env="BAOTA_SHOP_API_KEY")
-    ctx.conn.execute("UPDATE dispatch_tasks SET target_snapshot=? WHERE id=?", (json.dumps(legacy), task_id))
-    page = alice.get(url)
-    assert "重新生成 SSH 预览" in page.text and "确认并发送" not in page.text
-    assert alice.post(url + "/confirm", data={"csrf": csrf, "confirmed": "1"}).status_code == 409
-    assert "https://source.example.com/home" in alice.get(f"/tasks?draft={task_id}").text
-
-    ctx.conn.execute("UPDATE dispatch_tasks SET status='queued' WHERE id=?", (task_id,))
-    task = dispatch_worker.claim(ctx)
-
-    def unexpected(*args, **kwargs):
-        raise AssertionError("Legacy task started a Codex process")
-
-    monkeypatch.setattr(dispatch_worker.subprocess, "Popen", unexpected)
-    dispatch_worker.deliver(ctx, tmp_path, task)
-    saved = ctx.conn.execute("SELECT status, error FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()
-    assert saved["status"] == "failed" and "重新生成 SSH 预览" in saved["error"]
-
-
-def test_worker_attaches_ssh_task_packages_and_persists_acceptance(ctx, tmp_path, monkeypatch):
-    form = task_form(ctx)
-    target = dispatch_tasks.list_targets(ctx, "alice")[0]
-    ctx.conn.execute(
-        """INSERT INTO dispatch_user_deployments(target_id, username, uid, endpoint, project, credential, version)
-           VALUES (?, 'alice', 1001, 'https://legacy.example.com/deploy', '独立项目', ?, 'legacy')""",
-        (target["id"], b"old-ciphertext"),
-    )
-    task_id = dispatch_tasks.create_preview(ctx, "alice", "alice", form["server_id"], form["source"], form["target"],
-                                            form["dispatcher"], form["migration"])
+    second = site_registry.create(ctx, "admin", "第二台", "8.8.8.8", "2222", "")
+    inventory(ctx, second, ("9", ["second.example.com"]))
+    raw = (
+        f'原域名,新域名,备注,折扣\n{form["source"]},{form["target"]},产品海报,8.5折\n'
+        'other.example.com,second.example.com,第二站,3\n'
+    ).encode("utf-8-sig")
+    rows = dispatch_tasks.parse_import(raw)
+    dispatch_tasks.create_previews(ctx, "alice", rows, form["dispatcher"], form["migration"], upload=raw)
+    task_id = rows[0].task_id
     row = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()
     dispatch_tasks.confirm(ctx, row, "alice")
     task = dispatch_worker.claim(ctx)
     run_root = tmp_path / "dispatch"
     run_root.mkdir()
-    monkeypatch.setenv("BAOTA_SHOP_API_KEY", "unused-admin-key")
-    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/root-agent")
+    monkeypatch.setenv("BAOTA_SHOP_API_KEY", "fixture-secret")
     monkeypatch.setattr(dispatch_worker.os, "chown", lambda *args: None)
 
     # A stdio fixture verifies the actual JSON-RPC payload and can complete the turn before its acknowledgement.
@@ -344,18 +361,28 @@ for line in sys.stdin:
         continue
     method = message['method']
     params = message['params']
+    assert 'fixture-secret' not in line
     if method == 'thread/start':
         assert params['sandbox'] == 'workspace-write'
-        assert 'BAOTA_SHOP_API_KEY' not in os.environ and 'SSH_AUTH_SOCK' not in os.environ
+        assert 'BAOTA_SHOP_API_KEY' not in os.environ
         result = {'thread': {'id': 'codex-thread'}}
     elif method == 'thread/name/set':
-        assert params == {'threadId': 'codex-thread', 'name': 'source.example.com/home 迁移 shop.example.com'}
+        assert params == {'threadId': 'codex-thread', 'name': 'tasks.csv · 2 个任务'}
         result = {}
     elif method == 'turn/start':
         prompt, dispatcher, migration = params['input']
-        assert prompt['type'] == 'text' and 'SSH 端口 2242' in prompt['text']
-        assert '独立项目' in prompt['text'] and 'legacy.example.com' not in prompt['text']
+        assert prompt['type'] == 'text' and '统一分发' in prompt['text']
         assert Path('task.csv').read_text().splitlines()[0] == '网站,新域名,备注,折扣'
+        assert '产品海报,8.5折' in Path('task.csv').read_text()
+        targets = json.loads(Path('targets.json').read_text())
+        assert targets[0]['target']['server_port'] == 22
+        assert targets[0]['csv_row'] == 1
+        assert targets[1]['target']['server_port'] == 2222
+        assert len(Path('task.csv').read_text().splitlines()) == 3
+        assert Path('upload.csv').read_bytes().startswith(bytes([239, 187, 191]))
+        assert Path('upload.csv').read_text(encoding='utf-8-sig').startswith('原域名,新域名,备注,折扣')
+        assert '产品海报' not in prompt['text'] and 'other.example.com' not in prompt['text']
+        assert 'shop.example.com' in prompt['text'] and 'second.example.com' in prompt['text']
         for item in (dispatcher, migration):
             assert item['type'] == 'skill'
             path = Path(item['path'])
@@ -363,11 +390,16 @@ for line in sys.stdin:
             assert (path.parent / 'scripts/example.py').is_file()
             assert not (path.parent / 'install.py').exists()
         result = {'turn': {'id': 'codex-turn'}}
-        print(json.dumps({'method': 'turn/completed', 'params': {'turn': {'id': 'codex-turn', 'status': 'completed'}}}), flush=True)
+        if not CANCEL_RUNNING:
+            print(json.dumps({'method': 'turn/completed', 'params': {'turn': {'id': 'codex-turn', 'status': 'completed'}}}), flush=True)
+    elif method == 'turn/interrupt':
+        assert params == {'threadId': 'codex-thread', 'turnId': 'codex-turn'}
+        print(json.dumps({'method': 'turn/completed', 'params': {'turn': {'id': 'codex-turn', 'status': 'interrupted'}}}), flush=True)
+        result = {}
     else:
         result = {}
     print(json.dumps({'id': message['id'], 'result': result}), flush=True)
-""", encoding="utf-8")
+""".replace("CANCEL_RUNNING", repr(cancel_running)), encoding="utf-8")
     popen = subprocess.Popen
 
     def launch(args, **kwargs):
@@ -375,15 +407,92 @@ for line in sys.stdin:
         assert kwargs.pop("user") == user.uid
         assert kwargs.pop("group") == user.gid
         assert kwargs.pop("extra_groups") == []
-        assert kwargs["env"]["HOME"] == str(user.home)
-        assert "BAOTA_SHOP_API_KEY" not in kwargs["env"] and "SSH_AUTH_SOCK" not in kwargs["env"]
         assert args[-1] == "app-server"
         return popen([sys.executable, str(fake)], **kwargs)
 
     monkeypatch.setattr(dispatch_worker.subprocess, "Popen", launch)
+    if cancel_running:
+        original_wait = dispatch_worker.AppServer.wait_turn
+
+        def wait_and_cancel(client, turn_id, check_cancel):
+            dispatch_tasks.cancel(ctx, task_id, "alice")
+            assert ctx.conn.execute("SELECT status FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()[0] == "cancelling"
+            return original_wait(client, turn_id, check_cancel)
+
+        monkeypatch.setattr(dispatch_worker.AppServer, "wait_turn", wait_and_cancel)
     dispatch_worker.deliver(ctx, run_root, task)
     sent = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()
     assert (sent["status"], sent["thread_id"], sent["turn_id"], sent["turn_status"]) == (
-        "sent", "codex-thread", "codex-turn", "completed",
+        "cancelled" if cancel_running else "sent", "codex-thread", "codex-turn", "interrupted" if cancel_running else "completed",
     )
-    assert "legacy.example.com" not in json.dumps(dict(sent))
+    assert "fixture-secret" not in json.dumps({key: sent[key] for key in sent.keys() if key != "upload"})
+
+
+@pytest.mark.parametrize("status", ["preview", "queued", "sending", "sent", "failed", "unknown"])
+def test_members_cancel_own_tasks_only(ctx, status):
+    form = task_form(ctx)
+    app = create_app(ctx)
+    alice, csrf = session(ctx, app, "alice")
+    bob, bob_csrf = session(ctx, app, "bob")
+    admin, admin_csrf = session(ctx, app, "admin")
+    assert import_file(alice, csrf, form).status_code == 200
+    task_id = ctx.conn.execute("SELECT id FROM dispatch_tasks").fetchone()[0]
+    ctx.conn.execute("UPDATE dispatch_tasks SET status=?, turn_status='inProgress' WHERE id=?", (status, task_id))
+    url = f"/tasks/{task_id}"
+    assert "取消任务" in alice.get(url).text
+    assert "取消任务" in alice.get("/tasks").text
+    assert bob.post(url + "/cancel", data={"csrf": bob_csrf}).status_code == 404
+    assert admin.post(url + "/cancel", data={"csrf": admin_csrf}).status_code == 403
+    assert alice.post(url + "/cancel", data={"csrf": "invalid"}).status_code == 403
+    for _ in range(2):
+        assert alice.post(url + "/cancel", data={"csrf": csrf}).status_code == 303
+    row = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()
+    assert row["status"] == ("cancelling" if status in {"sending", "sent"} else "cancelled")
+    assert "取消任务" not in alice.get(url).text
+    assert dispatch_worker.claim(ctx) is None
+    assert ctx.conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='dispatch.cancel'").fetchone()[0] == 1
+    dispatch_worker._record(ctx, row, "sent", thread_id="test-thread")
+    assert ctx.conn.execute("SELECT status FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()[0] == row["status"]
+
+
+def test_cancelled_claim_is_not_started(ctx, tmp_path, monkeypatch):
+    form = task_form(ctx)
+    rows = dispatch_tasks.parse_import(f'原域名,新域名,备注,折扣\n{form["source"]},{form["target"]},,\n'.encode())
+    task_id = dispatch_tasks.create_previews(ctx, "alice", rows, form["dispatcher"], form["migration"])
+    task = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()
+    dispatch_tasks.confirm(ctx, task, "alice")
+    task = dispatch_worker.claim(ctx)
+    dispatch_tasks.cancel(ctx, task_id, "alice")
+
+    def unexpected_launch(*args, **kwargs):
+        pytest.fail("Cancelled task started a subprocess")
+
+    monkeypatch.setattr(dispatch_worker.subprocess, "Popen", unexpected_launch)
+    dispatch_worker.deliver(ctx, tmp_path, task)
+    assert ctx.conn.execute("SELECT status FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()[0] == "cancelled"
+
+
+def test_old_partial_batch_cannot_be_confirmed_or_executed(ctx, tmp_path, monkeypatch):
+    form = task_form(ctx)
+    alice, csrf = session(ctx, create_app(ctx), "alice")
+    assert import_file(alice, csrf, form).status_code == 200
+    task = ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone()
+    snapshot = json.loads(task["target_snapshot"])
+    snapshot["rows"].append(dict(csv_row=2, line=3, target=None, error="站点清单中找不到该新域名"))
+    ctx.conn.execute("UPDATE dispatch_tasks SET target_snapshot=? WHERE id=?", (json.dumps(snapshot), task["id"]))
+    url = f"/tasks/{task['id']}"
+    assert "确认并发送" not in alice.get(url).text
+    response = alice.post(url + "/confirm", data={"csrf": csrf, "confirmed": "1"})
+    assert response.status_code == 409 and "未匹配或无效站点" in response.text
+    assert dispatch_worker.claim(ctx) is None
+    # Older queued partial imports are checked again before starting Codex.
+    ctx.conn.execute("UPDATE dispatch_tasks SET status='queued' WHERE id=?", (task["id"],))
+    task = dispatch_worker.claim(ctx)
+
+    def unexpected_launch(*args, **kwargs):
+        pytest.fail("Partial batch must never launch Codex")
+
+    monkeypatch.setattr(dispatch_worker.subprocess, "Popen", unexpected_launch)
+    dispatch_worker.deliver(ctx, tmp_path, task)
+    stored = ctx.conn.execute("SELECT status, error FROM dispatch_tasks WHERE id=?", (task["id"],)).fetchone()
+    assert stored["status"] == "failed" and "未匹配或无效站点" in stored["error"]
