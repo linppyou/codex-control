@@ -30,10 +30,18 @@ ProbeTarget = tuple[tuple[str, ...], str | None]
 
 
 @dataclass(frozen=True)
+class SiteData:
+    products: int
+    importing: int
+    menus: int
+
+
+@dataclass(frozen=True)
 class Site:
     id: str
     created_at: int | None
     domains: tuple[str, ...]
+    data: SiteData | None = None
 
 
 @dataclass(frozen=True)
@@ -63,6 +71,15 @@ def _prefer(domains: tuple[str, ...], name: str | None) -> tuple[str, ...]:
     return tuple(sorted(set(domains), key=lambda host: (host != name, host.startswith("www."), host)))
 
 
+def _site_data(value: object) -> SiteData | None:
+    if not isinstance(value, dict):
+        return None
+    products, importing, menus = (value.get(key) for key in ("products", "importing", "menus"))
+    if all(type(count) is int and count >= 0 for count in (products, importing, menus)):
+        return SiteData(products, importing, menus)
+    return None
+
+
 def parse_inventory(payload: str) -> list[Site]:
     data = json.loads(payload)
     if data["version"] != 1 or not isinstance(data["sites"], list) or not isinstance(data["vhosts"], dict):
@@ -84,7 +101,7 @@ def parse_inventory(payload: str) -> list[Site]:
             aliases = tuple(host for domain in bound for host in vhosts.get(domain, ()))
         domains = _prefer((*bound, *aliases) or ((name,) if name else ()), name)
         if domains:
-            sites.append(Site(str(site_id), created_at, domains))
+            sites.append(Site(str(site_id), created_at, domains, _site_data(row.get("data"))))
     claimed = {host for site in sites for host in site.domains}
     for name, hosts in sorted(vhosts.items()):
         if hosts and claimed.isdisjoint(hosts):
@@ -114,7 +131,7 @@ def collect(server: Server, key: bytes) -> list[Site]:
                     "-i", str(key_path), "-p", str(server.port),
                     f"root@{server.host}", "codexctl-site-inventory",
                 ],
-                stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", timeout=15,
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", timeout=22,
             )
     except subprocess.TimeoutExpired as exc:
         raise InventoryError("SSH 采集超时") from exc
@@ -198,7 +215,10 @@ def _refresh(conn: sqlite3.Connection, ctx: Context) -> None:
                 cached = None
             synced = attempted if current is not None else (cached.synced_at if cached else None)
             if current is None:
-                current = [Site(row["id"], row["created_at"], tuple(row["domains"])) for row in cached.rows] if cached else []
+                current = [
+                    Site(row["id"], row["created_at"], tuple(row["domains"]), _site_data(row.get("data")))
+                    for row in cached.rows
+                ] if cached else []
             inventories[server] = (current, attempted, synced, error)
 
     counts = Counter(alias for current, *_ in inventories.values() for site in current for alias in _aliases(site))

@@ -69,14 +69,14 @@
     {% if server_id or date or state or q %}<a class="btn ghost" href="/servers">清除筛选</a>{% endif %}
   </form>
 
-  {% for server, days, count in groups %}
-  <details class="panel flush site-server">
+  {% for server, days, count, more in groups %}
+  <details class="panel flush site-server"{% if server_id %} open{% endif %}>
     <summary class="panel-head site-server-toggle" id="site-server-{{ server.id }}">
       <span class="site-server-title">{{ server.name }}</span>
       <span class="hint">{{ count }} 个站点</span>
     </summary>
     <div class="site-row site-columns" aria-hidden="true">
-      <span>域名</span><span>公网状态</span><span>源站直连</span><span>检测时间</span>
+      <span>域名</span><span>公网状态</span><span>源站直连</span><span>产品与菜单</span><span>检测时间</span>
     </div>
     {% for day, rows, day_count in days %}
     <section class="site-group" aria-labelledby="site-date-{{ server.id }}-{{ day }}">
@@ -93,12 +93,23 @@
           </div>
           <div class="site-result site-public"><span class="site-a11y">公网状态</span>{{ probe_result(row.public, row.status) }}</div>
           <div class="site-result site-origin{% if not row.origin %} site-origin-empty{% endif %}">{% if row.origin %}<span class="site-a11y site-mobile-label">源站直连</span>{{ probe_result(row.origin, row.origin_status) }}{% else %}<span class="hint" aria-hidden="true">—</span>{% endif %}</div>
+          <div class="site-result site-data">
+            {% if row.data is none %}
+            <span class="badge info">导入情况待确认</span>
+            {% else %}
+            {% if row.data_stale %}<span class="badge warn">上次数据</span>{% endif %}
+            <span class="badge {{ 'info' if row.data_stale else 'ok' if row.data.products else 'warn' }}">{{ ('产品 ' ~ row.data.products) if row.data.products else '无已发布产品' }}</span>
+            <span class="badge {{ 'info' if row.data_stale else 'ok' if row.data.menus else 'warn' }}">{{ ('菜单 ' ~ row.data.menus) if row.data.menus else '无导入菜单' }}</span>
+            {% if row.data.importing %}<span class="hint">导入中记录 {{ row.data.importing }}</span>{% endif %}
+            {% endif %}
+          </div>
           <span class="hint site-checked"><span class="site-a11y">检测时间</span>{{ row.checked_at }}</span>
         </li>
         {% endfor %}
       </ul>
     </section>
     {% endfor %}
+    {% if more %}<div class="panel-body"><a class="btn" href="{{ more }}">查看该服务器的全部 {{ count }} 个站点</a></div>{% endif %}
   </details>
   {% else %}
   <div class="panel empty-state">{{ '没有符合筛选条件的网站' if total else '暂无站点数据' }}</div>
