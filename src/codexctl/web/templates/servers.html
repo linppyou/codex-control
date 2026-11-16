@@ -70,18 +70,18 @@
   </form>
 
   {% for server, days, count in groups %}
-  <section class="panel flush site-server" aria-labelledby="site-server-{{ server.id }}">
-    <div class="panel-head">
-      <h3 id="site-server-{{ server.id }}"><a href="/servers/{{ server.id }}">{{ server.name }}</a></h3>
+  <details class="panel flush site-server">
+    <summary class="panel-head site-server-toggle" id="site-server-{{ server.id }}">
+      <span class="site-server-title">{{ server.name }}</span>
       <span class="hint">{{ count }} 个站点</span>
-    </div>
+    </summary>
     <div class="site-row site-columns" aria-hidden="true">
       <span>域名</span><span>公网状态</span><span>源站直连</span><span>检测时间</span>
     </div>
     {% for day, rows, day_count in days %}
     <section class="site-group" aria-labelledby="site-date-{{ server.id }}-{{ day }}">
       <div class="site-day">
-        <h4 id="site-date-{{ server.id }}-{{ day }}">{% if day == 'unknown' %}日期未知{% else %}<time datetime="{{ day }}">{{ day }}</time>{% endif %}</h4>
+        <h3 id="site-date-{{ server.id }}-{{ day }}">{% if day == 'unknown' %}日期未知{% else %}<time datetime="{{ day }}">{{ day }}</time>{% endif %}</h3>
         <span class="hint">{{ day_count }} 个站点</span>
       </div>
       <ul class="site-rows">
@@ -99,7 +99,7 @@
       </ul>
     </section>
     {% endfor %}
-  </section>
+  </details>
   {% else %}
   <div class="panel empty-state">{{ '没有符合筛选条件的网站' if total else '暂无站点数据' }}</div>
   {% endfor %}

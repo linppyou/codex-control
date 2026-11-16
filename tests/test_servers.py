@@ -266,6 +266,7 @@ def test_overview_groups_filters_and_paginates(ctx, monkeypatch):
     assert "other-site.com" not in first
     second = client.get("/servers?page=2").text
     assert "site50.com" in second and "日期未知" in second and "DNS 无可用地址" in second
+    assert second.count('<details class="panel flush site-server">') == 2
     first_server, next_server = second.split(f'id="site-server-{other.id}"', 1)
     assert first_server.index(f'id="site-server-{server.id}"') < first_server.index("site50.com")
     assert first_server.index("site50.com") < first_server.index("dns-error.com") < first_server.index("unknown.com")
