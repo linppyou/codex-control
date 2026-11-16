@@ -3,6 +3,7 @@ from __future__ import annotations
 import hmac
 import ipaddress
 import logging
+import re
 import secrets
 import threading
 import unicodedata
@@ -139,7 +140,10 @@ def csrf_guard(request: Request, csrf: str = Form("")) -> None:
     if request.method in ("GET", "HEAD", "OPTIONS") or request.url.path == "/login":
         return
     username, _ = session_csrf(request, csrf)
-    if request.url.path != "/logout" and username != "admin":
+    user_task_post = request.method == "POST" and (
+        path == "/tasks/preview" or re.fullmatch(r"/tasks/[0-9a-f]{32}/confirm", path)
+    )
+    if path != "/logout" and username != "admin" and not user_task_post:
         raise HTTPException(status_code=403, detail="仅管理员可以修改")
 
 
@@ -316,10 +320,11 @@ def create_app(
         resp.delete_cookie(SESSION_COOKIE, **cookie_attrs())
         return resp
 
-    from . import server_views, views
+    from . import dispatch_views, server_views, views
 
     views.register(app)
     server_views.register(app)
+    dispatch_views.register(app)
     if gateway:
         from . import gateway as gateway_views
 
