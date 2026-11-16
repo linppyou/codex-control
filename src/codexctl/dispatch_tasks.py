@@ -8,12 +8,15 @@ import sqlite3
 from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
-from . import db, dispatch_skills, events, repo, site_probe
+from . import db, dispatch_skills, events, repo, site_probe, site_registry, sites
 from .context import Context
+from .site_registry import Server
 from .sysusers import SysUser, UserError, valid_name
 
+# Keep the fields used by persisted task snapshots stable as assignment metadata changes.
 _TARGET_FIELDS = """
-    SELECT t.*, s.name AS server_name, s.host AS server_host
+    SELECT t.id, t.server_id, t.server_revision, t.domain, t.endpoint, t.credential_env, t.project, t.users,
+           s.name AS server_name, s.host AS server_host
       FROM dispatch_targets t JOIN site_servers s ON s.id = t.server_id
         AND s.revision = t.server_revision
 """
@@ -94,15 +97,22 @@ def save_target(
             values = (server_id, server["revision"], domain, endpoint, credential_env, project, json.dumps(sorted(names)))
             if target_id:
                 updated = ctx.conn.execute(
-                    """UPDATE dispatch_targets SET server_id=?, server_revision=?, domain=?, endpoint=?,
-                       credential_env=?, project=?, users=? WHERE id=?""",
-                    (*values, target_id),
+                    """UPDATE dispatch_targets
+                       SET inventory_site_id = CASE WHEN server_id = ? AND domain = ? THEN inventory_site_id END,
+                           server_id=?, server_revision=?, domain=?, endpoint=?, credential_env=?, project=?, users=?
+                       WHERE id=?""",
+                    (server_id, domain, *values, target_id),
                 )
                 if not updated.rowcount:
                     raise TaskError("此目标站授权已删除")
             else:
                 target_id = uuid4().hex
-                ctx.conn.execute("INSERT INTO dispatch_targets VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (target_id, *values))
+                ctx.conn.execute(
+                    """INSERT INTO dispatch_targets
+                       (id, server_id, server_revision, domain, endpoint, credential_env, project, users)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (target_id, *values),
+                )
             events.audit(ctx.conn, "admin", "dispatch.target_save", target_id, domain, now=ctx.now())
     except sqlite3.IntegrityError as exc:
         raise TaskError("该服务器已登记此目标站") from exc
@@ -117,6 +127,46 @@ def delete_target(ctx: Context, target_id: str) -> None:
 def list_targets(conn: sqlite3.Connection, username: str) -> list[sqlite3.Row]:
     rows = conn.execute(_TARGET_FIELDS + " ORDER BY s.name, t.domain").fetchall()
     return [row for row in rows if username == "admin" or username in json.loads(row["users"])]
+
+
+def pending_sites(
+    conn: sqlite3.Connection, server: Server, inventory: sites.Inventory | None,
+) -> list[dict]:
+    if inventory is None or inventory.revision != server.revision or inventory.synced_at is None:
+        return []
+    assigned = conn.execute(
+        "SELECT domain, inventory_site_id FROM dispatch_targets WHERE server_id=?",
+        (server.id,),
+    ).fetchall()
+    assigned_domains = {row["domain"] for row in assigned}
+    assigned_ids = {row["inventory_site_id"] for row in assigned}
+    return sorted(
+        (row for row in inventory.rows if row["id"] not in assigned_ids
+         and assigned_domains.isdisjoint(row["domains"])),
+        key=lambda row: row["domains"][0],
+    )
+
+
+def assign_site(ctx: Context, server_id: str, site_id: str, username: str) -> str:
+    with db.transaction(ctx.conn):
+        server = site_registry.get(ctx.conn, server_id)
+        if server is None:
+            raise TaskError("所选服务器不存在")
+        approved = pending_sites(ctx.conn, server, sites.snapshots(ctx.conn).get(server.id))
+        site = next((row for row in approved if row["id"] == site_id), None)
+        if site is None:
+            raise TaskError("该站点已分配或已不在服务器的站点清单中")
+        user, _ = recipient(ctx, username)
+        domain = site["domains"][0]
+        target_id = uuid4().hex
+        ctx.conn.execute(
+            """INSERT INTO dispatch_targets
+               (id, server_id, server_revision, domain, endpoint, credential_env, project, users, inventory_site_id)
+               VALUES (?, ?, ?, ?, '', '', '', ?, ?)""",
+            (target_id, server.id, server.revision, domain, json.dumps([user.name]), site["id"]),
+        )
+        events.audit(ctx.conn, "admin", "dispatch.site_assign", target_id, f"{domain} → {user.name}", now=ctx.now())
+    return domain
 
 
 def recipient(ctx: Context, username: str) -> tuple[SysUser, str]:
@@ -183,6 +233,8 @@ def create_preview(
         target = ctx.conn.execute(_TARGET_FIELDS + " WHERE t.server_id=? AND t.domain=?", (server_id, domain)).fetchone()
         if target is None or user.name not in json.loads(target["users"]):
             raise TaskError("所选服务器上没有授权给执行用户的目标站")
+        if not target["endpoint"] or not target["credential_env"]:
+            raise TaskError("所选站点的部署配置待管理员补齐")
         skills = []
         for skill_id, kind in ((dispatcher_id, "dispatcher"), (migration_id, "migration")):
             skill = dispatch_skills.get(ctx.conn, skill_id)

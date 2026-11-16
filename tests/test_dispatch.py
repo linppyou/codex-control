@@ -59,6 +59,63 @@ def task_form(ctx):
                 target="shop.example.com", **selections)
 
 
+def test_admin_assigns_only_pending_inventory_sites(ctx):
+    form = task_form(ctx)
+    second = site_registry.create(ctx, "admin", "第二台服务器", "8.8.8.8", "22", "")
+
+    def inventory(server_id, rows):
+        ctx.conn.execute(
+            "INSERT OR REPLACE INTO site_inventories VALUES (?, 0, ?, ?, NULL, ?)",
+            (server_id, ctx.now(), ctx.now(), json.dumps([
+                {"id": site_id, "domains": domains} for site_id, domains in rows
+            ])),
+        )
+
+    first = form["server_id"]
+    inventory(first, [
+        ("1", ["www.shop.example.com", "shop.example.com"]),
+        ("2", ["pending.example.com", "www.pending.example.com"]),
+    ])
+    inventory(second.id, [("2", ["other.example.com"])])
+    app = create_app(ctx)
+    admin, csrf = session(ctx, app, "admin")
+    alice, alice_csrf = session(ctx, app, "alice")
+    bob, _ = session(ctx, app, "bob")
+    page = admin.get("/tasks").text
+    assert 'action="/tasks/assign"' in page and 'name="source"' not in page
+    assert "www.shop.example.com" not in page
+    assert "pending.example.com" in page and "other.example.com" in page
+    payload = dict(server_id=first, site_id="2", recipient="alice")
+    assert alice.post("/tasks/assign", data=dict(payload, csrf=alice_csrf)).status_code == 403
+    assert admin.post("/tasks/assign", data=payload).status_code == 403
+    assert admin.post("/tasks/assign", data=dict(payload, csrf=csrf, site_id="missing")).status_code == 422
+    assert admin.post("/tasks/assign", data=dict(payload, csrf=csrf)).status_code == 303
+    assert admin.post("/tasks/assign", data=dict(payload, csrf=csrf, recipient="bob")).status_code == 422
+
+    page = admin.get("/tasks").text
+    assert "pending.example.com" not in page and "other.example.com" in page
+    assert "pending.example.com" in alice.get("/tasks").text
+    assert "待配置部署" in alice.get("/tasks").text
+    assert "pending.example.com" not in bob.get("/tasks").text
+    assert alice.post("/tasks/preview", data=dict(
+        form, csrf=alice_csrf, target="pending.example.com",
+    )).status_code == 422
+
+    target = next(row for row in dispatch_tasks.list_targets(ctx.conn, "alice") if row["domain"] == "pending.example.com")
+    dispatch_tasks.save_target(
+        ctx, target["id"], first, target["domain"], "https://panel.example.com/migrate",
+        "BAOTA_PENDING_API_KEY", "", "alice",
+    )
+    assert alice.post("/tasks/preview", data=dict(
+        form, csrf=alice_csrf, target=target["domain"],
+    )).status_code == 303
+    inventory(first, [("2", ["renamed.example.com"])])
+    assert "renamed.example.com" not in admin.get("/tasks").text
+    assert ctx.conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE action='dispatch.site_assign'"
+    ).fetchone()[0] == 1
+
+
 def test_user_previews_and_confirms_exactly_once(ctx):
     form = task_form(ctx)
     ctx.settings = dataclasses.replace(ctx.settings, web_cookie_secure=False)

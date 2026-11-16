@@ -4,20 +4,64 @@
 <header class="page-head">
   <div>
     <h1>网站迁移</h1>
-    <div class="sub">生成分发提示词，确认后发送给 Codex。</div>
   </div>
   {% if is_admin %}<div class="toolbar"><a class="btn" href="/dispatch-targets">目标站授权</a><a class="btn" href="/skills">Skill 管理</a></div>{% endif %}
 </header>
 <div class="dispatch-layout">
   <section class="panel dispatch-compose" aria-labelledby="dispatch-compose-title">
+    {% if assigning %}
+    <h2 id="dispatch-compose-title">分配站点任务</h2>
+    {% if not pending %}
+    <p class="hint">暂无待分配站点。<a href="/servers">查看服务器巡检</a></p>
+    {% elif not users %}
+    <p class="hint">暂无可执行任务的用户。<a href="/users">管理 Codex 账号分配</a></p>
+    {% else %}
+    <form class="dispatch-form" method="post" action="/tasks/assign" data-site-assignment>
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label><span id="assign-server-label">服务器</span>
+        <select name="server_id" aria-labelledby="assign-server-label" required>
+          {% for server, choices in pending %}
+          <option value="{{ server.id }}"{% if server.id == selected_server %} selected{% endif %}>{{ server.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label><span id="assign-site-label">待分配站点</span>
+        <select name="site_id" aria-labelledby="assign-site-label" required>
+          <option value="">选择站点</option>
+          {% for server, choices in pending %}
+          <optgroup label="{{ server.name }}" data-server="{{ server.id }}">
+            {% for site in choices %}<option value="{{ site.id }}">{{ site.domains[0] }}</option>{% endfor %}
+          </optgroup>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="dispatch-wide"><span id="assign-recipient-label">分配给</span>
+        <select name="recipient" aria-labelledby="assign-recipient-label" required>
+          <option value="">选择用户</option>
+          {% for user in users %}<option value="{{ user }}">{{ user }}</option>{% endfor %}
+        </select>
+      </label>
+      <div class="dispatch-actions dispatch-wide"><button class="btn primary" type="submit">分配任务</button></div>
+    </form>
+    {% endif %}
+    {% else %}
     <h2 id="dispatch-compose-title">新建任务</h2>
+    {% if not is_admin and assigned %}
+    <h3>已分配站点</h3>
+    <ul class="dispatch-missing">
+      {% for site in assigned %}
+      <li>{{ site.domain }} · {{ site.server_name }}{% if not site.endpoint or not site.credential_env %} <span class="badge warn">待配置部署</span>{% endif %}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
     {% set dispatchers = catalog | selectattr('kind', 'equalto', 'dispatcher') | list %}
     {% set migrations = catalog | selectattr('kind', 'equalto', 'migration') | list %}
     {% if not managed %}
     <p class="flash bad">当前主机为纯网关模式。发送任务需要本机 Linux 用户和 Codex App Server。</p>
     {% elif not servers or not dispatchers or not migrations or (is_admin and not users) %}
     <ul class="dispatch-missing">
-      {% if not servers %}<li>暂无可选目标站。{% if is_admin %}<a href="/dispatch-targets">添加站点授权</a>{% else %}请联系管理员授权。{% endif %}</li>{% endif %}
+      {% if not assigned %}<li>暂无已分配站点。{% if is_admin %}<a href="/tasks">分配站点</a>{% endif %}</li>
+      {% elif not servers %}<li>部署配置完成后可生成迁移任务。</li>{% endif %}
       {% if not dispatchers or not migrations %}<li>需要上架分发 Skill 和迁移 Skill。{% if is_admin %}<a href="/skills">上传 Skill</a>{% endif %}</li>{% endif %}
       {% if is_admin and not users %}<li>没有已绑定 Codex 账号的执行用户。<a href="/users">管理账号分配</a></li>{% endif %}
     </ul>
@@ -66,6 +110,7 @@
       {% endif %}
       <div class="dispatch-actions dispatch-wide"><button class="btn primary" type="submit">生成提示词</button></div>
     </form>
+    {% endif %}
     {% endif %}
   </section>
 

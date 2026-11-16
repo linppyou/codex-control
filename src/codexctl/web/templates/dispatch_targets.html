@@ -55,6 +55,7 @@
         <strong class="dispatch-list-title">{{ item.domain }}</strong>
         <div class="dispatch-list-meta">
           <span>{{ item.server_name }}</span><span>{{ item.users }}</span>
+          {% if not item.endpoint or not item.credential_env %}<span class="badge warn">待配置部署</span>{% endif %}
           {% if not item.current %}<span class="badge warn">服务器已变更，请复核</span>{% endif %}
         </div>
         <div class="dispatch-item-actions">

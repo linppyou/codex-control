@@ -192,6 +192,7 @@ CREATE TABLE IF NOT EXISTS dispatch_targets (
     credential_env TEXT NOT NULL,
     project TEXT NOT NULL,
     users TEXT NOT NULL,
+    inventory_site_id TEXT,
     UNIQUE (server_id, domain)
 );
 CREATE TABLE IF NOT EXISTS dispatch_tasks (
@@ -303,6 +304,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE web_sessions ADD COLUMN system_uid INTEGER")
         if "password_configured" not in {r["name"] for r in conn.execute("PRAGMA table_info(admins)")}:
             conn.execute("ALTER TABLE admins ADD COLUMN password_configured INTEGER NOT NULL DEFAULT 0")
+        if "inventory_site_id" not in {r["name"] for r in conn.execute("PRAGMA table_info(dispatch_targets)")}:
+            conn.execute("ALTER TABLE dispatch_targets ADD COLUMN inventory_site_id TEXT")
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS dispatch_targets_inventory_site
+            ON dispatch_targets(server_id, inventory_site_id) WHERE inventory_site_id IS NOT NULL
+        """)
         key_columns = {r["name"] for r in conn.execute("PRAGMA table_info(api_keys)")}
         if "account_pk" in key_columns:
             _migrate_user_keys(conn, key_columns)

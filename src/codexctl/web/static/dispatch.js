@@ -1,4 +1,19 @@
 (function () {
+  const assignment = document.querySelector("[data-site-assignment]");
+  if (assignment) {
+    const server = assignment.elements.server_id;
+    const sites = assignment.elements.site_id;
+    const placeholder = sites.options[0];
+    const options = new Map(Array.from(sites.querySelectorAll("optgroup"), group =>
+      [group.dataset.server, Array.from(group.children)]));
+    function updateSites() {
+      sites.replaceChildren(placeholder, ...(options.get(server.value) ?? []));
+      sites.selectedIndex = 0;
+    }
+    server.addEventListener("change", updateSites);
+    updateSites();
+  }
+
   const server = document.getElementById("dispatch-server");
   const domains = document.getElementById("dispatch-domains");
   if (server && domains) {

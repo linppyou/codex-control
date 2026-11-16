@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+from urllib.parse import urlencode
 
 from fastapi import Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
-from .. import dispatch_skills, dispatch_tasks, repo, site_registry
+from .. import dispatch_skills, dispatch_tasks, repo, site_registry, sites
 from .app import current_admin, current_user
 from .server_views import _time
 from .views import _redirect
@@ -29,27 +30,46 @@ def register(app) -> None:
             raise HTTPException(404, "任务不存在")
         return row
 
-    def task_page(request, who, data=None, *, status=200, err=""):
+    def task_page(request, who, data=None, *, server_id="", status=200, err=""):
         user, csrf = who
+        assigning = user == "admin" and data is None
+        pending = []
         with lock:
-            targets = dispatch_tasks.list_targets(ctx.conn, user)
-            catalog = dispatch_skills.list_skills(ctx.conn)
-            users = [item.username for item in repo.all_active(ctx.conn)] if user == "admin" else []
+            if assigning:
+                inventories = sites.snapshots(ctx.conn)
+                for server in site_registry.list_servers(ctx.conn):
+                    choices = dispatch_tasks.pending_sites(ctx.conn, server, inventories.get(server.id))
+                    if choices:
+                        pending.append((server, choices))
+            assigned = [] if assigning else dispatch_tasks.list_targets(ctx.conn, user)
+            catalog = [] if assigning else dispatch_skills.list_skills(ctx.conn)
+            users = []
+            if user == "admin":
+                for item in repo.all_active(ctx.conn):
+                    try:
+                        dispatch_tasks.recipient(ctx, item.username)
+                    except dispatch_tasks.TaskError:
+                        continue
+                    users.append(item.username)
             history = ctx.conn.execute(
                 """SELECT id, recipient, source_url, title, status, created_at FROM dispatch_tasks
                    WHERE ?='admin' OR owner=? OR recipient=?
                    ORDER BY created_at DESC, rowid DESC LIMIT 50""",
                 (user, user, user),
             ).fetchall()
+        targets = [row for row in assigned if row["endpoint"] and row["credential_env"]]
         servers = {row["server_id"]: row["server_name"] for row in targets}
+        if pending and not any(server.id == server_id for server, _ in pending):
+            server_id = pending[0][0].id
         return render(
             request, "dispatch_tasks.html", status=status, admin=user, csrf=csrf, servers=servers,
             targets=targets, users=users, data=data or {}, catalog=catalog,
+            assigning=assigning, pending=pending, selected_server=server_id, assigned=assigned,
             status_map=STATUS, history=history, time=_time, err=err,
         )
 
     @app.get("/tasks", response_class=HTMLResponse)
-    def tasks(request: Request, draft: str = "", who: tuple[str, str] = Depends(current_user)):
+    def tasks(request: Request, draft: str = "", server_id: str = "", who: tuple[str, str] = Depends(current_user)):
         data = None
         if draft:
             with lock:
@@ -60,7 +80,19 @@ def register(app) -> None:
                 server_id=target["server_id"], target=target["domain"], source=task["source_url"],
                 recipient=task["recipient"], dispatcher=dispatcher["id"], migration=migration["id"],
             )
-        return task_page(request, who, data)
+        return task_page(request, who, data, server_id=server_id)
+
+    @app.post("/tasks/assign")
+    def assign(
+        request: Request, server_id: str = Form(""), site_id: str = Form(""), recipient: str = Form(""),
+        admin: tuple[str, str] = Depends(current_admin),
+    ):
+        try:
+            with lock:
+                domain = dispatch_tasks.assign_site(ctx, server_id, site_id, recipient)
+        except dispatch_tasks.TaskError as exc:
+            return task_page(request, admin, server_id=server_id, status=422, err=str(exc))
+        return _redirect("/tasks?" + urlencode({"server_id": server_id}), msg=f"{domain} 已分配给 {recipient}")
 
     @app.post("/tasks/preview")
     def preview(
