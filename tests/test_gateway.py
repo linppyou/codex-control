@@ -200,7 +200,7 @@ def visible_token(client, username):
 
 def test_gateway_user_creation_and_assignment_without_local_codex(setup):
     ctx, accs, _ = setup
-    assert {job.id for job in daemon.build_scheduler(ctx).get_jobs()} == {"refresh", "quota", "api-usage"}
+    assert {job.id for job in daemon.build_scheduler(ctx).get_jobs()} == {"refresh", "quota", "api-usage", "sites"}
     with client_for(ctx, lambda _: httpx.Response(500)) as client:
         assert client.get("/users/demo-user/api-key", follow_redirects=False).status_code == 303
         csrf = login(client)
