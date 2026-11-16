@@ -62,6 +62,19 @@ def test_busy_timeout_set(tmp_path):
     assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 30000
 
 
+def test_migrates_existing_web_sessions(tmp_path):
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as old:
+        old.execute(
+            "CREATE TABLE web_sessions (token_hash TEXT PRIMARY KEY, username TEXT NOT NULL, "
+            "csrf TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)"
+        )
+        old.execute("INSERT INTO web_sessions VALUES ('hash', 'admin', 'csrf', 0, 123)")
+
+    with db.connect(path) as conn:
+        assert tuple(conn.execute("SELECT username, system_uid FROM web_sessions").fetchone()) == ("admin", None)
+
+
 def test_migrates_old_accounts_table(tmp_path):
     path = tmp_path / "old.db"
     old = sqlite3.connect(path)

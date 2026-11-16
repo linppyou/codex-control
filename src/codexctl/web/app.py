@@ -14,11 +14,13 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .. import events, pricing, webauth
+from .. import events, pam, pricing, webauth
 from ..context import Context
 from .charts import fmt_tokens
 from ..devicelogin import DeviceLoginManager
+from ..sysusers import UserError
 from ..webauth import (
+    MAX_LOGIN_PASSWORD_LEN,
     MAX_LOGIN_USERNAME_LEN,
     SESSION_TTL,
     LoginRateLimiter,
@@ -70,7 +72,22 @@ def client_ip(request: Request) -> str:
     return _valid_ip(host) or clean_text(host)
 
 
-def current_admin(request: Request) -> tuple[str, str]:
+def _system_registration(ctx: Context, username: str) -> tuple[bool, int | None]:
+    if username in {"admin", "root"}:
+        return False, None
+    uid = webauth.enrolled_system_uid(ctx.conn, username)
+    return uid is not None or username in ctx.settings.web_system_users, uid
+
+
+def _system_uid(ctx: Context, username: str, enrolled_uid: int | None) -> int | None:
+    try:
+        uid = ctx.lookup_user(username, max(1, ctx.settings.min_uid)).uid
+    except (UserError, OSError):
+        return None
+    return uid if enrolled_uid is None or uid == enrolled_uid else None
+
+
+def current_user(request: Request) -> tuple[str, str]:
     app = request.app
     token = request.cookies.get(SESSION_COOKIE)
     ctx: Context = app.state.ctx
@@ -78,16 +95,28 @@ def current_admin(request: Request) -> tuple[str, str]:
     if token:
         with app.state.lock:
             found = webauth.get_session(ctx.conn, token, now=ctx.now())
-    if found is None:
-        if request.method == "GET":
-            raise HTTPException(status_code=303, headers={"Location": "/login"})
-        raise HTTPException(status_code=403, detail="未登录")
-    return found
+            if found is not None:
+                system_login, enrolled_uid = _system_registration(ctx, found.username)
+    if found is not None:
+        if system_login:
+            if found.system_uid is not None and found.system_uid == _system_uid(ctx, found.username, enrolled_uid):
+                return found.username, found.csrf
+        elif found.system_uid is None:
+            return found.username, found.csrf
+    if request.method == "GET":
+        raise HTTPException(status_code=303, headers={"Location": "/login"})
+    raise HTTPException(status_code=403, detail="未登录")
 
 
-def admin_csrf(request: Request, csrf: str = Form("")) -> tuple[str, str]:
+def current_admin(user: tuple[str, str] = Depends(current_user)) -> tuple[str, str]:
+    if user[0] != "admin":
+        raise HTTPException(status_code=403, detail="仅管理员可以访问")
+    return user
+
+
+def session_csrf(request: Request, csrf: str = Form("")) -> tuple[str, str]:
     """POST 路由依赖：要求已登录且表单 csrf 与会话一致，返回 (username, csrf)。"""
-    username, expected = current_admin(request)
+    username, expected = current_user(request)
     if not csrf or not hmac.compare_digest(csrf.encode(), expected.encode()):
         raise HTTPException(status_code=403, detail="CSRF 校验失败")
     return username, expected
@@ -97,7 +126,7 @@ def csrf_guard(request: Request, csrf: str = Form("")) -> None:
     """全局依赖：除 /login 外的所有写请求都必须带有效会话和 csrf。"""
     if request.method in ("GET", "HEAD", "OPTIONS") or request.url.path == "/login":
         return
-    username, _ = admin_csrf(request, csrf)
+    username, _ = session_csrf(request, csrf)
     if request.url.path != "/logout" and username != "admin":
         raise HTTPException(status_code=403, detail="仅管理员可以修改")
 
@@ -211,23 +240,34 @@ def create_app(
             now = ctx.now()
             if not (lim.allowed(ip, now) and ulim.allowed(ukey, now)):
                 return login_page(request, 429, "尝试过多，请 15 分钟后再试")
-            stored = webauth.get_hash(ctx.conn, username)
-        # argon2 较慢，放在全局锁之外；stored 为 None 时用假哈希，仍然校验
-        ok = webauth.check_password(stored, password)
+            # 先占用尝试次数，成功后清除，避免并发请求绕过限速。
+            lim.record_failure(ip, now)
+            ulim.record_failure(ukey, now)
+            system_login, enrolled_uid = _system_registration(ctx, username)
+            stored = None if system_login else webauth.get_hash(ctx.conn, username)
+        # 密码验证放在全局锁之外。
+        system_uid = None
+        if system_login:
+            system_uid = _system_uid(ctx, username, enrolled_uid)
+            ok = (
+                system_uid is not None and len(password) <= MAX_LOGIN_PASSWORD_LEN
+                and pam.verify_password(username, password)
+            )
+        else:
+            ok = webauth.check_password(stored, password)
         with app.state.lock:
             now = ctx.now()
             if not ok:
-                lim.record_failure(ip, now)
-                ulim.record_failure(ukey, now)
                 events.audit(ctx.conn, "web", "web.login_failed", ip, clean_text(username, 32), now=now)
                 return login_page(request, 200, "用户名或密码错误")
-            webauth.rehash_if_needed(ctx.conn, username, stored, password)
+            if stored is not None:
+                webauth.rehash_if_needed(ctx.conn, username, stored, password)
             lim.reset(ip)
             ulim.reset(ukey)
             old = request.cookies.get(SESSION_COOKIE)
             if old:
                 webauth.delete_session(ctx.conn, old)
-            token, _ = webauth.create_session(ctx.conn, username, now=now)
+            token, _ = webauth.create_session(ctx.conn, username, now=now, system_uid=system_uid)
             events.audit(ctx.conn, username, "web.login", ip, now=now)
         resp = RedirectResponse("/", status_code=303)
         resp.set_cookie(SESSION_COOKIE, token, max_age=SESSION_TTL, **cookie_attrs())
@@ -235,7 +275,7 @@ def create_app(
         return resp
 
     @app.post("/logout")
-    def logout(request: Request, _admin: tuple[str, str] = Depends(admin_csrf)):
+    def logout(request: Request):
         token = request.cookies.get(SESSION_COOKIE, "")
         with app.state.lock:
             webauth.delete_session(ctx.conn, token)

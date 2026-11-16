@@ -36,7 +36,7 @@ def test_short_password_and_duplicate(conn):
 
 def test_session_roundtrip(conn):
     token, csrf = webauth.create_session(conn, "bob", now=1000)
-    assert webauth.get_session(conn, token, now=1001) == ("bob", csrf)
+    assert webauth.get_session(conn, token, now=1001) == webauth.WebSession("bob", csrf, None)
     stored = conn.execute("SELECT token_hash FROM web_sessions").fetchone()["token_hash"]
     assert stored != token and token not in stored
     assert webauth.get_session(conn, token, now=1000 + webauth.SESSION_TTL + 1) is None

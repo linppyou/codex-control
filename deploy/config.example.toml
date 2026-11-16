@@ -9,6 +9,8 @@
 # quota_crit_percent = 95.0
 # 面板「用户」页隐藏的服务账号
 # hidden_users = ["www", "mysql", "redis", "memcached"]
+# 允许使用现有 Linux 密码登录面板的普通用户
+# web_system_users = ["zdy", "wangcheng", "liyujie", "husongfa", "xxhmxw", "zhangshunhui", "xieshihao", "chenjunhao"]
 
 # 创建用户时确保 codex 可用（缺失时自动安装）
 # codex_wrapper = "/usr/local/bin/codex"

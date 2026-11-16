@@ -110,7 +110,12 @@ CREATE TABLE IF NOT EXISTS web_sessions (
     username TEXT NOT NULL,
     csrf TEXT NOT NULL,
     created_at INTEGER NOT NULL,
-    expires_at INTEGER NOT NULL
+    expires_at INTEGER NOT NULL,
+    system_uid INTEGER
+);
+CREATE TABLE IF NOT EXISTS web_system_users (
+    username TEXT PRIMARY KEY,
+    uid INTEGER NOT NULL
 );
 """
 
@@ -163,6 +168,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "last_model" not in cols:
         conn.execute("ALTER TABLE log_offsets ADD COLUMN last_model TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS usage_events_user_session ON usage_events(username, session_file)")
+    with transaction(conn):
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(web_sessions)")}
+        if "system_uid" not in cols:
+            conn.execute("ALTER TABLE web_sessions ADD COLUMN system_uid INTEGER")
 
 
 @contextmanager

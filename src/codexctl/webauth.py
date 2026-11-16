@@ -4,6 +4,7 @@ import hashlib
 import re
 import secrets
 import sqlite3
+from dataclasses import dataclass
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
@@ -96,24 +97,48 @@ def verify_login(conn: sqlite3.Connection, username: str, password: str) -> bool
     return True
 
 
-def create_session(conn: sqlite3.Connection, username: str, *, now: int) -> tuple[str, str]:
+def enroll_system_user(conn: sqlite3.Connection, username: str, uid: int) -> None:
+    conn.execute(
+        "INSERT INTO web_system_users(username, uid) VALUES (?, ?) "
+        "ON CONFLICT(username) DO UPDATE SET uid = excluded.uid",
+        (username, uid),
+    )
+    conn.execute("DELETE FROM web_sessions WHERE username = ?", (username,))
+
+
+def enrolled_system_uid(conn: sqlite3.Connection, username: str) -> int | None:
+    row = conn.execute("SELECT uid FROM web_system_users WHERE username = ?", (username,)).fetchone()
+    return row["uid"] if row else None
+
+
+@dataclass(frozen=True)
+class WebSession:
+    username: str
+    csrf: str
+    system_uid: int | None
+
+
+def create_session(
+    conn: sqlite3.Connection, username: str, *, now: int, system_uid: int | None = None
+) -> tuple[str, str]:
     token = secrets.token_urlsafe(32)
     csrf = secrets.token_urlsafe(32)
     with transaction(conn):
         conn.execute("DELETE FROM web_sessions WHERE expires_at < ?", (now,))
         conn.execute(
-            "INSERT INTO web_sessions(token_hash, username, csrf, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
-            (_hash_token(token), username, csrf, now, now + SESSION_TTL),
+            "INSERT INTO web_sessions(token_hash, username, csrf, created_at, expires_at, system_uid) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (_hash_token(token), username, csrf, now, now + SESSION_TTL, system_uid),
         )
     return token, csrf
 
 
-def get_session(conn: sqlite3.Connection, token: str, *, now: int) -> tuple[str, str] | None:
+def get_session(conn: sqlite3.Connection, token: str, *, now: int) -> WebSession | None:
     row = conn.execute(
-        "SELECT username, csrf FROM web_sessions WHERE token_hash = ? AND expires_at >= ?",
+        "SELECT username, csrf, system_uid FROM web_sessions WHERE token_hash = ? AND expires_at >= ?",
         (_hash_token(token), now),
     ).fetchone()
-    return (row["username"], row["csrf"]) if row else None
+    return WebSession(row["username"], row["csrf"], row["system_uid"]) if row else None
 
 
 def delete_session(conn: sqlite3.Connection, token: str) -> None:

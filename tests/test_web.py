@@ -4,7 +4,7 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from codexctl import webauth
+from codexctl import pam, repo, webauth
 from codexctl.web.app import create_app
 
 PW = "correct-horse-battery"
@@ -210,21 +210,55 @@ def test_favicon_public(client):
     assert 'rel="icon"' in client.get("/login").text
 
 
-def test_user_panel_is_read_only(client, ctx):
+def test_existing_web_user_is_limited_to_own_panel(client, ctx):
     webauth.create_admin(ctx.conn, "linpp", PW, now=ctx.now())
     assert do_login(client, username="linpp").status_code == 303
-    for path in ("/", "/accounts", "/users", "/usage", "/pricing", "/audit"):
-        response = client.get(path)
-        assert response.status_code == 200
-        assert "用户面板（只读）" in response.text
-        assert 'method="post" action="/logout"' in response.text
-        assert 'method="post" action="/pricing/add"' not in response.text
-        assert 'method="post" action="/users/create"' not in response.text
-    csrf = re.search(r'name="csrf" value="([^"]+)"', client.get("/").text).group(1)
-    for path in ("/users/create", "/users/assign", "/accounts/login", "/pricing/add"):
-        assert client.post(path, data={"csrf": csrf}).status_code == 403
-    assert client.get("/accounts/login/example/status").status_code == 403
+    assert client.get("/").headers["location"] == "/users/linpp"
+    page = client.get("/users/linpp")
+    assert page.status_code == 200
+    assert "用户面板（只读）" in page.text
+    assert 'method="post" action="/logout"' in page.text
+    assert client.get("/users/alice").status_code == 403
+    csrf = re.search(r'name="csrf" value="([^"]+)"', page.text).group(1)
     assert client.post("/logout", data={"csrf": csrf}).status_code == 303
+
+
+def test_system_users_authenticate_with_pam_and_only_see_their_own_data(ctx, monkeypatch):
+    ctx.settings = dataclasses.replace(ctx.settings, web_cookie_secure=False, web_system_users=("alice", "bob"))
+    for name in ("alice", "bob", "linpp"):
+        ctx.test_users.add(name)
+        delta = dict.fromkeys(repo.USAGE_FIELDS, 17)
+        repo.insert_usage(ctx.conn, name, None, ctx.now(), delta, f"{name}-session.jsonl", f"{name}-model")
+    system_passwords = {"alice": "alice-pw", "bob": "bob-pw", "linpp": "linpp-pw"}
+    monkeypatch.setattr(pam, "verify_password", lambda name, password: system_passwords.get(name) == password)
+    webauth.create_admin(ctx.conn, "alice", PW, now=ctx.now())
+    app = create_app(ctx)
+    with TestClient(app, follow_redirects=False) as client:
+        old_token, _ = webauth.create_session(ctx.conn, "alice", now=ctx.now())
+        client.cookies.set("codexctl_session", old_token)
+        assert client.get("/").headers["location"] == "/login"
+        assert do_login(client, "alice", PW).status_code == 200
+        assert do_login(client, "linpp", "linpp-pw").status_code == 200
+        for name, other in (("alice", "bob"), ("bob", "alice")):
+            assert do_login(client, name, system_passwords[name]).status_code == 303
+            assert client.get("/").headers["location"] == f"/users/{name}"
+            page = client.get(f"/users/{name}")
+            assert page.status_code == 200 and f"{name}-model" in page.text
+            assert f"{other}-model" not in page.text and f"{other}-session.jsonl" not in page.text
+            assert "我的数据" in page.text
+            for path in (f"/users/{other}", f"/users/%20{other}", "/accounts", "/accounts/demo/quota",
+                         "/accounts/demo/quota.csv", "/accounts/login/example/status", "/users", "/usage",
+                         "/usage.csv", "/pricing", "/audit"):
+                assert client.get(path).status_code == 403, path
+            csrf = re.search(r'name="csrf" value="([^"]+)"', page.text).group(1)
+            for path in (f"/users/{name}/fix", "/users/assign", "/accounts/login", "/pricing/add"):
+                assert client.post(path, data={"csrf": csrf}).status_code == 403, path
+
+        system_passwords["bob"] = "new-password"
+        assert do_login(client, "bob", "bob-pw").status_code == 200
+        assert do_login(client, "bob", "new-password").status_code == 303
+        ctx.settings = dataclasses.replace(ctx.settings, web_system_users=("alice",))
+        assert client.get("/users/bob").headers["location"] == "/login"
 
 
 def test_default_admin_created_once(ctx):

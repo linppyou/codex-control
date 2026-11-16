@@ -4,6 +4,8 @@ import tomllib
 from dataclasses import dataclass, fields
 from pathlib import Path
 
+from .sysusers import valid_name
+
 _PATH_KEYS = {"state_dir", "key_file", "codex_bin", "codex_wrapper", "codex_requirements"}
 
 
@@ -30,6 +32,7 @@ class Settings:
     web_cookie_secure: bool = True
     web_socket: str = "/run/codexctl/web.sock"
     web_socket_group: str = "www"
+    web_system_users: tuple[str, ...] = ()
     hidden_users: tuple[str, ...] = ()
     codex_wrapper: Path = Path("/usr/local/bin/codex")
     codex_requirements: Path = Path("/etc/codex/requirements.toml")
@@ -66,6 +69,13 @@ def load_settings(path: Path | None) -> Settings:
         if key in _PATH_KEYS:
             value = Path(value)
         elif key == "hidden_users":
+            value = tuple(value)
+        elif key == "web_system_users":
+            if not isinstance(value, list) or any(
+                not isinstance(name, str) or not valid_name(name) or name in {"admin", "root"}
+                for name in value
+            ):
+                raise ValueError("web_system_users 必须是普通 Linux 用户名列表")
             value = tuple(value)
         kwargs[key] = value
     return Settings(**kwargs)

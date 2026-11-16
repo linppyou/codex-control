@@ -26,7 +26,7 @@ from ..publisher import PublishError
 from ..runner import CommandError
 from ..sysusers import UserError
 from ..useradmin import UserAdminError
-from .app import clean_text, current_admin
+from .app import clean_text, current_admin, current_user
 from .charts import fmt_md, fmt_md_hm, quota_chart, week_trend_chart
 
 HANDLED = (
@@ -281,12 +281,12 @@ def register(app) -> None:
         return f"web:{admin[0]}"
 
     @app.get("/", response_class=HTMLResponse)
-    def index(request: Request, days: int = 7, admin: tuple[str, str] = Depends(current_admin)):
+    def index(request: Request, days: int = 7, admin: tuple[str, str] = Depends(current_user)):
+        if admin[0] != "admin":
+            return _redirect(f"/users/{admin[0]}")
         with lock:
-            msg, err = "", ""
-            if admin[0] == "admin":
-                devlogins.sweep()
-                msg, err = _complete_finished_logins(app, admin)
+            devlogins.sweep()
+            msg, err = _complete_finished_logins(app, admin)
             cards = _account_rows(ctx)
             analytics = user_comparison(days)
             alerts = [
@@ -302,10 +302,8 @@ def register(app) -> None:
     @app.get("/accounts", response_class=HTMLResponse)
     def accounts_page(request: Request, admin: tuple[str, str] = Depends(current_admin)):
         with lock:
-            msg, err = "", ""
-            if admin[0] == "admin":
-                devlogins.sweep()
-                msg, err = _complete_finished_logins(app, admin)
+            devlogins.sweep()
+            msg, err = _complete_finished_logins(app, admin)
             rows = _account_table(ctx)
         return render(request, "accounts.html", admin=admin[0], csrf=admin[1], rows=rows, **_flash(msg, err))
 
@@ -445,8 +443,6 @@ def register(app) -> None:
 
     @app.get("/accounts/login/{login_id}", response_class=HTMLResponse)
     def login_page(request: Request, login_id: str, admin: tuple[str, str] = Depends(current_admin)):
-        if admin[0] != "admin":
-            raise HTTPException(status_code=403, detail="仅管理员可以查看设备登录")
         with lock:
             devlogins.sweep()
             st = devlogins.status(login_id)
@@ -469,8 +465,6 @@ def register(app) -> None:
 
     @app.get("/accounts/login/{login_id}/status")
     def login_status(login_id: str, admin: tuple[str, str] = Depends(current_admin)):
-        if admin[0] != "admin":
-            raise HTTPException(status_code=403, detail="仅管理员可以查看设备登录")
         with lock:
             devlogins.sweep()
             st = devlogins.status(login_id)
@@ -530,8 +524,7 @@ def register(app) -> None:
     def users_page(request: Request, admin: tuple[str, str] = Depends(current_admin)):
         show_all = request.query_params.get("all") == "1"
         with lock:
-            if admin[0] == "admin":
-                devlogins.sweep()
+            devlogins.sweep()
             now = ctx.now()
             hidden = set(ctx.settings.hidden_users)
             book = pricing.PriceBook(repo.list_prices(ctx.conn))
@@ -588,7 +581,7 @@ def register(app) -> None:
         with lock:
             devlogins.sweep()
         try:
-            useradmin.validate_new_user(ctx, name, password, password2)
+            useradmin.validate_new_user(ctx, name, password, password2, panel_login=True)
         except HANDLED as e:
             return _redirect("/users", err=str(e))
         # codex 首次安装可能耗时较长，放在全局锁之外，避免阻塞面板其它请求
@@ -599,14 +592,14 @@ def register(app) -> None:
         with lock:
             try:
                 user, note = useradmin.create(
-                    ctx, name, password, password2, actor_of(admin), codex_note=codex_note
+                    ctx, name, password, password2, actor_of(admin), codex_note=codex_note, panel_login=True,
                 )
             except HANDLED as e:
                 return _redirect("/users", err=str(e))
         msg = f"用户 {user.name} 已创建（uid {user.uid}，家目录 {user.home}）"
         if note:
             msg += f"，{note}"
-        msg += "；请在列表勾选后分配账号"
+        msg += "；已开通面板登录，可用同一组用户名和密码登录。请在列表勾选后分配 Codex 账号"
         return _redirect("/users", msg=msg)
 
     @app.post("/users/assign")
@@ -826,7 +819,10 @@ def register(app) -> None:
         return _redirect(back, msg=msg, err=err)
 
     @app.get("/users/{name}", response_class=HTMLResponse)
-    def user_detail_page(name: str, request: Request, days: int = 7, page: int = 1, model: str = "", account_filter: str = "", admin: tuple[str, str] = Depends(current_admin)):
+    def user_detail_page(name: str, request: Request, days: int = 7, page: int = 1, model: str = "", account_filter: str = "", admin: tuple[str, str] = Depends(current_user)):
+        is_admin = admin[0] == "admin"
+        if not is_admin and name != admin[0]:
+            raise HTTPException(status_code=403, detail="仅可查看本人数据")
         clean_name = clean_text(name.strip(), 32)
         today, week = usage_windows()
         days = days if days in (7, 30, 90) else 7
@@ -837,7 +833,7 @@ def register(app) -> None:
         start_ts = int(time.mktime(start_day.timetuple()))
         end_ts = int(time.mktime((local_today + timedelta(days=1)).timetuple()))
         with lock:
-            if admin[0] == "admin":
+            if is_admin:
                 devlogins.sweep()
             user = None
             try:
@@ -845,7 +841,7 @@ def register(app) -> None:
             except UserError:
                 pass
             total_sessions = repo.user_session_count(ctx.conn, clean_name)
-            if user is None and total_sessions == 0:
+            if is_admin and user is None and total_sessions == 0:
                 return _redirect("/users", err=f"用户 {clean_name} 不存在")
 
             book = pricing.PriceBook(repo.list_prices(ctx.conn))
@@ -937,7 +933,7 @@ def register(app) -> None:
                 cost, unpriced = costs.get(sf, (0.0, 0))
                 if unpriced > 0 and (r["total_tokens"] or 0) > 0 and cost == 0.0:
                     cost = None
-                meta = extract_session_meta(sf, user_uid)
+                meta = extract_session_meta(sf, user_uid) if user_uid is not None or is_admin else {}
                 started_at = r["started_at"]
                 last_active_at = r["last_active_at"]
                 duration = max(0, last_active_at - started_at)
@@ -1078,8 +1074,7 @@ def register(app) -> None:
     def usage_page(request: Request, admin: tuple[str, str] = Depends(current_admin)):
         today, week = usage_windows()
         with lock:
-            if admin[0] == "admin":
-                devlogins.sweep()
+            devlogins.sweep()
             book = pricing.PriceBook(repo.list_prices(ctx.conn))
             periods = []
             for key, title, since in (("today", "今天", today), ("week", "近 7 天", week), ("all", "全部", 0)):
@@ -1181,8 +1176,7 @@ def register(app) -> None:
     @app.get("/pricing", response_class=HTMLResponse)
     def pricing_page(request: Request, admin: tuple[str, str] = Depends(current_admin)):
         with lock:
-            if admin[0] == "admin":
-                devlogins.sweep()
+            devlogins.sweep()
             prices = repo.list_prices(ctx.conn)
         return render(request, "pricing.html", admin=admin[0], csrf=admin[1], prices=prices)
 
@@ -1247,8 +1241,7 @@ def register(app) -> None:
     @app.get("/audit", response_class=HTMLResponse)
     def audit_page(request: Request, admin: tuple[str, str] = Depends(current_admin)):
         with lock:
-            if admin[0] == "admin":
-                devlogins.sweep()
+            devlogins.sweep()
             audit_rows = [
                 {
                     "ts": fmt_ts(r["ts"]), "actor": clean_text(r["actor"]), "action": clean_text(r["action"]),

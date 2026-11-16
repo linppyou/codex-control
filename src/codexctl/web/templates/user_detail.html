@@ -6,7 +6,7 @@
 {% block content %}
 <div class="page-head">
   <div>
-    <div class="crumb"><a href="/users">用户</a> / {{ username }}</div>
+    {% if is_admin %}<div class="crumb"><a href="/users">用户</a> / {{ username }}</div>{% endif %}
     <h1>{{ username }} <span class="muted">用户详情</span></h1>
   </div>
   <div class="toolbar">

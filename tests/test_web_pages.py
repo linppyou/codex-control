@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 from fastapi.testclient import TestClient
 
-from codexctl import accounts, assignments, events, procs, repo, webauth
+from codexctl import accounts, assignments, events, pam, procs, repo, webauth
 from codexctl.devicelogin import DeviceLoginManager
 from codexctl.locks import account_lock
 from codexctl.web.app import create_app
@@ -97,14 +97,16 @@ def test_create_user_form_rendered(c):
     assert 'autocomplete="new-password"' in page
 
 
-def test_create_user_from_users_page(c, ctx):
+def test_create_user_from_users_page(c, ctx, monkeypatch):
     pw = "long-enough-password"
     r = post(c, "/users/create", username="alice", password=pw, password2=pw)
     path, q = qs(r)
     assert path == "/users"
-    assert "alice 已创建" in q["msg"] and "分配账号" in q["msg"]
-    home = ctx.test_users.get("alice").home
-    assert (home / ".codex").is_dir()
+    assert "alice 已创建" in q["msg"] and "已开通面板登录" in q["msg"]
+    user = ctx.test_users.get("alice")
+    assert (user.home / ".codex").is_dir()
+    assert webauth.enrolled_system_uid(ctx.conn, "alice") == user.uid
+    assert webauth.get_hash(ctx.conn, "alice") is None
     assert ctx.settings.codex_wrapper.is_file()
     row = ctx.conn.execute(
         "SELECT actor, action, target, detail FROM audit_log WHERE action = 'user.create'"
@@ -112,6 +114,12 @@ def test_create_user_from_users_page(c, ctx):
     assert tuple(row)[:3] == ("web:admin", "user.create", "alice")
     assert pw not in row["detail"] and pw not in q["msg"]
     assert pw not in c.get("/users").text
+    monkeypatch.setattr(pam, "verify_password", lambda name, password: (name, password) in ctx.test_users.created)
+    with TestClient(create_app(ctx), follow_redirects=False) as new_user:
+        assert do_login(new_user, "alice", pw).status_code == 303
+        assert new_user.get("/").headers["location"] == "/users/alice"
+        assert new_user.get("/users/alice").status_code == 200
+        assert new_user.get("/users/bob").status_code == 403
 
 
 def test_create_user_errors(c, ctx):
@@ -120,6 +128,7 @@ def test_create_user_errors(c, ctx):
         ({"username": "alice", "password": "short", "password2": "short"}, "至少"),
         ({"username": "alice", "password": "long-enough", "password2": "different"}, "不一致"),
         ({"username": "bob", "password": "long-enough", "password2": "long-enough"}, "已存在"),
+        ({"username": "admin", "password": "long-enough", "password2": "long-enough"}, "保留"),
         ({"username": "Bad Name", "password": "long-enough", "password2": "long-enough"}, "非法用户名"),
     ]
     for data, expected in cases:
@@ -127,6 +136,7 @@ def test_create_user_errors(c, ctx):
         assert "err" in q and expected in q["err"], (data, q)
     assert not ctx.test_users.exists("alice")
     assert ctx.conn.execute("SELECT COUNT(*) FROM audit_log WHERE action = 'user.create'").fetchone()[0] == 0
+    assert ctx.conn.execute("SELECT COUNT(*) FROM web_system_users").fetchone()[0] == 0
 
 
 def test_create_user_codex_install_failure(c, ctx, tmp_path):

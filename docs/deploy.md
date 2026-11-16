@@ -78,9 +78,10 @@ systemd 单元设置了 `TimeoutStopSec=120` 与 `KillMode=mixed`：`systemctl s
 1. 用 `useradd --create-home --shell /bin/bash` 创建用户和家目录；
 2. 用 `chpasswd` 经 stdin 设置密码（密码不出现在命令行参数、日志或审计里）；
 3. 确保系统级 codex 可用：`/opt/codex/bin/codex` 缺失时按 `codex_version` 自动下载官方安装包，并补齐 `/usr/local/bin/codex` 包装脚本与 `/etc/codex/requirements.toml`；
-4. 初始化 `~/.codex`（属主为该用户、0700），供随后分配账号使用。
+4. 初始化 `~/.codex`（属主为该用户、0700），供随后分配账号使用；
+5. 开通普通面板账号，用户用刚设置的 Linux 密码登录后即可查看本人数据。
 
-创建完成后仍需在用户页勾选该用户并「分配 / 切换到所选账号」。CLI 等价命令：`codexctl user add <用户名>`（两次输入密码）。自动安装首次会下载较大的安装包；若服务器访问 GitHub 较慢，可在 `/etc/codexctl/config.toml` 中通过 `codex_package_url` 指向镜像，或设 `codex_auto_install = false` 后按「安装」一节手动安装。已有部署请同步更新 nginx 配置中的 `proxy_read_timeout 300s`（见 `deploy/nginx/codex-control.ppspace.xyz.conf`），否则首次安装可能被代理超时中断。
+创建完成后仍需在用户页勾选该用户并「分配 / 切换到所选账号」。可通过 `codexctl user add <用户名>` 在命令行创建 Linux 用户，再用下文的 `web_system_users` 为其开通面板登录。自动安装首次会下载较大的安装包；若服务器访问 GitHub 较慢，可在 `/etc/codexctl/config.toml` 中通过 `codex_package_url` 指向镜像，或设 `codex_auto_install = false` 后按「安装」一节手动安装。已有部署请同步更新 nginx 配置中的 `proxy_read_timeout 300s`（见 `deploy/nginx/codex-control.ppspace.xyz.conf`），否则首次安装可能被代理超时中断。
 
 ## 日常操作（`codexctl` 即 `/opt/codexctl/venv/bin/codexctl`）
 
@@ -134,8 +135,9 @@ systemd 单元设置了 `TimeoutStopSec=120` 与 `KillMode=mixed`：`systemctl s
    UV_PYTHON_INSTALL_DIR=/opt/codexctl/python uv pip install --python /opt/codexctl/venv/bin/python /opt/codexctl/src
    ```
 2. 创建管理员（交互式输入密码，由管理员本人完成）：`codexctl admin create <名字>`。
-3. 安装并启动 systemd 单元：
+3. 安装 PAM 服务配置并启动 systemd 单元：
    ```
+   install -o root -g root -m 0644 deploy/pam.d/codexctl /etc/pam.d/codexctl
    cp deploy/codexctl-web.service /etc/systemd/system/
    systemctl daemon-reload
    systemctl enable --now codexctl-web
@@ -172,5 +174,18 @@ systemd 单元设置了 `TimeoutStopSec=120` 与 `KillMode=mixed`：`systemctl s
 - 登录限速保存在进程内存中，`systemctl restart codexctl-web` 会重置计数。
 - 面板「用户」页可隐藏服务账号，在 `/etc/codexctl/config.toml` 中配置：`hidden_users = ["www", "mysql", "redis", "memcached"]`，改后重启 `codexctl-web`。
 
+### 开通现有 Linux 用户的面板登录
 
-Web 面板启动时，如不存在 `admin` 登录账号，会创建该账号，初始密码为 `root@root.root`。已有 `admin` 的密码不会被覆盖；请在部署后通过现有的密码管理命令修改初始密码。只有 `admin` 拥有管理权限，其他现有 Web 登录账号（例如 `linpp`）保留原密码并使用只读面板。
+1. 安装包含此功能的面板代码，并将 PAM 服务配置安装到系统。
+   ```bash
+   install -o root -g root -m 0644 deploy/pam.d/codexctl /etc/pam.d/codexctl
+   ```
+2. 在 `/etc/codexctl/config.toml` 设置允许登录的系统账号。
+   ```toml
+   web_system_users = ["zdy", "wangcheng", "liyujie", "husongfa", "xxhmxw", "zhangshunhui", "xieshihao", "chenjunhao"]
+   ```
+3. 执行 `systemctl restart codexctl-web`。用户从面板登录页输入当前 Linux 用户名和密码。每次登录都由本机 PAM 验证密码及账号有效期。Linux 密码修改后，下次登录使用新密码。
+
+普通用户登录后进入「我的数据」，可以查看本人的账号分配、用量和会话。全站总览、全量导出和审计页面仅供 `admin` 访问。已有面板账号（例如 `linpp`）继续使用原有面板密码，访问范围同样限于本人数据。
+
+Web 面板启动时，如不存在 `admin` 登录账号，会以密码 `root@root.root` 创建该账号。首次部署后通过 `codexctl admin passwd admin` 修改初始密码。
