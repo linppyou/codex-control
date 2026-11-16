@@ -142,7 +142,7 @@ def csrf_guard(request: Request, csrf: str = Form("")) -> None:
     username, _ = session_csrf(request, csrf)
     user_task_post = request.method == "POST" and (
         path == "/tasks/preview" or re.fullmatch(r"/tasks/[0-9a-f]{32}/confirm", path)
-        or re.fullmatch(r"/tasks/sites/[0-9a-f]{32}/(?:deployment|complete)", path)
+        or re.fullmatch(r"/tasks/sites/[0-9a-f]{32}/complete", path)
     )
     if path != "/logout" and username != "admin" and not user_task_post:
         raise HTTPException(status_code=403, detail="仅管理员可以修改")

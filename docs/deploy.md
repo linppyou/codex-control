@@ -274,7 +274,7 @@ curl -fsS -H "Authorization: Bearer ${CODEXCTL_API_KEY}" https://codex-control.p
 任务面板在 managed 模式下使用本机 Linux 用户及其已有 Codex 账号绑定。任务预览和确认由 Web 服务处理，发送由独立的 `codexctl-dispatch.service` 处理。升级 Python 包和 Nginx 配置，校验 Nginx 后重新加载，再把 `deploy/codexctl-dispatch.service` 安装到 `/etc/systemd/system/`，执行 `systemctl daemon-reload` 及 `systemctl enable --now codexctl-dispatch`。升级已有部署时重启 Web 和任务发送服务以应用数据库迁移。
 
 1. 管理员在「任务 → Skill 管理」分别上传分发 Skill 和迁移 Skill 的 ZIP。ZIP 可直接使用发布包，最多 8 MiB，面板从 `SKILL.md` 读取名称及版本。包作为该任务的工程文件交给 Codex，发布包的安装器由面板跳过。
-2. 管理员在「任务」选择服务器和执行用户，可勾选同一台服务器的多个待分配站点一起提交。站点来自最近一次成功巡检，并按北京时间的建站日期分组。用户在已分配站点旁点击「配置部署」，填写本站点的宝塔 AI 装修 HTTPS 接口、部署凭据和可选的 Codex 项目。成员可手动标记完成，管理员通过「分配记录」查看分配时间、完成时间，并按分配日期和完成状态筛选。站点清单的 SSH 密钥仅供采集。
-3. 成员提供的部署凭据加密保存在数据库中，Worker 只向该成员的当前 Codex 进程注入它，提示词只记录环境变量引用。已有管理员配置的目标站继续支持在仅 root 可读的 `/etc/codexctl/dispatch.env` 中配置专用凭据，修改该文件后重启 `codexctl-dispatch`。
+2. 管理员在「任务」选择服务器和执行用户，可勾选同一台服务器的多个待分配站点一起提交。站点来自最近一次成功巡检，并按北京时间的建站日期分组。成员可手动标记完成，管理员通过「分配记录」查看分配时间、完成时间，并按分配日期和完成状态筛选。
+3. 用户在已分配站点旁打开「SSH 部署」查看主机和端口，并在实际执行部署的用户环境中配置 SSH 登录。独立子会话也需要能连接同一目标。可以先生成和发送任务，远端部署通过 SSH 直接操作 WordPress、站点文件和数据库。执行前需核对主机身份、目标域名、站点目录和权限。站点巡检的受限密钥仅供采集。升级后，旧部署方式生成的预览或待发送任务需重新生成 SSH 预览。
 4. 用户在「任务」填写原站网址、选择服务器、已分配的目标站和两个 Skill。核对提示词并勾选确认后，Worker 启动该用户的 Codex App Server，用任务专属目录中的 `task.csv` 与两个明确的 Skill 输入启动会话。Web 进程和 Worker 可以独立重启，Worker 中断时，状态未知的发送保留原会话 ID 供核对。
 5. 面板显示实际的 Codex 会话 ID、轮次 ID 和发送回执。任务文件位于 `state_dir/dispatch/<任务ID>`，权限属于执行用户，由 Codex 使用。若所选分发 Skill 还需要创建远程项目子会话、访问浏览器或运行迁移引擎，执行用户的 Codex 环境应提供相应工具、工作目录和依赖。App Server 回执表示已交接，站点上线和验收以 Codex 后续结果为准。

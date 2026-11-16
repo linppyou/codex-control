@@ -95,11 +95,10 @@
             {% if site.completed_at is not none %}
             <span class="badge ok">已完成</span><span>完成于 {{ work_time(site.completed_at) }}</span>
             {% else %}<span class="badge info">未完成</span>{% endif %}
-            {% if not site.endpoint or not site.credential_env %}<span class="badge warn">待配置部署</span>{% endif %}
           </div>
         </div>
         <div class="dispatch-item-actions">
-          <a class="btn small" href="/tasks/sites/{{ site.id }}/deployment">{{ '编辑部署配置' if site.deployment_version else '配置部署' }}</a>
+          <a class="btn small" href="/tasks/sites/{{ site.id }}/deployment">SSH 部署</a>
           {% if site.completed_at is none %}
           <form method="post" action="/tasks/sites/{{ site.id }}/complete">
             <input type="hidden" name="csrf" value="{{ csrf }}">
@@ -117,8 +116,7 @@
     <p class="flash bad">当前主机为纯网关模式。发送任务需要本机 Linux 用户和 Codex App Server。</p>
     {% elif not servers or not dispatchers or not migrations or (is_admin and not users) %}
     <ul class="dispatch-missing">
-      {% if not assigned %}<li>暂无已分配站点。{% if is_admin %}<a href="/tasks">分配站点</a>{% endif %}</li>
-      {% elif not servers and not is_admin %}<li>请先为已分配站点配置部署，再生成迁移任务。</li>{% endif %}
+      {% if not assigned %}<li>暂无已分配站点。{% if is_admin %}<a href="/tasks">分配站点</a>{% endif %}</li>{% endif %}
       {% if not dispatchers or not migrations %}<li>需要上架分发 Skill 和迁移 Skill。{% if is_admin %}<a href="/skills">上传 Skill</a>{% endif %}</li>{% endif %}
       {% if is_admin and not users %}<li>没有已绑定 Codex 账号的执行用户。<a href="/users">管理账号分配</a></li>{% endif %}
     </ul>
@@ -144,7 +142,7 @@
         <input type="text" name="target" value="{{ data.get('target', '') }}" list="dispatch-domains" maxlength="253"
                placeholder="输入或选择域名" spellcheck="false" autocomplete="off" required>
         <datalist id="dispatch-domains">
-          {% for site in targets %}<option value="{{ site.domain }}" data-server="{{ site.server_id }}">{{ site.server_name }}</option>{% endfor %}
+          {% for site in assigned %}<option value="{{ site.domain }}" data-server="{{ site.server_id }}">{{ site.server_name }}</option>{% endfor %}
         </datalist>
       </label>
       {% for field, label, options in [('dispatcher', '分发 Skill', dispatchers), ('migration', '迁移 Skill', migrations)] %}

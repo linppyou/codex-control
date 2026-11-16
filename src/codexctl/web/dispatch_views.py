@@ -68,13 +68,12 @@ def register(app) -> None:
                    ORDER BY created_at DESC, rowid DESC LIMIT 50""",
                 (user, user, user),
             ).fetchall()
-        targets = [row for row in assigned if row["endpoint"] and row["credential_env"]]
-        servers = {row["server_id"]: row["server_name"] for row in targets}
+        servers = {row["server_id"]: row["server_name"] for row in assigned}
         if pending and not any(server.id == server_id for server, _ in pending):
             server_id = pending[0][0].id
         return render(
             request, "dispatch_tasks.html", status=status, admin=user, csrf=csrf, servers=servers,
-            targets=targets, users=users, data=data or {}, catalog=catalog,
+            users=users, data=data or {}, catalog=catalog,
             assigning=assigning, pending=pending, selected_server=server_id, assigned=assigned,
             selected_sites=selected_sites, selected_user=selected_user,
             status_map=STATUS, history=history, time=_time, work_time=work_time, err=err,
@@ -118,41 +117,13 @@ def register(app) -> None:
             records=records, day=day, filter_status=status, work_time=work_time,
         )
 
-    def deployment_editor(request, who, target, *, fields=None, err=""):
-        return render(
-            request, "dispatch_deployment.html", status=422 if err else 200, admin=who[0], csrf=who[1],
-            target=target, fields=fields if fields is not None else target, err=err,
-        )
-
-    def editable_target(username, target_id):
-        try:
-            target = dispatch_tasks.deployment_target(ctx, username, target_id)
-        except dispatch_tasks.TaskError as exc:
-            raise HTTPException(403, str(exc)) from exc
+    @app.get("/tasks/sites/{target_id}/deployment", response_class=HTMLResponse)
+    def deployment(request: Request, target_id: str, who: tuple[str, str] = Depends(current_user)):
+        with lock:
+            target = dispatch_tasks.deployment_target(ctx, who[0], target_id)
         if target is None:
             raise HTTPException(404, "站点分配不存在")
-        return target
-
-    @app.get("/tasks/sites/{target_id}/deployment", response_class=HTMLResponse)
-    def edit_deployment(request: Request, target_id: str, who: tuple[str, str] = Depends(current_user)):
-        with lock:
-            target = editable_target(who[0], target_id)
-        return deployment_editor(request, who, target)
-
-    @app.post("/tasks/sites/{target_id}/deployment", response_class=HTMLResponse)
-    def save_deployment(
-        request: Request, target_id: str, endpoint: str = Form(""), credential: str = Form(""), project: str = Form(""),
-        who: tuple[str, str] = Depends(current_user),
-    ):
-        with lock:
-            target = editable_target(who[0], target_id)
-            try:
-                dispatch_tasks.save_user_deployment(ctx, target_id, who[0], endpoint, credential, project)
-            except dispatch_tasks.TaskError as exc:
-                return deployment_editor(
-                    request, who, target, fields={"endpoint": endpoint, "project": project}, err=str(exc),
-                )
-        return _redirect("/tasks", msg="部署配置已保存")
+        return render(request, "dispatch_deployment.html", admin=who[0], csrf=who[1], target=target)
 
     @app.post("/tasks/sites/{target_id}/complete")
     def complete_site(target_id: str, who: tuple[str, str] = Depends(current_user)):
@@ -205,11 +176,13 @@ def register(app) -> None:
 
     def task_detail(request, who, task, *, status=200, error=""):
         user, csrf = who
+        target = json.loads(task["target_snapshot"])
         return render(
             request, "dispatch_detail.html", status=status, admin=user, csrf=csrf, task=task,
-            target=json.loads(task["target_snapshot"]), skills=json.loads(task["skills"]),
+            target=target, skills=json.loads(task["skills"]),
             status_map=STATUS, turn_status=TURN_STATUS, kinds=dispatch_skills.KINDS,
             can_confirm=task["status"] == "preview" and user == task["owner"],
+            uses_ssh=target.get("deployment_method") == dispatch_tasks.DEPLOYMENT_METHOD,
             time=_time, err=error,
         )
 
@@ -286,8 +259,8 @@ def register(app) -> None:
         with lock:
             servers = site_registry.list_servers(ctx.conn)
             entries = [dict(row, users=" ".join(json.loads(row["users"]))) for row in ctx.conn.execute(
-                """SELECT t.*, s.name AS server_name, t.server_revision=s.revision AS current,
-                   (SELECT COUNT(*) FROM dispatch_user_deployments d WHERE d.target_id=t.id) AS self_configured
+                """SELECT t.id, t.server_id, t.domain, t.users, t.project, s.name AS server_name,
+                          t.server_revision=s.revision AS current
                    FROM dispatch_targets t JOIN site_servers s ON s.id=t.server_id ORDER BY s.name, t.domain"""
             )]
         entry = next((row for row in entries if row["id"] == edit), None)
@@ -299,13 +272,11 @@ def register(app) -> None:
     @app.post("/dispatch-targets/save")
     def save_target(
         target_id: str = Form(""), server_id: str = Form(""), domain: str = Form(""),
-        endpoint: str = Form(""), credential_env: str = Form(""), project: str = Form(""),
-        users: str = Form(""), admin: tuple[str, str] = Depends(current_admin),
+        project: str = Form(""), users: str = Form(""), admin: tuple[str, str] = Depends(current_admin),
     ):
         try:
             with lock:
-                dispatch_tasks.save_target(ctx, target_id or None, server_id, domain, endpoint,
-                                           credential_env, project, users)
+                dispatch_tasks.save_target(ctx, target_id or None, server_id, domain, project, users)
         except dispatch_tasks.TaskError as exc:
             return _redirect(f"/dispatch-targets?edit={target_id}" if target_id.isalnum() else "/dispatch-targets",
                              err=str(exc))

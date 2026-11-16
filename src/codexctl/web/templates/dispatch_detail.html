@@ -16,7 +16,7 @@
   <section class="panel flush" aria-labelledby="dispatch-prompt-title">
     <div class="panel-head"><h2 id="dispatch-prompt-title">发送给 Codex 的提示词</h2></div>
     <pre class="dispatch-prompt">{{ task.prompt }}</pre>
-    {% if can_confirm %}
+    {% if can_confirm and uses_ssh %}
     <form class="panel-body dispatch-confirm" method="post" action="/tasks/{{ task.id }}/confirm">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <label><input type="checkbox" name="confirmed" value="1" required> 已核对提示词、目标站及 Skill，确认发送</label>
@@ -25,6 +25,11 @@
         <button class="btn primary" type="submit">确认并发送</button>
       </div>
     </form>
+    {% elif can_confirm %}
+    <div class="panel-body">
+      <p>此预览使用旧的部署方式，请重新生成 SSH 预览。</p>
+      <a class="btn" href="/tasks?draft={{ task.id }}">返回修改</a>
+    </div>
     {% elif task.status == 'failed' %}
     <div class="panel-body"><a class="btn" href="/tasks?draft={{ task.id }}">返回修改</a></div>
     {% endif %}
@@ -36,6 +41,7 @@
       <div><dt>源站</dt><dd>{{ task.source_url }}</dd></div>
       <div><dt>目标站</dt><dd>{{ target.domain }}</dd></div>
       <div><dt>部署服务器</dt><dd>{{ target.server_name }}</dd></div>
+      {% if uses_ssh %}<div><dt>SSH 主机和端口</dt><dd>{{ target.server_host }} · {{ target.server_port }}</dd></div>{% endif %}
       <div><dt>执行用户</dt><dd>{{ task.recipient }}</dd></div>
       {% for skill in skills %}
       <div><dt>{{ kinds[skill.kind] }}</dt><dd>{{ skill.label }}{% if skill.version %} · {{ skill.version }}{% endif %}<br><span class="mono hint">{{ skill.name }}</span></dd></div>

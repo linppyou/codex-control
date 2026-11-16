@@ -12,14 +12,13 @@ from . import db, dispatch_skills, events, repo, site_probe, site_registry, site
 from .context import Context
 from .site_registry import Server
 from .sysusers import SysUser, UserError, valid_name
-from .vault import VaultError
 
-USER_CREDENTIAL_ENV = "BAOTA_DEPLOY_API_KEY"
+DEPLOYMENT_METHOD = "ssh"
 
 # Keep the fields used by persisted task snapshots stable as assignment metadata changes.
 _TARGET_FIELDS = """
-    SELECT t.id, t.server_id, t.server_revision, t.domain, t.endpoint, t.credential_env, t.project, t.users,
-           s.name AS server_name, s.host AS server_host
+    SELECT t.id, t.server_id, t.server_revision, t.domain, t.project, t.users,
+           s.name AS server_name, s.host AS server_host, s.port AS server_port
       FROM dispatch_targets t JOIN site_servers s ON s.id = t.server_id
         AND s.revision = t.server_revision
 """
@@ -67,31 +66,13 @@ def target_domain(value: str) -> str:
         raise TaskError("请输入目标站域名，或从所选服务器的授权站点中选择") from exc
 
 
-def _deployment_fields(endpoint: str, project: str) -> tuple[str, str]:
-    endpoint = endpoint.strip()
-    try:
-        parts = _url(endpoint)
-        if "://" not in endpoint or parts.scheme != "https":
-            raise ValueError
-    except ValueError as exc:
-        raise TaskError("请输入完整的 HTTPS 部署接口地址") from exc
+def save_target(
+    ctx: Context, target_id: str | None, server_id: str, domain: str, project: str, users: str,
+) -> None:
+    domain = target_domain(domain)
     project = project.strip()
     if len(project) > 128 or any(not char.isprintable() for char in project):
         raise TaskError("Codex 项目名称或 ID 最多 128 个字符")
-    return endpoint, project
-
-
-def save_target(
-    ctx: Context, target_id: str | None, server_id: str, domain: str, endpoint: str,
-    credential_env: str, project: str, users: str,
-) -> None:
-    domain = target_domain(domain)
-    endpoint, project = _deployment_fields(endpoint, project)
-    credential_env = credential_env.strip().removeprefix("ENV:")
-    if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", credential_env) or credential_env in {
-        "HOME", "PATH", "SHELL", "LANG", "USER", "LOGNAME", "CODEX_HOME",
-    } or credential_env.startswith(("LD_", "PYTHON", "NODE_", "BASH_", "GIT_", "CODEX_", "OPENAI_")):
-        raise TaskError("请输入专用的部署凭据环境变量名，例如 BAOTA_SHOP_API_KEY")
     names = set(filter(None, re.split(r"[\s,，]+", users.strip())))
     if not names or len(names) > 100 or any(
         not valid_name(name) or name in {"root", "admin"} for name in names
@@ -102,7 +83,7 @@ def save_target(
             server = ctx.conn.execute("SELECT revision FROM site_servers WHERE id=?", (server_id,)).fetchone()
             if server is None:
                 raise TaskError("所选服务器不存在")
-            values = (server_id, server["revision"], domain, endpoint, credential_env, project, json.dumps(sorted(names)))
+            values = (server_id, server["revision"], domain, project, json.dumps(sorted(names)))
             if target_id:
                 previous = ctx.conn.execute(
                     "SELECT server_id, server_revision, domain FROM dispatch_targets WHERE id=?", (target_id,),
@@ -112,7 +93,7 @@ def save_target(
                 ctx.conn.execute(
                     """UPDATE dispatch_targets
                        SET inventory_site_id = CASE WHEN server_id = ? AND domain = ? THEN inventory_site_id END,
-                           server_id=?, server_revision=?, domain=?, endpoint=?, credential_env=?, project=?, users=?
+                           server_id=?, server_revision=?, domain=?, project=?, users=?
                        WHERE id=?""",
                     (server_id, domain, *values, target_id),
                 )
@@ -135,7 +116,7 @@ def save_target(
                 ctx.conn.execute(
                     """INSERT INTO dispatch_targets
                        (id, server_id, server_revision, domain, endpoint, credential_env, project, users)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, '', '', ?, ?)""",
                     (target_id, *values),
                 )
             now = ctx.now()
@@ -154,16 +135,15 @@ def delete_target(ctx: Context, target_id: str) -> None:
             events.audit(ctx.conn, "admin", "dispatch.target_delete", target_id, now=ctx.now())
 
 
-def _effective_target(conn: sqlite3.Connection, target: sqlite3.Row, user: SysUser) -> dict:
-    result = dict(target)
-    config = conn.execute(
-        """SELECT endpoint, project, version FROM dispatch_user_deployments
+def _ssh_target(conn: sqlite3.Connection, target: sqlite3.Row, user: SysUser) -> dict:
+    result = dict(target, deployment_method=DEPLOYMENT_METHOD)
+    project = conn.execute(
+        """SELECT project FROM dispatch_user_deployments
            WHERE target_id=? AND username=? AND uid=?""",
         (target["id"], user.name, user.uid),
     ).fetchone()
-    if config is not None:
-        result.update(endpoint=config["endpoint"], project=config["project"], credential_env=USER_CREDENTIAL_ENV,
-                      deployment_version=config["version"])
+    if project is not None:
+        result["project"] = project["project"]
     return result
 
 
@@ -177,13 +157,9 @@ def list_targets(ctx: Context, username: str) -> list[dict]:
     work = {row["target_id"]: row for row in ctx.conn.execute(
         "SELECT target_id, assigned_at, completed_at FROM dispatch_site_work WHERE username=?", (username,),
     )}
-    try:
-        user = _execution_user(ctx, username)
-    except TaskError:
-        user = None
     result = []
     for row in assigned:
-        target = _effective_target(ctx.conn, row, user) if user else dict(row)
+        target = dict(row)
         status = work.get(row["id"])
         target.update(assigned_at=status["assigned_at"] if status else None,
                       completed_at=status["completed_at"] if status else None)
@@ -230,64 +206,7 @@ def complete_site_work(ctx: Context, username: str, target_id: str) -> bool:
 
 def deployment_target(ctx: Context, username: str, target_id: str) -> dict | None:
     target = _assigned_target(ctx.conn, username, target_id)
-    return _effective_target(ctx.conn, target, _execution_user(ctx, username)) if target else None
-
-
-def _deployment_aad(target_id: str, user: SysUser) -> bytes:
-    return f"codexctl-dispatch:{target_id}:{user.name}:{user.uid}".encode()
-
-
-def save_user_deployment(
-    ctx: Context, target_id: str, username: str, endpoint: str, credential: str, project: str,
-) -> None:
-    endpoint, project = _deployment_fields(endpoint, project)
-    credential = credential.strip()
-    if len(credential) > 4096 or any(not char.isprintable() for char in credential):
-        raise TaskError("部署凭据最多 4096 个字符，且不能包含控制字符")
-    with db.transaction(ctx.conn):
-        target = _assigned_target(ctx.conn, username, target_id)
-        if target is None:
-            raise TaskError("该站点已不在你的分配列表中")
-        user = _execution_user(ctx, username)
-        if credential:
-            encrypted = ctx.vault.encrypt(credential.encode(), _deployment_aad(target_id, user))
-        else:
-            previous = ctx.conn.execute(
-                """SELECT endpoint, project, credential FROM dispatch_user_deployments
-                   WHERE target_id=? AND username=? AND uid=?""",
-                (target_id, user.name, user.uid),
-            ).fetchone()
-            if previous is None:
-                raise TaskError("请输入本站点的部署凭据")
-            if (endpoint, project) == (previous["endpoint"], previous["project"]):
-                return
-            encrypted = previous["credential"]
-        ctx.conn.execute(
-            """INSERT INTO dispatch_user_deployments(target_id, username, uid, endpoint, project, credential, version)
-               VALUES (?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(target_id, username) DO UPDATE SET uid=excluded.uid, endpoint=excluded.endpoint,
-                 project=excluded.project, credential=excluded.credential, version=excluded.version""",
-            (target_id, user.name, user.uid, endpoint, project, encrypted, uuid4().hex),
-        )
-        events.audit(ctx.conn, username, "dispatch.deployment_save", target_id, target["domain"], now=ctx.now())
-
-
-def user_deployment_credential(ctx: Context, user: SysUser, target: dict) -> str | None:
-    version = target.get("deployment_version")
-    if version is None:
-        return None
-    target_id = target["id"]
-    row = ctx.conn.execute(
-        """SELECT credential FROM dispatch_user_deployments
-           WHERE target_id=? AND username=? AND uid=? AND version=?""",
-        (target_id, user.name, user.uid, version),
-    ).fetchone()
-    if row is None:
-        raise TaskError("站点的部署配置已变更，请重新预览")
-    try:
-        return ctx.vault.decrypt(row["credential"], _deployment_aad(target_id, user)).decode()
-    except (VaultError, UnicodeError) as exc:
-        raise TaskError("无法读取站点的部署凭据，请重新保存部署配置") from exc
+    return dict(target) if target is not None else None
 
 
 def pending_sites(
@@ -392,16 +311,18 @@ def _payload(source: str, target: dict, skills: list[dict], task_id: str) -> tup
         f"迁移引擎目录：当前工作目录中的 .agents/skills/{migration['name']}。\n"
         f"Codex 项目：{project}。查询执行环境实际提供的项目与主机标识。\n"
         f"子会话标题：{title}\n"
-        f"部署服务器：{json.dumps(target['server_name'], ensure_ascii=False)}（{target['server_host']}）\n"
-        f"部署接口：wp建站中心 AI 装修设计，{target['endpoint']}\n"
-        f"凭据引用：ENV:{target['credential_env']}。凭据值不得写入提示词、日志或归档。\n\n"
+        f"部署服务器：{json.dumps(target['server_name'], ensure_ascii=False)}\n"
+        f"部署方式：SSH。目标主机 {target['server_host']}，SSH 端口 {target['server_port']}。\n\n"
         "本次已确认仅对指定目标域名执行采集、迁移部署和验收。"
-        "先调用 capabilities 和 sites.list，核对目标绑定、面板站点 ID、WordPress 根目录及权限，"
-        "再用 site.probe 核对实际站点数据。发现站点身份不一致或权限不足时报告阻塞。"
+        "部署按本任务的 SSH 流程执行。通过实际执行环境中已配置的 SSH 连接直接操作目标站文件、WordPress 和数据库。"
+        "通过 SSH 先做只读检查，核对主机身份、目标域名、虚拟主机、WordPress 根目录和权限。"
+        "SSH 尚未配置、身份无法核实或权限不足时，可以完成采集和本地准备，记录具体阻塞并暂停远端写入。"
         "折扣列为分发器缺省的三折，本任务保留目标站的真实商品价格与配送配置。\n"
-        "按分发 Skill 的连续任务流程，把两个 Skill 的必要文件、部署接口和凭据引用交接给独立装修会话。"
+        "按分发 Skill 的连续任务流程，把两个 Skill 的必要文件、目标域名和 SSH 地址及端口交接给独立装修会话。"
+        "子会话遵循同一 SSH 部署范围，使用自身执行环境中配置的连接。"
         "记录真实会话标识并跟进。创建结果不明时先查询，避免重复派发。"
-        "部署前备份并核对漂移，部署接口重试沿用幂等键，按所选迁移 Skill 完成真实验收。"
+        "通过 SSH 备份目标站并核对漂移。远端操作结果不明时先核对实际状态，再决定是否重试。"
+        "按所选迁移 Skill 完成真实验收。"
         "最后用中文汇报实际分发、上线、验收和归档结果以及具体阻塞。"
     )
     return title, prompt, csv_text
@@ -420,9 +341,7 @@ def create_preview(
         row = ctx.conn.execute(_TARGET_FIELDS + " WHERE t.server_id=? AND t.domain=?", (server_id, domain)).fetchone()
         if row is None or user.name not in json.loads(row["users"]):
             raise TaskError("所选服务器上没有授权给执行用户的目标站")
-        target = _effective_target(ctx.conn, row, user)
-        if not target["endpoint"] or not target["credential_env"]:
-            raise TaskError("请先在目标站点填写部署配置")
+        target = _ssh_target(ctx.conn, row, user)
         skills = []
         for skill_id, kind in ((dispatcher_id, "dispatcher"), (migration_id, "migration")):
             skill = dispatch_skills.get(ctx.conn, skill_id)
@@ -443,13 +362,16 @@ def create_preview(
 
 
 def validate_snapshot(ctx: Context, task: sqlite3.Row) -> tuple[SysUser, str]:
+    snapshot = json.loads(task["target_snapshot"])
+    if snapshot.get("deployment_method") != DEPLOYMENT_METHOD:
+        raise TaskError("此任务使用旧的部署方式，请返回任务页重新生成 SSH 预览")
     user, label = recipient(ctx, task["recipient"])
     if user.uid != task["recipient_uid"]:
         raise TaskError("执行用户 UID 已变化，请重新预览")
     target = ctx.conn.execute(_TARGET_FIELDS + " WHERE t.id=?", (task["target_id"],)).fetchone()
     if (
         target is None or user.name not in json.loads(target["users"])
-        or _effective_target(ctx.conn, target, user) != json.loads(task["target_snapshot"])
+        or _ssh_target(ctx.conn, target, user) != snapshot
     ):
         raise TaskError("目标站服务器或部署授权已变更，请重新预览")
     for approved in json.loads(task["skills"]):

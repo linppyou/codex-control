@@ -7,7 +7,6 @@ import sys
 import zipfile
 from datetime import datetime, timezone
 
-import pytest
 from fastapi.testclient import TestClient
 
 from codexctl import db, dispatch_skills, dispatch_tasks, dispatch_worker, repo, site_registry, sites, webauth
@@ -48,12 +47,8 @@ def task_form(ctx):
         return lookup_user(name, min_uid)
 
     ctx.lookup_user = lookup
-    server = site_registry.create(ctx, "admin", "站点服务器", "1.1.1.1", "22", "")
-    dispatch_tasks.save_target(
-        ctx, None, server.id, "shop.example.com",
-        "https://panel.example.com/plugin?action=a&name=ai_center&s=renovation_api",
-        "BAOTA_SHOP_API_KEY", "试点项目", "alice",
-    )
+    server = site_registry.create(ctx, "admin", "站点服务器", "1.1.1.1", "2242", "")
+    dispatch_tasks.save_target(ctx, None, server.id, "shop.example.com", "试点项目", "alice")
     selections = {}
     for kind, name in (("dispatcher", "task-dispatcher"), ("migration", "html-to-wp-engine-sol")):
         data = package(name)
@@ -98,19 +93,10 @@ def test_admin_assigns_only_pending_inventory_sites(ctx):
     page = admin.get("/tasks").text
     assert "pending.example.com" not in page and "other.example.com" in page
     assert "pending.example.com" in alice.get("/tasks").text
-    assert "待配置部署" in alice.get("/tasks").text
+    assert "待配置部署" not in alice.get("/tasks").text
     assert "pending.example.com" not in bob.get("/tasks").text
     assert alice.post("/tasks/preview", data=dict(
         form, csrf=alice_csrf, target="pending.example.com",
-    )).status_code == 422
-
-    target = next(row for row in dispatch_tasks.list_targets(ctx, "alice") if row["domain"] == "pending.example.com")
-    dispatch_tasks.save_target(
-        ctx, target["id"], first, target["domain"], "https://panel.example.com/migrate",
-        "BAOTA_PENDING_API_KEY", "", "alice",
-    )
-    assert alice.post("/tasks/preview", data=dict(
-        form, csrf=alice_csrf, target=target["domain"],
     )).status_code == 303
     inventory(first, [("2", ["renamed.example.com"])])
     assert "renamed.example.com" not in admin.get("/tasks").text
@@ -172,7 +158,8 @@ def test_user_previews_and_confirms_exactly_once(ctx):
     draft = alice.get(url)
     assert "source.example.com/home 迁移 shop.example.com" in draft.text
     assert "网站,新域名,备注,折扣" in draft.text
-    assert "ENV:BAOTA_SHOP_API_KEY" in draft.text
+    assert "部署方式：SSH。目标主机 1.1.1.1，SSH 端口 2242" in draft.text
+    assert "capabilities" not in draft.text and "宝塔" not in draft.text
     assert "确认并发送" in draft.text
     assert dispatch_worker.claim(ctx) is None
     assert bob.get(url).status_code == 404
@@ -188,7 +175,7 @@ def test_user_previews_and_confirms_exactly_once(ctx):
     assert ctx.conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='dispatch.confirm'").fetchone()[0] == 1
 
 
-def test_member_configures_and_completes_only_their_assigned_site(ctx):
+def test_member_views_ssh_and_completes_only_their_assigned_site(ctx):
     form = task_form(ctx)
     ctx.conn.execute(
         "INSERT INTO site_inventories VALUES (?, 0, ?, ?, NULL, ?)",
@@ -203,31 +190,18 @@ def test_member_configures_and_completes_only_their_assigned_site(ctx):
     alice, csrf = session(ctx, app, "alice")
     bob, bob_csrf = session(ctx, app, "bob")
     admin, _ = session(ctx, app, "admin")
-    secret = "test-only-user-key"
-    deployment = {"endpoint": "https://panel.example.com/migrate", "credential": secret, "project": "独立项目"}
-
-    assert "配置部署" in alice.get("/tasks").text
+    assert "SSH 部署" in alice.get("/tasks").text
     assert bob.get(path + "/deployment").status_code == 404
     assert admin.get(path + "/deployment").status_code == 404
-    assert bob.post(path + "/deployment", data=dict(deployment, csrf=bob_csrf)).status_code == 404
-    assert alice.post(path + "/deployment", data=deployment).status_code == 403
-    assert alice.post(path + "/deployment", data=dict(
-        deployment, csrf=csrf, endpoint="http://panel.example.com/migrate",
-    )).status_code == 422
-    assert alice.post(path + "/deployment", data=dict(deployment, csrf=csrf)).status_code == 303
-    editor = alice.get(path + "/deployment").text
-    assert "留空保留" in editor and secret not in editor
-    row = ctx.conn.execute("SELECT credential FROM dispatch_user_deployments").fetchone()
-    assert isinstance(row["credential"], bytes) and secret.encode() not in row["credential"]
-    version = ctx.conn.execute("SELECT version FROM dispatch_user_deployments").fetchone()["version"]
-    assert alice.post(path + "/deployment", data=dict(deployment, csrf=csrf, credential="")).status_code == 303
-    assert ctx.conn.execute("SELECT version FROM dispatch_user_deployments").fetchone()["version"] == version
+    deployment = alice.get(path + "/deployment")
+    assert deployment.status_code == 200 and "1.1.1.1" in deployment.text and "2242" in deployment.text
+    assert 'name="endpoint"' not in deployment.text and 'name="credential"' not in deployment.text
+    target_editor = admin.get(f"/dispatch-targets?edit={target['id']}").text
+    assert 'name="endpoint"' not in target_editor and 'name="credential_env"' not in target_editor
     preview = alice.post("/tasks/preview", data=dict(form, csrf=csrf, target="assigned.example.com"))
     assert preview.status_code == 303
     draft = alice.get(preview.headers["location"]).text
-    assert "https://panel.example.com/migrate" in draft and "ENV:BAOTA_DEPLOY_API_KEY" in draft and secret not in draft
-    assert alice.post(path + "/deployment", data=dict(deployment, csrf=csrf, project="更新", credential="")).status_code == 303
-    assert alice.post(preview.headers["location"] + "/confirm", data={"csrf": csrf, "confirmed": "1"}).status_code == 409
+    assert "SSH 尚未配置" in draft and "部署方式：SSH" in draft
 
     assigned_day = sites.deployment_date(ctx.now())
     assert "assigned.example.com" in admin.get(f"/tasks/assignments?day={assigned_day}&status=pending").text
@@ -309,16 +283,43 @@ def test_zip_traversal_rejected(ctx):
     assert dispatch_skills.list_skills(ctx.conn) == []
 
 
-@pytest.mark.parametrize("self_configured", [False, True])
-def test_worker_attaches_both_packages_and_persists_acceptance(ctx, tmp_path, monkeypatch, self_configured):
+def test_legacy_deployment_requires_a_new_preview_and_worker_never_launches_it(ctx, tmp_path, monkeypatch):
     form = task_form(ctx)
-    credential_env = "BAOTA_SHOP_API_KEY"
-    if self_configured:
-        target = dispatch_tasks.list_targets(ctx, "alice")[0]
-        dispatch_tasks.save_user_deployment(
-            ctx, target["id"], "alice", "https://panel.example.com/migrate", "fixture-secret", "",
-        )
-        credential_env = dispatch_tasks.USER_CREDENTIAL_ENV
+    app = create_app(ctx)
+    alice, csrf = session(ctx, app, "alice")
+    preview = alice.post("/tasks/preview", data=dict(form, csrf=csrf))
+    url = preview.headers["location"]
+    task_id = url.rsplit("/", 1)[-1]
+    draft = ctx.conn.execute("SELECT target_snapshot FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()
+    legacy = json.loads(draft["target_snapshot"])
+    del legacy["deployment_method"]
+    legacy.update(endpoint="https://legacy.example.com/deploy", credential_env="BAOTA_SHOP_API_KEY")
+    ctx.conn.execute("UPDATE dispatch_tasks SET target_snapshot=? WHERE id=?", (json.dumps(legacy), task_id))
+    page = alice.get(url)
+    assert "重新生成 SSH 预览" in page.text and "确认并发送" not in page.text
+    assert alice.post(url + "/confirm", data={"csrf": csrf, "confirmed": "1"}).status_code == 409
+    assert "https://source.example.com/home" in alice.get(f"/tasks?draft={task_id}").text
+
+    ctx.conn.execute("UPDATE dispatch_tasks SET status='queued' WHERE id=?", (task_id,))
+    task = dispatch_worker.claim(ctx)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("Legacy task started a Codex process")
+
+    monkeypatch.setattr(dispatch_worker.subprocess, "Popen", unexpected)
+    dispatch_worker.deliver(ctx, tmp_path, task)
+    saved = ctx.conn.execute("SELECT status, error FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()
+    assert saved["status"] == "failed" and "重新生成 SSH 预览" in saved["error"]
+
+
+def test_worker_attaches_ssh_task_packages_and_persists_acceptance(ctx, tmp_path, monkeypatch):
+    form = task_form(ctx)
+    target = dispatch_tasks.list_targets(ctx, "alice")[0]
+    ctx.conn.execute(
+        """INSERT INTO dispatch_user_deployments(target_id, username, uid, endpoint, project, credential, version)
+           VALUES (?, 'alice', 1001, 'https://legacy.example.com/deploy', '独立项目', ?, 'legacy')""",
+        (target["id"], b"old-ciphertext"),
+    )
     task_id = dispatch_tasks.create_preview(ctx, "alice", "alice", form["server_id"], form["source"], form["target"],
                                             form["dispatcher"], form["migration"])
     row = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()
@@ -326,8 +327,8 @@ def test_worker_attaches_both_packages_and_persists_acceptance(ctx, tmp_path, mo
     task = dispatch_worker.claim(ctx)
     run_root = tmp_path / "dispatch"
     run_root.mkdir()
-    monkeypatch.setenv("BAOTA_SHOP_API_KEY", "unused-admin-key" if self_configured else "fixture-secret")
-    monkeypatch.setenv(dispatch_tasks.USER_CREDENTIAL_ENV, "unused-global-key")
+    monkeypatch.setenv("BAOTA_SHOP_API_KEY", "unused-admin-key")
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/root-agent")
     monkeypatch.setattr(dispatch_worker.os, "chown", lambda *args: None)
 
     # A stdio fixture verifies the actual JSON-RPC payload and can complete the turn before its acknowledgement.
@@ -343,17 +344,17 @@ for line in sys.stdin:
         continue
     method = message['method']
     params = message['params']
-    assert 'fixture-secret' not in line
     if method == 'thread/start':
         assert params['sandbox'] == 'workspace-write'
-        assert os.environ['BAOTA_SHOP_API_KEY'] == 'fixture-secret'
+        assert 'BAOTA_SHOP_API_KEY' not in os.environ and 'SSH_AUTH_SOCK' not in os.environ
         result = {'thread': {'id': 'codex-thread'}}
     elif method == 'thread/name/set':
         assert params == {'threadId': 'codex-thread', 'name': 'source.example.com/home 迁移 shop.example.com'}
         result = {}
     elif method == 'turn/start':
         prompt, dispatcher, migration = params['input']
-        assert prompt['type'] == 'text' and 'ENV:BAOTA_SHOP_API_KEY' in prompt['text']
+        assert prompt['type'] == 'text' and 'SSH 端口 2242' in prompt['text']
+        assert '独立项目' in prompt['text'] and 'legacy.example.com' not in prompt['text']
         assert Path('task.csv').read_text().splitlines()[0] == '网站,新域名,备注,折扣'
         for item in (dispatcher, migration):
             assert item['type'] == 'skill'
@@ -366,7 +367,7 @@ for line in sys.stdin:
     else:
         result = {}
     print(json.dumps({'id': message['id'], 'result': result}), flush=True)
-""".replace("BAOTA_SHOP_API_KEY", credential_env), encoding="utf-8")
+""", encoding="utf-8")
     popen = subprocess.Popen
 
     def launch(args, **kwargs):
@@ -374,9 +375,8 @@ for line in sys.stdin:
         assert kwargs.pop("user") == user.uid
         assert kwargs.pop("group") == user.gid
         assert kwargs.pop("extra_groups") == []
-        assert kwargs["env"][credential_env] == "fixture-secret"
-        assert "unused-admin-key" not in kwargs["env"].values()
-        assert "unused-global-key" not in kwargs["env"].values()
+        assert kwargs["env"]["HOME"] == str(user.home)
+        assert "BAOTA_SHOP_API_KEY" not in kwargs["env"] and "SSH_AUTH_SOCK" not in kwargs["env"]
         assert args[-1] == "app-server"
         return popen([sys.executable, str(fake)], **kwargs)
 
@@ -386,4 +386,4 @@ for line in sys.stdin:
     assert (sent["status"], sent["thread_id"], sent["turn_id"], sent["turn_status"]) == (
         "sent", "codex-thread", "codex-turn", "completed",
     )
-    assert "fixture-secret" not in json.dumps(dict(sent))
+    assert "legacy.example.com" not in json.dumps(dict(sent))
