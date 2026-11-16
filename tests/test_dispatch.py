@@ -1,3 +1,4 @@
+import csv
 import dataclasses
 import io
 import json
@@ -5,7 +6,9 @@ import subprocess
 import sys
 import zipfile
 
+import pytest
 from fastapi.testclient import TestClient
+from openpyxl import Workbook
 
 from codexctl import dispatch_skills, dispatch_tasks, dispatch_worker, repo, site_registry, webauth
 from codexctl.web.app import SESSION_COOKIE, create_app
@@ -46,11 +49,7 @@ def task_form(ctx):
 
     ctx.lookup_user = lookup
     server = site_registry.create(ctx, "admin", "站点服务器", "1.1.1.1", "22", "")
-    dispatch_tasks.save_target(
-        ctx, None, server.id, "shop.example.com",
-        "https://panel.example.com/plugin?action=a&name=ai_center&s=renovation_api",
-        "BAOTA_SHOP_API_KEY", "试点项目", "alice",
-    )
+    inventory(ctx, server, ("8", ["shop.example.com", "www.shop.example.com"]))
     selections = {}
     for kind, name in (("dispatcher", "task-dispatcher"), ("migration", "html-to-wp-engine-sol")):
         data = package(name)
@@ -59,23 +58,53 @@ def task_form(ctx):
                 target="shop.example.com", **selections)
 
 
+def inventory(ctx, server, *sites):
+    now = ctx.now()
+    snapshot = [{"id": site_id, "domains": domains} for site_id, domains in sites]
+    ctx.conn.execute(
+        "INSERT OR REPLACE INTO site_inventories VALUES (?, ?, ?, ?, NULL, ?)",
+        (server.id, server.revision, now, now, json.dumps(snapshot)),
+    )
+
+
+def import_file(client, csrf, form, content=None, filename="tasks.csv", **extra):
+    if content is None:
+        content = f'原域名,新域名,备注,折扣\n{form["source"]},{form["target"]},"产品, 海报",8.5折\n'.encode()
+    return client.post(
+        "/tasks/import", data=dict(csrf=csrf, dispatcher=form["dispatcher"], migration=form["migration"], **extra),
+        files={"task_csv": (filename, content, "application/octet-stream")},
+    )
+
+
 def test_user_previews_and_confirms_exactly_once(ctx):
     form = task_form(ctx)
     ctx.settings = dataclasses.replace(ctx.settings, web_cookie_secure=False)
     app = create_app(ctx)
     alice, csrf = session(ctx, app, "alice")
     bob, bob_csrf = session(ctx, app, "bob")
-    assert "shop.example.com" in alice.get("/tasks").text
-    assert "shop.example.com" not in bob.get("/tasks").text
-    assert bob.post("/tasks/preview", data=dict(form, recipient="alice", csrf=bob_csrf)).status_code == 422
+    admin, admin_csrf = session(ctx, app, "admin")
+    assert "CSV 或 XLSX 文件" in alice.get("/tasks").text
+    assert "CSV 或 XLSX 文件" in bob.get("/tasks").text
+    assert "CSV 或 XLSX 文件" not in admin.get("/tasks").text
+    assert import_file(admin, admin_csrf, form, recipient="alice").status_code == 403
+    assert import_file(alice, "invalid", form).status_code == 403
 
-    response = alice.post("/tasks/preview", data=dict(form, recipient="bob", csrf=csrf))
-    assert response.status_code == 303
-    url = response.headers["location"]
+    for _ in range(2):
+        response = import_file(alice, csrf, form, recipient="bob")
+        assert response.status_code == 200
+        assert "产品, 海报" in response.text and "8.5折" in response.text and "已匹配" in response.text
+    rows = ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchall()
+    assert len(rows) == 1 and rows[0]["owner"] == "alice"
+    assert list(csv.reader(io.StringIO(rows[0]["csv"]))) == [
+        ["网站", "新域名", "备注", "折扣"], [form["source"], form["target"], "产品, 海报", "8.5折"],
+    ]
+    url = f"/tasks/{rows[0]['id']}"
     draft = alice.get(url)
-    assert "source.example.com/home 迁移 shop.example.com" in draft.text
-    assert "网站,新域名,备注,折扣" in draft.text
-    assert "ENV:BAOTA_SHOP_API_KEY" in draft.text
+    assert "tasks.csv · 1 个任务" in draft.text
+    assert "网站,新域名,备注,折扣" not in rows[0]["prompt"]
+    assert "产品, 海报" not in rows[0]["prompt"]
+    assert "source.example.com" not in rows[0]["prompt"]
+    assert "SSH 主机 1.1.1.1，端口 22" in draft.text
     assert "确认并发送" in draft.text
     assert dispatch_worker.claim(ctx) is None
     assert bob.get(url).status_code == 404
@@ -89,6 +118,151 @@ def test_user_previews_and_confirms_exactly_once(ctx):
     assert task["source_url"] == form["source"]
     assert dispatch_worker.claim(ctx) is None
     assert ctx.conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='dispatch.confirm'").fetchone()[0] == 1
+    assert import_file(bob, bob_csrf, dict(form, target="www.shop.example.com")).status_code == 200
+    assert ctx.conn.execute("SELECT COUNT(*) FROM dispatch_targets").fetchone()[0] == 0
+    bob_task = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE owner='bob'").fetchone()
+    assert bob_task["recipient"] == "bob"
+    assert json.loads(bob_task["target_snapshot"])["targets"][0]["id"] == json.loads(task["target_snapshot"])["targets"][0]["id"]
+    assert bob.post(f"/tasks/{bob_task['id']}/confirm", data={"csrf": bob_csrf, "confirmed": "1"}).status_code == 303
+    assert dispatch_worker.claim(ctx) is None
+
+
+def test_import_matches_across_servers_and_renders_each_row(ctx):
+    form = task_form(ctx)
+    first = site_registry.get(ctx.conn, form["server_id"])
+    second = site_registry.create(ctx, "admin", "另一台服务器", "8.8.8.8", "2222", "")
+    inventory(ctx, first, ("8", ["shop.example.com", "www.shop.example.com"]), ("9", ["shared.example.com"]))
+    inventory(ctx, second, ("8", ["shared.example.com"]), ("10", ["new.example.com"]))
+    alice, csrf = session(ctx, create_app(ctx), "alice")
+    content = (
+        '折扣,原域名,备注,新域名\r\n'
+        '8,one.example.com,"长备注,<草稿>\n下一行",HTTPS://WWW.SHOP.EXAMPLE.COM./\r\n'
+        ',two.example.com,,new.example.com\r\n'
+        '3,three.example.com,,shared.example.com\r\n'
+        '3,four.example.com,,missing.example.com\r\n'
+        '3,five.example.com,,dupe.example.com\r\n'
+        '3,six.example.com,,DUPE.EXAMPLE.COM\r\n'
+        '10.1,seven.example.com,,bad.example.com\r\n'
+    ).encode("gb18030")
+    response = import_file(alice, csrf, form, content)
+    assert response.status_code == 200
+    for value in (
+        "HTTPS://WWW.SHOP.EXAMPLE.COM./", "长备注,&lt;草稿&gt;\n下一行", "已匹配 2 行", "另一台服务器",
+        "查看批次提示词", "匹配到多个站点", "找不到该新域名", "新域名重复", "折扣须大于 0",
+    ):
+        assert value in response.text
+    tasks = ctx.conn.execute("SELECT * FROM dispatch_tasks ORDER BY rowid").fetchall()
+    assert len(tasks) == 1
+    assert len(list(csv.reader(io.StringIO(tasks[0]["csv"])))) == 8
+    assert len(json.loads(tasks[0]["target_snapshot"])["targets"]) == 2
+    assert "全部 7 个数据行" in tasks[0]["prompt"]
+    assert list(csv.reader(io.StringIO(tasks[0]["csv"])))[1] == [
+        "https://one.example.com/", "www.shop.example.com", "长备注,<草稿>\n下一行", "8",
+    ]
+    assert "2222" in tasks[0]["prompt"]
+    assert "missing.example.com" not in tasks[0]["prompt"]
+    assert "单站任务" not in tasks[0]["prompt"]
+    assert "长备注" not in tasks[0]["prompt"]
+    assert tasks[0]["upload"] == content
+
+    inventory(ctx, second, ("10", ["new.example.com", "www.shop.example.com"]))
+    stale = alice.post(f"/tasks/{tasks[0]['id']}/confirm", data={"csrf": csrf, "confirmed": "1"})
+    assert stale.status_code == 409 and "服务器绑定已变更" in stale.text
+    assert import_file(alice, csrf, form, b"invalid,headers\nrow").status_code == 422
+    unmatched = import_file(alice, csrf, dict(form, target="missing.example.com"))
+    assert unmatched.status_code == 200 and "已匹配 0 行" in unmatched.text
+    assert ctx.conn.execute("SELECT COUNT(*) FROM dispatch_tasks").fetchone()[0] == 2
+
+
+def workbook_bytes(rows):
+    workbook = Workbook()
+    for row in rows:
+        workbook.active.append(row)
+    workbook.create_sheet("说明").append(["忽略此表"])
+    stream = io.BytesIO()
+    workbook.save(stream)
+    workbook.close()
+    return stream.getvalue()
+
+
+def test_batch_queue_blocks_overlapping_site_and_accepts_legacy_task(ctx):
+    form = task_form(ctx)
+    server = site_registry.get(ctx.conn, form["server_id"])
+    inventory(ctx, server, ("8", ["shop.example.com"]), ("9", ["second.example.com", "www.second.example.com"]))
+    content = (
+        "原域名,新域名,备注,折扣\n"
+        "source.example.com,shop.example.com,,\n"
+        "other.example.com,second.example.com,,\n"
+    ).encode()
+    rows = dispatch_tasks.parse_import(content)
+    alice_id = dispatch_tasks.create_previews(ctx, "alice", rows, form["dispatcher"], form["migration"])
+    alice_task = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (alice_id,)).fetchone()
+    dispatch_tasks.confirm(ctx, alice_task, "alice")
+    assert dispatch_worker.claim(ctx)["id"] == alice_id
+
+    rows = dispatch_tasks.parse_import(
+        "原域名,新域名,备注,折扣\nsource.example.com,www.second.example.com,,\n".encode()
+    )
+    bob_id = dispatch_tasks.create_previews(ctx, "bob", rows, form["dispatcher"], form["migration"])
+    bob_task = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (bob_id,)).fetchone()
+    # A persisted single-site SSH preview must still validate and share the site's queue lock.
+    legacy_target = json.loads(bob_task["target_snapshot"])["targets"][0]
+    ctx.conn.execute("UPDATE dispatch_tasks SET target_snapshot=?, target_id=? WHERE id=?",
+                     (json.dumps(legacy_target), legacy_target["id"], bob_id))
+    bob_task = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (bob_id,)).fetchone()
+    dispatch_tasks.confirm(ctx, bob_task, "bob")
+    assert dispatch_worker.claim(ctx) is None
+    ctx.conn.execute("UPDATE dispatch_tasks SET status='sent', turn_status='completed' WHERE id=?", (alice_id,))
+    assert dispatch_worker.claim(ctx)["id"] == bob_id
+
+
+def test_xlsx_import_shares_matching_and_preserves_values(ctx):
+    form = task_form(ctx)
+    alice, csrf = session(ctx, create_app(ctx), "alice")
+    raw = workbook_bytes([
+        ["折扣", "新域名", "备注", "原域名"],
+        [8.5, form["target"], "产品,海报\n第二行", form["source"]],
+        [],
+        [None, "missing.example.com", None, "other.example.com"],
+        ["=1+2", "formula.example.com", None, "other.example.com"],
+    ])
+    response = import_file(alice, csrf, form, raw, filename="任务.XLSX")
+    assert response.status_code == 200
+    for text in ("产品,海报\n第二行", "8.5", "已匹配 1 行", "找不到该新域名", "单元格含公式"):
+        assert text in response.text
+    task = ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone()
+    assert task["upload"] == raw
+    assert "upload.xlsx" in task["prompt"]
+    assert "产品,海报" not in task["prompt"]
+    assert "8.5" not in task["prompt"]
+    run_root = ctx.settings.state_dir / "xlsx-staging"
+    run_root.mkdir()
+    user = ctx.lookup_user("alice", 1000)
+    skill_packages = [package("task-dispatcher"), package("html-to-wp-engine-sol")]
+    # The upload is staged byte-for-byte alongside the normalized CSV and deployment mapping.
+    from unittest.mock import patch
+    with patch.object(dispatch_worker.os, "chown"):
+        dispatch_worker._stage(run_root, task, user, skill_packages)
+    assert (run_root / task["id"] / "upload.xlsx").read_bytes() == raw
+    assert list(csv.reader(io.StringIO(task["csv"])))[1] == [
+        form["source"], form["target"], "产品,海报\n第二行", "8.5",
+    ]
+    assert "忽略此表" not in response.text
+    rows = dispatch_tasks.parse_import(raw, "任务.xlsx")
+    assert [row.line for row in rows] == [2, 4, 5]
+    assert rows[1].values[2:] == ("", "")
+
+
+@pytest.mark.parametrize("raw, filename", [
+    (b"broken", "broken.xlsx"),
+    (b"broken", "broken.xls"),
+    (workbook_bytes([["wrong header"]]), "header.xlsx"),
+    (workbook_bytes([dispatch_tasks.IMPORT_COLUMNS]), "empty.xlsx"),
+    (b"x" * (dispatch_tasks.MAX_CSV_UPLOAD + 1), "large.xlsx"),
+])
+def test_bad_spreadsheets_report_validation_error(raw, filename):
+    with pytest.raises(dispatch_tasks.TaskError):
+        dispatch_tasks.parse_import(raw, filename)
 
 
 def test_admin_skill_crud_and_stale_preview(ctx):
@@ -96,8 +270,8 @@ def test_admin_skill_crud_and_stale_preview(ctx):
     app = create_app(ctx)
     admin, csrf = session(ctx, app, "admin")
     alice, alice_csrf = session(ctx, app, "alice")
-    response = alice.post("/tasks/preview", data=dict(form, csrf=alice_csrf))
-    url = response.headers["location"]
+    assert import_file(alice, alice_csrf, form).status_code == 200
+    url = "/tasks/" + ctx.conn.execute("SELECT id FROM dispatch_tasks").fetchone()[0]
 
     original = package("skill-example")
     data = dict(csrf=csrf, kind="migration", label="示例 Skill")
@@ -136,10 +310,18 @@ def test_zip_traversal_rejected(ctx):
     assert dispatch_skills.list_skills(ctx.conn) == []
 
 
-def test_worker_attaches_both_packages_and_persists_acceptance(ctx, tmp_path, monkeypatch):
+@pytest.mark.parametrize("cancel_running", [False, True])
+def test_worker_attaches_both_packages_and_persists_acceptance(ctx, tmp_path, monkeypatch, cancel_running):
     form = task_form(ctx)
-    task_id = dispatch_tasks.create_preview(ctx, "alice", "alice", form["server_id"], form["source"], form["target"],
-                                            form["dispatcher"], form["migration"])
+    second = site_registry.create(ctx, "admin", "第二台", "8.8.8.8", "2222", "")
+    inventory(ctx, second, ("9", ["second.example.com"]))
+    raw = (
+        f'原域名,新域名,备注,折扣\n{form["source"]},{form["target"]},产品海报,8.5折\n'
+        'other.example.com,second.example.com,第二站,3\n'
+    ).encode("utf-8-sig")
+    rows = dispatch_tasks.parse_import(raw)
+    dispatch_tasks.create_previews(ctx, "alice", rows, form["dispatcher"], form["migration"], upload=raw)
+    task_id = rows[0].task_id
     row = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()
     dispatch_tasks.confirm(ctx, row, "alice")
     task = dispatch_worker.claim(ctx)
@@ -164,15 +346,25 @@ for line in sys.stdin:
     assert 'fixture-secret' not in line
     if method == 'thread/start':
         assert params['sandbox'] == 'workspace-write'
-        assert os.environ['BAOTA_SHOP_API_KEY'] == 'fixture-secret'
+        assert 'BAOTA_SHOP_API_KEY' not in os.environ
         result = {'thread': {'id': 'codex-thread'}}
     elif method == 'thread/name/set':
-        assert params == {'threadId': 'codex-thread', 'name': 'source.example.com/home 迁移 shop.example.com'}
+        assert params == {'threadId': 'codex-thread', 'name': 'tasks.csv · 2 个任务'}
         result = {}
     elif method == 'turn/start':
         prompt, dispatcher, migration = params['input']
-        assert prompt['type'] == 'text' and 'ENV:BAOTA_SHOP_API_KEY' in prompt['text']
+        assert prompt['type'] == 'text' and '统一分发' in prompt['text']
         assert Path('task.csv').read_text().splitlines()[0] == '网站,新域名,备注,折扣'
+        assert '产品海报,8.5折' in Path('task.csv').read_text()
+        targets = json.loads(Path('targets.json').read_text())
+        assert targets[0]['target']['server_port'] == 22
+        assert targets[0]['csv_row'] == 1
+        assert targets[1]['target']['server_port'] == 2222
+        assert len(Path('task.csv').read_text().splitlines()) == 3
+        assert Path('upload.csv').read_bytes().startswith(bytes([239, 187, 191]))
+        assert Path('upload.csv').read_text(encoding='utf-8-sig').startswith('原域名,新域名,备注,折扣')
+        assert '产品海报' not in prompt['text'] and 'other.example.com' not in prompt['text']
+        assert 'shop.example.com' in prompt['text'] and 'second.example.com' in prompt['text']
         for item in (dispatcher, migration):
             assert item['type'] == 'skill'
             path = Path(item['path'])
@@ -180,11 +372,16 @@ for line in sys.stdin:
             assert (path.parent / 'scripts/example.py').is_file()
             assert not (path.parent / 'install.py').exists()
         result = {'turn': {'id': 'codex-turn'}}
-        print(json.dumps({'method': 'turn/completed', 'params': {'turn': {'id': 'codex-turn', 'status': 'completed'}}}), flush=True)
+        if not CANCEL_RUNNING:
+            print(json.dumps({'method': 'turn/completed', 'params': {'turn': {'id': 'codex-turn', 'status': 'completed'}}}), flush=True)
+    elif method == 'turn/interrupt':
+        assert params == {'threadId': 'codex-thread', 'turnId': 'codex-turn'}
+        print(json.dumps({'method': 'turn/completed', 'params': {'turn': {'id': 'codex-turn', 'status': 'interrupted'}}}), flush=True)
+        result = {}
     else:
         result = {}
     print(json.dumps({'id': message['id'], 'result': result}), flush=True)
-""", encoding="utf-8")
+""".replace("CANCEL_RUNNING", repr(cancel_running)), encoding="utf-8")
     popen = subprocess.Popen
 
     def launch(args, **kwargs):
@@ -196,9 +393,62 @@ for line in sys.stdin:
         return popen([sys.executable, str(fake)], **kwargs)
 
     monkeypatch.setattr(dispatch_worker.subprocess, "Popen", launch)
+    if cancel_running:
+        original_wait = dispatch_worker.AppServer.wait_turn
+
+        def wait_and_cancel(client, turn_id, check_cancel):
+            dispatch_tasks.cancel(ctx, task_id, "alice")
+            assert ctx.conn.execute("SELECT status FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()[0] == "cancelling"
+            return original_wait(client, turn_id, check_cancel)
+
+        monkeypatch.setattr(dispatch_worker.AppServer, "wait_turn", wait_and_cancel)
     dispatch_worker.deliver(ctx, run_root, task)
     sent = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()
     assert (sent["status"], sent["thread_id"], sent["turn_id"], sent["turn_status"]) == (
-        "sent", "codex-thread", "codex-turn", "completed",
+        "cancelled" if cancel_running else "sent", "codex-thread", "codex-turn", "interrupted" if cancel_running else "completed",
     )
-    assert "fixture-secret" not in json.dumps(dict(sent))
+    assert "fixture-secret" not in json.dumps({key: sent[key] for key in sent.keys() if key != "upload"})
+
+
+@pytest.mark.parametrize("status", ["preview", "queued", "sending", "sent", "failed", "unknown"])
+def test_members_cancel_own_tasks_only(ctx, status):
+    form = task_form(ctx)
+    app = create_app(ctx)
+    alice, csrf = session(ctx, app, "alice")
+    bob, bob_csrf = session(ctx, app, "bob")
+    admin, admin_csrf = session(ctx, app, "admin")
+    assert import_file(alice, csrf, form).status_code == 200
+    task_id = ctx.conn.execute("SELECT id FROM dispatch_tasks").fetchone()[0]
+    ctx.conn.execute("UPDATE dispatch_tasks SET status=?, turn_status='inProgress' WHERE id=?", (status, task_id))
+    url = f"/tasks/{task_id}"
+    assert "取消任务" in alice.get(url).text
+    assert "取消任务" in alice.get("/tasks").text
+    assert bob.post(url + "/cancel", data={"csrf": bob_csrf}).status_code == 404
+    assert admin.post(url + "/cancel", data={"csrf": admin_csrf}).status_code == 403
+    assert alice.post(url + "/cancel", data={"csrf": "invalid"}).status_code == 403
+    for _ in range(2):
+        assert alice.post(url + "/cancel", data={"csrf": csrf}).status_code == 303
+    row = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()
+    assert row["status"] == ("cancelling" if status in {"sending", "sent"} else "cancelled")
+    assert "取消任务" not in alice.get(url).text
+    assert dispatch_worker.claim(ctx) is None
+    assert ctx.conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='dispatch.cancel'").fetchone()[0] == 1
+    dispatch_worker._record(ctx, row, "sent", thread_id="test-thread")
+    assert ctx.conn.execute("SELECT status FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()[0] == row["status"]
+
+
+def test_cancelled_claim_is_not_started(ctx, tmp_path, monkeypatch):
+    form = task_form(ctx)
+    rows = dispatch_tasks.parse_import(f'原域名,新域名,备注,折扣\n{form["source"]},{form["target"]},,\n'.encode())
+    task_id = dispatch_tasks.create_previews(ctx, "alice", rows, form["dispatcher"], form["migration"])
+    task = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()
+    dispatch_tasks.confirm(ctx, task, "alice")
+    task = dispatch_worker.claim(ctx)
+    dispatch_tasks.cancel(ctx, task_id, "alice")
+
+    def unexpected_launch(*args, **kwargs):
+        pytest.fail("Cancelled task started a subprocess")
+
+    monkeypatch.setattr(dispatch_worker.subprocess, "Popen", unexpected_launch)
+    dispatch_worker.deliver(ctx, tmp_path, task)
+    assert ctx.conn.execute("SELECT status FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()[0] == "cancelled"

@@ -2,74 +2,84 @@
 {% block title %}网站迁移 · codexctl{% endblock %}
 {% block content %}
 <header class="page-head">
-  <div>
-    <h1>网站迁移</h1>
-    <div class="sub">生成分发提示词，确认后发送给 Codex。</div>
-  </div>
-  {% if is_admin %}<div class="toolbar"><a class="btn" href="/dispatch-targets">目标站授权</a><a class="btn" href="/skills">Skill 管理</a></div>{% endif %}
+  <div><h1>网站迁移</h1></div>
+  {% if is_admin %}<div class="toolbar"><a class="btn" href="/skills">Skill 管理</a></div>{% endif %}
 </header>
-<div class="dispatch-layout">
-  <section class="panel dispatch-compose" aria-labelledby="dispatch-compose-title">
-    <h2 id="dispatch-compose-title">新建任务</h2>
+{% if rows %}
+<section class="panel flush dispatch-import-results" aria-labelledby="dispatch-results-title">
+  <div class="panel-head">
+    <h2 id="dispatch-results-title">导入结果</h2>
+    <div class="dispatch-list-meta" role="status">共 {{ rows|length }} 行 · 已匹配 {{ matched }} 行</div>
+    {% if batch_id %}<a class="btn primary small" href="/tasks/{{ batch_id }}" target="_blank" rel="noopener">查看批次提示词</a>{% endif %}
+    <a class="btn small" href="#dispatch-compose-title">重新导入</a>
+  </div>
+  <div class="table-wrap">
+    <table class="dispatch-results" role="table" aria-labelledby="dispatch-results-title">
+      <thead role="rowgroup">
+        <tr role="row">
+          <th scope="col" role="columnheader">行号</th>
+          {% for column in columns %}<th scope="col" role="columnheader">{{ column }}</th>{% endfor %}
+          <th scope="col" role="columnheader">匹配结果</th>
+        </tr>
+      </thead>
+      <tbody role="rowgroup">
+        {% for row in rows %}
+        <tr role="row">
+          <th scope="row" role="rowheader" data-label="行号">{{ row.line }}</th>
+          {% for value in row.values %}
+          <td class="dispatch-csv-value" role="cell" data-label="{{ columns[loop.index0] }}">{{ value or '—' }}</td>
+          {% endfor %}
+          <td class="dispatch-match" role="cell" data-label="匹配结果">
+            {% if row.server_name %}
+            <div><span class="badge ok">已匹配</span> {{ row.server_name }}</div>
+            {% elif row.error %}
+            <div><span class="badge bad">需处理</span> {{ row.error }}</div>
+            {% else %}
+            <span class="muted">未生成</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+<div class="{% if not is_admin %}dispatch-layout{% endif %}">
+  {% if not is_admin %}
+  <section class="panel" aria-labelledby="dispatch-compose-title">
+    <h2 id="dispatch-compose-title">导入任务</h2>
     {% set dispatchers = catalog | selectattr('kind', 'equalto', 'dispatcher') | list %}
     {% set migrations = catalog | selectattr('kind', 'equalto', 'migration') | list %}
     {% if not managed %}
     <p class="flash bad">当前主机为纯网关模式。发送任务需要本机 Linux 用户和 Codex App Server。</p>
-    {% elif not servers or not dispatchers or not migrations or (is_admin and not users) %}
-    <ul class="dispatch-missing">
-      {% if not servers %}<li>暂无可选目标站。{% if is_admin %}<a href="/dispatch-targets">添加站点授权</a>{% else %}请联系管理员授权。{% endif %}</li>{% endif %}
-      {% if not dispatchers or not migrations %}<li>需要上架分发 Skill 和迁移 Skill。{% if is_admin %}<a href="/skills">上传 Skill</a>{% endif %}</li>{% endif %}
-      {% if is_admin and not users %}<li>没有已绑定 Codex 账号的执行用户。<a href="/users">管理账号分配</a></li>{% endif %}
-    </ul>
+    {% elif not dispatchers or not migrations %}
+    <p class="flash bad">需要配置分发 Skill 和迁移 Skill。</p>
     {% else %}
-    <form class="dispatch-form" method="post" action="/tasks/preview">
+    <form class="dispatch-form" method="post" action="/tasks/import" enctype="multipart/form-data">
       <input type="hidden" name="csrf" value="{{ csrf }}">
-      <label class="dispatch-wide">源站网址
-        <input type="text" name="source" value="{{ data.get('source', '') }}" maxlength="2048" list="dispatch-sources"
-               placeholder="https://example.com" spellcheck="false" autocomplete="off" required>
-        <datalist id="dispatch-sources">
-          {% for source in history | map(attribute='source_url') | unique %}<option value="{{ source }}">{% endfor %}
-        </datalist>
-      </label>
-      <label>部署服务器
-        <select name="server_id" id="dispatch-server" required>
-          <option value="">选择服务器</option>
-          {% for id, name in servers.items() %}
-          <option value="{{ id }}"{% if id == data.get('server_id') or (servers|length == 1 and not data.get('server_id')) %} selected{% endif %}>{{ name }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>目标站域名
-        <input type="text" name="target" value="{{ data.get('target', '') }}" list="dispatch-domains" maxlength="253"
-               placeholder="输入或选择域名" spellcheck="false" autocomplete="off" required>
-        <datalist id="dispatch-domains">
-          {% for site in targets %}<option value="{{ site.domain }}" data-server="{{ site.server_id }}">{{ site.server_name }}</option>{% endfor %}
-        </datalist>
+      <label class="dispatch-wide">CSV 或 XLSX 文件
+        <input type="file" name="task_csv" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" aria-describedby="dispatch-csv-format" required>
+        <span class="hint" id="dispatch-csv-format">表头为 <code>{{ columns|join(',') }}</code>，最大 512 KiB。XLSX 读取首个工作表。</span>
       </label>
       {% for field, label, options in [('dispatcher', '分发 Skill', dispatchers), ('migration', '迁移 Skill', migrations)] %}
       <label>{{ label }}
         <select name="{{ field }}" required>
           <option value="">选择{{ label }}</option>
           {% for skill in options %}
-          <option value="{{ skill.id }}"{% if skill.id == data.get(field) or (options|length == 1 and not data.get(field)) %} selected{% endif %}>{{ skill.label }}{% if skill.version %} · {{ skill.version }}{% endif %}</option>
+          <option value="{{ skill.id }}"{% if skill.id == selections.get(field) or (options|length == 1 and not selections.get(field)) %} selected{% endif %}>{{ skill.label }}{% if skill.version %} · {{ skill.version }}{% endif %}</option>
           {% endfor %}
         </select>
       </label>
       {% endfor %}
-      {% if is_admin %}
-      <label class="dispatch-wide">执行用户
-        <select name="recipient" required>
-          <option value="">选择已绑定 Codex 的用户</option>
-          {% for user in users %}<option value="{{ user }}"{% if user == data.get('recipient') or (users|length == 1 and not data.get('recipient')) %} selected{% endif %}>{{ user }}</option>{% endfor %}
-        </select>
-      </label>
-      {% endif %}
-      <div class="dispatch-actions dispatch-wide"><button class="btn primary" type="submit">生成提示词</button></div>
+      <div class="dispatch-actions dispatch-wide"><button class="btn primary" type="submit">导入并生成提示词</button></div>
     </form>
     {% endif %}
   </section>
+  {% endif %}
 
-  <section class="panel flush dispatch-history" aria-labelledby="dispatch-history-title">
+  <section class="panel flush" aria-labelledby="dispatch-history-title">
     <div class="panel-head"><h2 id="dispatch-history-title">{{ '任务记录' if is_admin else '我的任务' }}</h2></div>
     {% if history %}
     <ul class="dispatch-list">
@@ -81,6 +91,12 @@
           <span class="badge {{ status_class }}">{{ status_text }}</span>
           {% if is_admin %}<span>{{ task.recipient }}</span>{% endif %}
           <span>{{ time(task.created_at) }}</span>
+          {% if not is_admin and can_cancel(task) %}
+          <form method="post" action="/tasks/{{ task.id }}/cancel">
+            <input type="hidden" name="csrf" value="{{ csrf }}">
+            <button class="btn small danger" type="submit">取消任务</button>
+          </form>
+          {% endif %}
         </div>
       </li>
       {% endfor %}
@@ -88,5 +104,4 @@
     {% else %}<p class="empty-state">暂无任务记录</p>{% endif %}
   </section>
 </div>
-<script src="/static/dispatch.js" defer></script>
 {% endblock %}

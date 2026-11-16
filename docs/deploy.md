@@ -274,7 +274,8 @@ curl -fsS -H "Authorization: Bearer ${CODEXCTL_API_KEY}" https://codex-control.p
 任务面板在 managed 模式下使用本机 Linux 用户及其已有 Codex 账号绑定。任务预览和确认由 Web 服务处理，发送由独立的 `codexctl-dispatch.service` 处理。升级 Python 包和 Nginx 配置，校验 Nginx 后重新加载，再把 `deploy/codexctl-dispatch.service` 安装到 `/etc/systemd/system/`，执行 `systemctl daemon-reload` 及 `systemctl enable --now codexctl-dispatch`。升级后重启 Web 服务以初始化新表。
 
 1. 管理员在「任务 → Skill 管理」分别上传分发 Skill 和迁移 Skill 的 ZIP。ZIP 可直接使用发布包，最多 8 MiB，面板从 `SKILL.md` 读取名称及版本。包作为该任务的工程文件交给 Codex，发布包的安装器由面板跳过。
-2. 管理员在「任务 → 目标站授权」选择现有服务器，填写目标域名、宝塔 AI 装修 HTTPS 接口、凭据环境变量名、允许执行的用户名。远程分发时填写执行用户的 Codex 环境可访问的项目名称或 ID。站点清单的 SSH 密钥仅供采集。部署接口的凭据应限定在授权站点，并允许指定的 Linux 执行用户使用。
-3. 在仅 root 可读的 `/etc/codexctl/dispatch.env` 中配置对应的专用凭据环境变量，修改后重启 `codexctl-dispatch`。Worker 只把当前任务明确引用的部署凭据传给执行用户的 Codex 进程。接口地址和提示词中只放凭据引用。
-4. 用户在「任务」填写原站网址、选择服务器及目标站和两个 Skill。核对提示词并勾选确认后，Worker 启动该用户的 Codex App Server，用任务专属目录中的 `task.csv` 与两个明确的 Skill 输入启动会话。管理员代提交时选择一个已有账号绑定且获目标站授权的普通用户。Web 进程和 Worker 可以独立重启，Worker 中断时，状态未知的发送保留原会话 ID 供核对。
-5. 面板显示实际的 Codex 会话 ID、轮次 ID 和发送回执。任务文件位于 `state_dir/dispatch/<任务ID>`，权限属于执行用户，由 Codex 使用。若所选分发 Skill 还需要创建远程项目子会话、访问浏览器或运行迁移引擎，执行用户的 Codex 环境应提供相应工具、工作目录和依赖。App Server 回执表示已交接，站点上线和验收以 Codex 后续结果为准。
+2. 成员在「任务」上传 CSV 或 XLSX，最大 512 KiB，表头为 `原域名,新域名,备注,折扣`。CSV 支持 UTF-8 或 GB18030 编码，XLSX 读取首个工作表，公式单元格需先粘贴为值。系统按新域名查询所有服务器最近一次成功巡检的绑定域名。结果同时显示导入内容与逐行匹配结果，每个上传文件生成一份包含全部任务的批次提示词。匹配异常的行也保留在批次中并注明原因。备注可留空。折扣可填写 `3` 或 `8.5折` 等数值，留空时分发器使用默认值。
+3. 生成的提示词提供目标服务器的 SSH 主机及端口。实际部署使用执行环境中配置的 SSH 登录，独立子会话也需要能连接同一目标。站点清单的受限 SSH 密钥用于巡检。升级前已经确认的宝塔 API 任务继续使用原有凭据环境变量。
+4. 成员核对批次提示词并确认后，Worker 启动该成员的 Codex App Server。原始上传文件以 `upload.csv` 或 `upload.xlsx` 原样存入任务目录，同时提供包含全部任务的 `task.csv`、逐行部署清单 `targets.json` 和所选 Skill。提示词引用文件路径，并列出各目标域名对应的部署服务器及 SSH 端口。Web 进程和 Worker 可以独立重启，Worker 中断时，状态未知的发送保留原会话 ID 供核对。
+5. 面板显示实际的 Codex 会话 ID、轮次 ID 和发送回执。任务文件位于 `state_dir/dispatch/<任务ID>`，权限属于执行用户。App Server 回执表示已交接，站点上线和验收以 Codex 后续结果为准。
+6. 成员可在任务列表或详情点击「取消任务」。待确认和排队任务立即取消，执行中的任务先显示「正在取消」，Worker 请求中断当前 Codex 轮次并停止本机任务进程后显示「已取消」。已完成的操作保留，结果未知的原会话需要按页面提示核对。

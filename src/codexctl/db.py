@@ -206,6 +206,7 @@ CREATE TABLE IF NOT EXISTS dispatch_tasks (
     title TEXT NOT NULL,
     prompt TEXT NOT NULL,
     csv TEXT NOT NULL,
+    upload BLOB,
     status TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     confirmed_at INTEGER,
@@ -299,6 +300,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE log_offsets ADD COLUMN last_model TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS usage_events_user_session ON usage_events(username, session_file)")
     with transaction(conn):
+        if "upload" not in {r["name"] for r in conn.execute("PRAGMA table_info(dispatch_tasks)")}:
+            conn.execute("ALTER TABLE dispatch_tasks ADD COLUMN upload BLOB")
         if "system_uid" not in {r["name"] for r in conn.execute("PRAGMA table_info(web_sessions)")}:
             conn.execute("ALTER TABLE web_sessions ADD COLUMN system_uid INTEGER")
         if "password_configured" not in {r["name"] for r in conn.execute("PRAGMA table_info(admins)")}:

@@ -32,6 +32,10 @@ class RequestRejected(DeliveryError):
     pass
 
 
+class TaskCancelled(DeliveryError):
+    pass
+
+
 class AppServer:
     def __init__(self, proc: subprocess.Popen):
         self.proc = proc
@@ -43,13 +47,20 @@ class AppServer:
         self.proc.stdin.write(json.dumps(message, ensure_ascii=False).encode() + b"\n")
         self.proc.stdin.flush()
 
-    def read(self, deadline: float | None) -> dict:
+    def read(self, deadline: float | None, check_cancel=None) -> dict:
         fd = self.proc.stdout.fileno()
         with selectors.DefaultSelector() as selector:
             selector.register(fd, selectors.EVENT_READ)
             while (newline := self.buffer.find(b"\n")) < 0:
-                if not selector.select(None if deadline is None else max(0, deadline - time.monotonic())):
-                    raise DeliveryError("等待 Codex 回执超时")
+                if check_cancel:
+                    check_cancel()
+                timeout = None if deadline is None else max(0, deadline - time.monotonic())
+                if check_cancel:
+                    timeout = min(timeout, 0.25) if timeout is not None else 0.25
+                if not selector.select(timeout):
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise DeliveryError("等待 Codex 回执超时")
+                    continue
                 chunk = os.read(fd, 64 * 1024)
                 if not chunk:
                     raise DeliveryError("Codex App Server 连接已断开")
@@ -92,9 +103,9 @@ class AppServer:
             raise DeliveryError(f"Codex 的 {method} 回执无效")
         raise DeliveryError("等待 Codex 回执超时")
 
-    def wait_turn(self, turn_id: str) -> str:
+    def wait_turn(self, turn_id: str, check_cancel=None) -> str:
         while self.completed is None or self.completed[0] != turn_id:
-            self.read(None)
+            self.read(None, check_cancel)
         status = self.completed[1]
         return status if status in ("completed", "failed", "interrupted") else "unknown"
 
@@ -114,6 +125,17 @@ def _stage(run_root: Path, task: sqlite3.Row, user: SysUser, packages: list[byte
             path = dispatch_skills.unpack(package, skills)
             inputs.append({"type": "skill", "name": binding["name"], "path": str(task_root / path.relative_to(work))})
         (work / "task.csv").write_text(task["csv"], encoding="utf-8")
+        snapshot = json.loads(task["target_snapshot"])
+        if snapshot.get("upload_file"):
+            upload = task["upload"]
+            if upload is None or hashlib.sha256(upload).hexdigest() != snapshot["upload_sha256"]:
+                raise DeliveryError("上传文件校验失败，请重新导入")
+            filename = snapshot["upload_file"]
+            if filename not in {"upload.csv", "upload.xlsx"}:
+                raise DeliveryError("上传文件名称无效")
+            (work / filename).write_bytes(upload)
+        if "rows" in snapshot:
+            (work / "targets.json").write_text(json.dumps(snapshot["rows"], ensure_ascii=False, indent=2), encoding="utf-8")
         for path in work.rglob("*"):
             os.chown(path, user.uid, user.gid)
         os.chown(work, user.uid, user.gid)
@@ -121,14 +143,17 @@ def _stage(run_root: Path, task: sqlite3.Row, user: SysUser, packages: list[byte
     return inputs
 
 
-def _env(user: SysUser, name: str) -> dict[str, str]:
-    credential = os.environ.get(name, "")
-    if not credential:
-        raise DeliveryError(f"Worker 缺少部署凭据引用 ENV:{name}")
-    return {
+def _env(user: SysUser, name: str | None) -> dict[str, str]:
+    env = {
         "HOME": str(user.home), "USER": user.name, "LOGNAME": user.name,
-        "PATH": f"/usr/local/bin:/usr/bin:/bin:{user.home}/.local/bin", "LANG": "C.UTF-8", name: credential,
+        "PATH": f"/usr/local/bin:/usr/bin:/bin:{user.home}/.local/bin", "LANG": "C.UTF-8",
     }
+    if name is not None:
+        credential = os.environ.get(name, "")
+        if not credential:
+            raise DeliveryError(f"Worker 缺少部署凭据引用 ENV:{name}")
+        env[name] = credential
+    return env
 
 
 def _record(
@@ -137,7 +162,15 @@ def _record(
     with db.transaction(ctx.conn):
         values = {"status": status, "error": error, **fields}
         clause = ", ".join(f"{key}=?" for key in values)
-        ctx.conn.execute(f"UPDATE dispatch_tasks SET {clause} WHERE id=?", (*values.values(), task["id"]))
+        # Cancellation wins races with startup, delivery, and completion updates.
+        ctx.conn.execute(
+            f"UPDATE dispatch_tasks SET {clause} WHERE id=? AND status NOT IN ('cancelling', 'cancelled')",
+            (*values.values(), task["id"]),
+        )
+        if fields:
+            receipt = ", ".join(f"{key}=?" for key in fields)
+            ctx.conn.execute(f"UPDATE dispatch_tasks SET {receipt} WHERE id=? AND status='cancelling'",
+                             (*fields.values(), task["id"]))
         if status in {"sent", "failed", "unknown"}:
             action = f"dispatch.{status}" if "turn_status" not in fields else "dispatch.turn"
             events.audit(ctx.conn, task["owner"], action, task["id"], error, now=ctx.now())
@@ -169,7 +202,18 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
     proc = None
     requested = False
     accepted = False
+    client = None
+    thread_id = turn_id = None
+    cancelled = False
+    cancel_error = ""
+
+    def check_cancel():
+        current = ctx.conn.execute("SELECT status FROM dispatch_tasks WHERE id=?", (task["id"],)).fetchone()
+        if current is None or current["status"] in {"cancelling", "cancelled"}:
+            raise TaskCancelled("成员已取消任务")
+
     try:
+        check_cancel()
         with db.transaction(ctx.conn):
             user, label = dispatch_tasks.validate_snapshot(ctx, task)
             packages = [
@@ -177,14 +221,16 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
                 for binding in json.loads(task["skills"])
             ]
         target = json.loads(task["target_snapshot"])
-        env = _env(user, target["credential_env"])
+        credential = None if target.get("deployment_method") == "ssh" else target.get("credential_env")
+        env = _env(user, credential)
         cwd = str(run_root / task["id"])
         inputs = [{"type": "text", "text": task["prompt"]}, *_stage(run_root, task, user, packages)]
-        # Recheck after staging in case an administrator revoked access during extraction.
+        # Site bindings or Skill packages may change while files are being staged.
         with db.transaction(ctx.conn):
             current_user, current_label = dispatch_tasks.validate_snapshot(ctx, task)
         if (current_user, current_label) != (user, label):
             raise DeliveryError("执行用户或 Codex 账号绑定已变更，请重新预览")
+        check_cancel()
         proc = subprocess.Popen(
             [str(ctx.settings.codex_bin), "app-server"], cwd=cwd, env=env, stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True,
@@ -203,12 +249,21 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
         }), "thread")
         _record(ctx, task, "sending", thread_id=thread_id, account_label=label)
         client.call("thread/name/set", {"threadId": thread_id, "name": task["title"]})
+        check_cancel()
         requested = True
         result = client.call("turn/start", {"threadId": thread_id, "input": inputs})
         turn_id = _id(result, "turn")
         _record(ctx, task, "sent", turn_id=turn_id, turn_status="inProgress")
         accepted = True
-        _record(ctx, task, "sent", turn_status=client.wait_turn(turn_id))
+        check_cancel()
+        _record(ctx, task, "sent", turn_status=client.wait_turn(turn_id, check_cancel))
+    except TaskCancelled:
+        cancelled = True
+        if client is not None and thread_id and turn_id:
+            try:
+                client.call("turn/interrupt", {"threadId": thread_id, "turnId": turn_id})
+            except (OSError, ValueError):
+                cancel_error = "已停止本机任务进程，中断回执未确认，请核对保留的 Codex 会话"
     except (OSError, ValueError, sqlite3.Error) as exc:
         message = str(exc) if isinstance(exc, (DeliveryError, dispatch_tasks.TaskError)) else "无法启动或读取 Codex App Server"
         if accepted:
@@ -219,6 +274,15 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
     finally:
         if proc is not None:
             _stop(proc)
+        with db.transaction(ctx.conn):
+            current = ctx.conn.execute("SELECT status FROM dispatch_tasks WHERE id=?", (task["id"],)).fetchone()
+            if current is not None and (cancelled or current["status"] == "cancelling"):
+                if requested and not cancelled:
+                    cancel_error = "已停止本机任务进程，原轮次状态未确认，请核对保留的 Codex 会话"
+                ctx.conn.execute(
+                    "UPDATE dispatch_tasks SET status='cancelled', turn_status=?, error=? WHERE id=?",
+                    ("unknown" if cancel_error else "interrupted" if turn_id else None, cancel_error, task["id"]),
+                )
 
 
 def claim(ctx: Context) -> sqlite3.Row | None:
@@ -226,8 +290,17 @@ def claim(ctx: Context) -> sqlite3.Row | None:
         task = ctx.conn.execute("""
             SELECT q.* FROM dispatch_tasks q WHERE q.status='queued' AND NOT EXISTS (
                 SELECT 1 FROM dispatch_tasks active
-                WHERE (active.recipient=q.recipient OR active.target_id=q.target_id)
-                  AND (active.status='sending' OR (active.status='sent' AND active.turn_status='inProgress'))
+                WHERE (active.recipient=q.recipient OR active.target_id=q.target_id OR EXISTS (
+                    SELECT 1
+                    FROM json_each(COALESCE(json_extract(active.target_snapshot, '$.targets'),
+                                            json_array(json(active.target_snapshot)))) a
+                    JOIN json_each(COALESCE(json_extract(q.target_snapshot, '$.targets'),
+                                            json_array(json(q.target_snapshot)))) b
+                      ON json_extract(a.value, '$.server_id')=json_extract(b.value, '$.server_id')
+                     AND (json_extract(a.value, '$.id')=json_extract(b.value, '$.id')
+                          OR json_extract(a.value, '$.domain')=json_extract(b.value, '$.domain'))
+                ))
+                  AND (active.status IN ('sending', 'cancelling') OR (active.status='sent' AND active.turn_status='inProgress'))
             )
             ORDER BY q.confirmed_at, q.rowid LIMIT 1
         """).fetchone()
@@ -254,6 +327,10 @@ def run(ctx: Context) -> None:
         ctx.conn.execute(
             "UPDATE dispatch_tasks SET turn_status='unknown', error=? WHERE status='sent' AND turn_status='inProgress'",
             ("Worker 中断，请在 Codex 查看原会话",),
+        )
+        ctx.conn.execute(
+            "UPDATE dispatch_tasks SET status='cancelled', turn_status='unknown', error=? WHERE status='cancelling'",
+            ("取消期间 Worker 中断，请核对保留的 Codex 会话",),
         )
 
         def work(task: sqlite3.Row) -> None:
