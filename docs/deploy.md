@@ -174,3 +174,48 @@ systemd 单元设置了 `TimeoutStopSec=120` 与 `KillMode=mixed`：`systemctl s
 
 
 Web 面板启动时，如不存在 `admin` 登录账号，会创建该账号，初始密码为 `root@root.root`。已有 `admin` 的密码不会被覆盖；请在部署后通过现有的密码管理命令修改初始密码。只有 `admin` 拥有管理权限，其他现有 Web 登录账号（例如 `linpp`）保留原密码并使用只读面板。
+
+## API 网关
+
+### 启用
+
+仅为本地客户端提供 API 的服务器可以跳过 ACL、Codex 二进制、包装脚本及服务器用户迁移步骤。先安装 Python 包和两个 systemd 服务。编辑 `/etc/codexctl/config.toml`。
+
+```toml
+deployment_mode = "gateway"
+gateway_enabled = false
+gateway_client_version = "0.167.0"
+gateway_base_url = "https://codex-control.ppspace.xyz/v1"
+```
+
+运行 `codexctl init`，再运行 `codexctl admin create admin` 设置管理员密码。已有管理员可用 `codexctl admin passwd admin` 更改密码，已有会话随之失效。安装 HTTPS Nginx 配置后运行 `nginx -t` 并重载。把 `gateway_enabled` 改为 `true`，运行 `codexctl selfcheck` 后启动或重启 `codexctl` 与 `codexctl-web`。现有服务器如果仍需独立管理既有 Linux 用户，可以保留 `deployment_mode = "managed"` 并启用网关，新增的 API 请求仍直接转发模型调用。
+
+Nginx 对 `/v1/` 关闭请求与响应缓冲及共享缓存，请求体允许 16 MiB，流空闲读超时为 360 秒。网关不限制速率或活跃上游连接数。若站点通过宝塔等 WAF 继承了全局限流，需为 `/v1/` 覆写相关规则。绑定账号受到上游额度限制时，客户端收到上游的 HTTP `429` 和可用的 `Retry-After`。API 访问日志使用路径和请求 ID。
+
+### 账号、模型与 Key
+
+1. 在管理员自己的电脑以单独的临时 `CODEX_HOME` 执行 `codex login --device-auth`。将该目录的 `auth.json` 经 SSH 传入服务器权限为 `0600` 的临时文件。用 `codexctl account import <标签> <文件>` 导入，或用 `codexctl account relogin <标签> --file <文件>` 更新同一账号，然后清理临时文件。
+2. 在「API Keys」选择用户并加载模型。已有 Linux 用户默认带出当前分配的账号，也可指定其他账号。纯网关模式输入用户名并选择要绑定的账号。标准档可以选择账号目录里的公开可用模型，管理员可在「账号 → 模型」手动停用单个模型。通过「测试 Fast」且上游返回 `priority` 后可为 Key 授予 Fast 权限。
+3. 勾选允许模型并设默认模型。复制一次性显示的 Key。新 Key 按用户归属并固定绑定账号，长期有效。在用户的 Key 列表中可以按名称、公开前缀、模型或账号搜索，也可以编辑、轮换、撤销或删除。删除立即使密钥失效并从管理列表移除，历史用量保留。「API 用量」按用户、Key、账号和模型展示近 7 天用量，明细保留 90 天。
+4. 客户端配置见 Key 的「客户端配置」。Codex CLI 用本地 profile。CC Switch 的 Codex 和 DeepSeek Harness 自定义供应商使用 OpenAI Responses、以 `/v1` 结尾的 Base URL、原始 Key 和允许的模型 ID。在 Harness 获取模型后勾选模型并保存供应商，或手动添加相同的模型 ID。网关透传有效的 `max_output_tokens`。
+
+如果 CC Switch 获取模型后，Harness 里看不到第三方供应商，检查本地 Harness 配置中的 `models[].input`。`llm-pi-ai` 只接受 `text` 和 `image`，含 `pdf` 的模型会导致整个插件配置校验失败。CC Switch v4.0.24 起在写入时过滤这些值。升级后重新保存已有供应商，再完全退出并重启 Harness。 [CC Switch v4.0.24 发布说明](https://github.com/farion1231/cc-switch/releases/tag/v4.0.24)
+
+暂时无法升级时，可在本地 `~/.dsh/profiles/web/cordis.patch.yml` 和 `~/.dsh/profiles/desktop/cordis.patch.yml` 的已有文件中，将受影响模型的 `input: [text, image, pdf]` 改为 `input: [text, image]`。已设置 `DSH_HOME` 时以该目录为准，已使用 `headless` 或 `acp` 时也检查对应 profile。保存后重启 Harness。 [CC Switch 问题 #9116](https://github.com/farion1231/cc-switch/issues/9116)
+
+「账号 → 模型」分别显示账号目录里的默认上下文和上限。Codex 原生目录保留这两个值，客户端配置可显式选择所用模型的上下文上限。兼容模型列表将可用上限发给 Harness，并用 `default_context_window` 保留上游默认值。
+
+Fast 测试按上游最终返回的档位判断。显示实际使用标准档时，请求已经完成，Fast 还未对该账号和模型通过验证。
+
+网关支持 `GET /v1/models`、版本化的 `GET /v1/codex/models` 和 `POST /v1/responses`。请求统一使用 Bearer Key。对话回放和上下文压缩走 Responses，请使用当前 Codex 版本。客户端把会话项随请求发送，密码、OAuth 凭证及工具执行权限由各自所在的客户端和服务器管理。服务器转发工具调用和客户端回传的结果。
+
+### 核验与回退
+
+```bash
+# 应返回 HTTP 401 和 X-Request-ID
+curl -i https://codex-control.ppspace.xyz/v1/models
+# 在客户端安全设置 CODEXCTL_API_KEY 后执行，应返回此 Key 的模型列表
+curl -fsS -H "Authorization: Bearer ${CODEXCTL_API_KEY}" https://codex-control.ppspace.xyz/v1/models
+```
+
+用 SQLite backup API 备份现有库，主密钥单独备份。关闭 `gateway_enabled` 并重启两个服务即可停用线上 API。回退 Python 包和 Nginx 配置时可以保留新增表，现有账号、用量和 Key 状态从原数据库继续读取。

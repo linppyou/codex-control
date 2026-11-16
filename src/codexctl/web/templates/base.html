@@ -16,8 +16,11 @@
   <a class="brand" href="/"><img src="/static/favicon.svg" alt="">codexctl</a>
   <nav>
     {% for href, text in (("/", "总览"), ("/accounts", "账号"), ("/users", "用户"), ("/usage", "用量"), ("/pricing", "价目表"), ("/audit", "审计")) %}
+    {% if managed or href != "/users" %}
     <a href="{{ href }}"{% if path == href or (href != "/" and path.startswith(href ~ "/")) %} class="on"{% endif %}>{{ text }}</a>
+    {% endif %}
     {% endfor %}
+    {% if gateway_enabled and is_admin %}<a href="/api-keys"{% if path.startswith("/api-keys") %} class="on"{% endif %}>API Keys</a>{% endif %}
   </nav>
   <form method="post" action="/logout" class="who">
     <span class="avatar">{{ admin[:1]|upper }}</span><span class="name">{{ admin }} · {{ "管理员面板" if is_admin else "用户面板（只读）" }}</span>

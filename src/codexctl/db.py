@@ -103,7 +103,8 @@ CREATE TABLE IF NOT EXISTS audit_log (
 CREATE TABLE IF NOT EXISTS admins (
     username TEXT PRIMARY KEY,
     password_hash TEXT NOT NULL,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    password_configured INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS web_sessions (
     token_hash TEXT PRIMARY KEY,
@@ -112,6 +113,73 @@ CREATE TABLE IF NOT EXISTS web_sessions (
     created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS account_models (
+    account_pk INTEGER NOT NULL REFERENCES accounts(id),
+    model_id TEXT NOT NULL,
+    upstream_available INTEGER NOT NULL DEFAULT 1,
+    selectable INTEGER NOT NULL DEFAULT 1,
+    discovered_at INTEGER NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    verified_at INTEGER,
+    fast_verified_at INTEGER,
+    PRIMARY KEY (account_pk, model_id)
+);
+CREATE TABLE IF NOT EXISTS account_model_catalogs (
+    account_pk INTEGER NOT NULL REFERENCES accounts(id),
+    client_version TEXT NOT NULL,
+    catalog TEXT NOT NULL,
+    synced_at INTEGER NOT NULL,
+    PRIMARY KEY (account_pk, client_version)
+);
+CREATE TABLE IF NOT EXISTS api_keys (
+    id INTEGER PRIMARY KEY,
+    public_id TEXT NOT NULL UNIQUE,
+    secret_hash BLOB NOT NULL,
+    secret_version INTEGER NOT NULL DEFAULT 1,
+    name TEXT NOT NULL,
+    username TEXT,
+    account_pk INTEGER NOT NULL REFERENCES accounts(id),
+    default_model_id TEXT NOT NULL,
+    allow_fast INTEGER NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER,
+    revoked_at INTEGER,
+    deleted_at INTEGER,
+    last_used_at INTEGER,
+    UNIQUE (id, account_pk),
+    FOREIGN KEY (id, default_model_id) REFERENCES api_key_models(key_pk, model_id)
+        DEFERRABLE INITIALLY DEFERRED
+);
+CREATE TABLE IF NOT EXISTS api_key_models (
+    key_pk INTEGER NOT NULL,
+    account_pk INTEGER NOT NULL,
+    model_id TEXT NOT NULL,
+    PRIMARY KEY (key_pk, model_id),
+    FOREIGN KEY (key_pk, account_pk) REFERENCES api_keys(id, account_pk),
+    FOREIGN KEY (account_pk, model_id) REFERENCES account_models(account_pk, model_id)
+);
+CREATE TABLE IF NOT EXISTS api_usage_events (
+    request_id TEXT PRIMARY KEY,
+    key_pk INTEGER NOT NULL,
+    account_pk INTEGER NOT NULL,
+    model_id TEXT NOT NULL,
+    ts INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    elapsed_ms INTEGER NOT NULL,
+    first_output_ms INTEGER,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cached_input_tokens INTEGER,
+    reasoning_output_tokens INTEGER,
+    total_tokens INTEGER,
+    requested_tier TEXT,
+    actual_tier TEXT,
+    FOREIGN KEY (key_pk, account_pk) REFERENCES api_keys(id, account_pk)
+);
+CREATE INDEX IF NOT EXISTS api_usage_events_key_ts ON api_usage_events(key_pk, ts);
+CREATE INDEX IF NOT EXISTS api_usage_events_account_ts ON api_usage_events(account_pk, ts);
+CREATE INDEX IF NOT EXISTS api_usage_events_ts ON api_usage_events(ts);
 """
 
 
@@ -136,6 +204,18 @@ def connect(path: Path | str) -> sqlite3.Connection:
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     return conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone() is not None
+
+
+@contextmanager
+def connection(path: Path) -> Iterator[sqlite3.Connection]:
+    """Open a migrated database for a single unit of work."""
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=rw", uri=True, isolation_level=None, timeout=30)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        yield conn
+    finally:
+        conn.close()
 
 
 def _seed_prices(conn: sqlite3.Connection) -> None:
@@ -163,6 +243,32 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "last_model" not in cols:
         conn.execute("ALTER TABLE log_offsets ADD COLUMN last_model TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS usage_events_user_session ON usage_events(username, session_file)")
+    with transaction(conn):
+        if "password_configured" not in {r["name"] for r in conn.execute("PRAGMA table_info(admins)")}:
+            conn.execute("ALTER TABLE admins ADD COLUMN password_configured INTEGER NOT NULL DEFAULT 0")
+        key_columns = {r["name"] for r in conn.execute("PRAGMA table_info(api_keys)")}
+        if "username" not in key_columns:
+            conn.execute("ALTER TABLE api_keys ADD COLUMN username TEXT")
+        if "deleted_at" not in key_columns:
+            conn.execute("ALTER TABLE api_keys ADD COLUMN deleted_at INTEGER")
+        if "selectable" not in {r["name"] for r in conn.execute("PRAGMA table_info(account_models)")}:
+            conn.execute("ALTER TABLE account_models ADD COLUMN selectable INTEGER NOT NULL DEFAULT 1")
+            # Older rows started disabled until tested. Preserve explicit administrator disables.
+            conn.execute("""
+                UPDATE account_models SET enabled = 1 WHERE enabled = 0 AND NOT EXISTS (
+                    SELECT 1 FROM audit_log a
+                    WHERE a.action = 'api_model.disable' AND a.target = account_pk || '/' || model_id
+                )
+            """)
+            conn.execute("""
+                UPDATE account_models AS m SET selectable = 0 WHERE EXISTS (
+                    SELECT 1 FROM account_model_catalogs c, json_each(c.catalog, '$.models') model
+                    WHERE c.account_pk = m.account_pk AND c.synced_at = m.discovered_at
+                      AND json_extract(model.value, '$.slug') = m.model_id
+                      AND (json_extract(model.value, '$.visibility') IN ('hide', 'hidden')
+                           OR json_type(model.value, '$.supported_in_api') = 'false')
+                )
+            """)
 
 
 @contextmanager

@@ -42,7 +42,8 @@ def _redirect(path: str, msg: str = "", err: str = "") -> RedirectResponse:
         params["msg"] = msg[:500]
     if err:
         params["err"] = err[:500]
-    return RedirectResponse(path + ("?" + urlencode(params) if params else ""), status_code=303)
+    separator = "&" if "?" in path else "?"
+    return RedirectResponse(path + (separator + urlencode(params) if params else ""), status_code=303)
 
 
 def _countdown(resets_at: int | None, now: int) -> str:

@@ -23,10 +23,11 @@
     <td class="nowrap mono">{% for q in r.quota %}{{ q.name }} {{ "未知" if q.percent is none else q.percent ~ "%" }}{% if not loop.last %} / {% endif %}{% else %}<span class="muted">-</span>{% endfor %} <a href="/accounts/{{ r.label }}/quota">记录</a></td>
     <td class="muted">{{ r.last_error }}</td><td class="num">{{ r.users }}</td><td class="mono nowrap">{{ r.last_refresh }}</td><td class="mono nowrap">{{ r.expires }}</td>
     {% if is_admin %}<td class="ops">
-      {% for act, text in (("refresh", "刷新"), ("republish", "重新发布")) %}
+      {% if gateway_enabled %}<a href="/accounts/{{ r.label }}/models" class="btn small">模型</a>{% endif %}
+      {% for act, text in (("refresh", "刷新"), ("republish", "重新发布")) if managed or act != "republish" %}
       <form method="post" action="/accounts/{{ r.label }}/{{ act }}" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn small">{{ text }}</button></form>
       {% endfor %}
-      <form method="post" action="/accounts/login" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="label" value="{{ r.label }}"><input type="hidden" name="mode" value="relogin"><button class="btn small">重新登录</button></form>
+      {% if managed %}<form method="post" action="/accounts/login" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="label" value="{{ r.label }}"><input type="hidden" name="mode" value="relogin"><button class="btn small">重新登录</button></form>{% endif %}
       {% if r.status == "disabled" %}
       <form method="post" action="/accounts/{{ r.label }}/enable" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn small">启用</button></form>
       {% else %}
@@ -40,7 +41,7 @@
   </tbody>
 </table></div>
 </div>
-{% if is_admin %}<div class="panel">
+{% if is_admin and managed %}<div class="panel">
   <div class="section-head"><span class="section-title"><span class="section-mark"></span>添加账号</span></div>
   <form method="post" action="/accounts/login" class="form-row">
     <input type="hidden" name="csrf" value="{{ csrf }}">
@@ -50,5 +51,6 @@
     <span class="hint">小写字母、数字、- 或 _，提交后按提示完成设备登录</span>
   </form>
 </div>
+{% elif is_admin %}<div class="panel"><p>在本地电脑登录后，用 <code>codexctl account import &lt;标签&gt; &lt;auth.json&gt;</code> 导入凭证。</p></div>
 {% endif %}
 {% endblock %}

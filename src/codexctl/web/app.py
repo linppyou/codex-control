@@ -16,6 +16,8 @@ from fastapi.templating import Jinja2Templates
 
 from .. import events, pricing, webauth
 from ..context import Context
+from ..gateway import api as gateway_api
+from ..gateway.upstream import Gateway
 from .charts import fmt_tokens
 from ..devicelogin import DeviceLoginManager
 from ..webauth import (
@@ -95,6 +97,12 @@ def admin_csrf(request: Request, csrf: str = Form("")) -> tuple[str, str]:
 
 def csrf_guard(request: Request, csrf: str = Form("")) -> None:
     """全局依赖：除 /login 外的所有写请求都必须带有效会话和 csrf。"""
+    path = request.url.path
+    if not request.app.state.ctx.settings.manages_local_codex and (
+        path == "/users" or path.startswith(("/users/", "/accounts/login/")) or path == "/accounts/login"
+        or path.startswith("/accounts/") and path.endswith("/republish")
+    ):
+        raise HTTPException(status_code=404)
     if request.method in ("GET", "HEAD", "OPTIONS") or request.url.path == "/login":
         return
     username, _ = admin_csrf(request, csrf)
@@ -129,21 +137,31 @@ def create_app(
     *,
     devlogins: DeviceLoginManager | None = None,
     limiter: LoginRateLimiter | None = None,
+    gateway: Gateway | None = None,
 ) -> FastAPI:
-    if webauth.get_hash(ctx.conn, "admin") is None:
+    stored_admin = webauth.get_hash(ctx.conn, "admin")
+    if ctx.settings.gateway_enabled or not ctx.settings.manages_local_codex:
+        if not webauth.has_configured_admin(ctx.conn):
+            raise webauth.AuthError("启用网关前，请通过 codexctl admin create 或 passwd admin 配置管理员密码")
+    elif stored_admin is None:
         try:
-            webauth.create_admin(ctx.conn, "admin", "root@root.root", now=ctx.now())
+            webauth.create_admin(ctx.conn, "admin", webauth.DEFAULT_ADMIN_PASSWORD, now=ctx.now(), configured=False)
         except webauth.AuthError:
             if webauth.get_hash(ctx.conn, "admin") is None:
                 raise
     manager = devlogins if devlogins is not None else DeviceLoginManager(ctx.settings, clock=ctx.clock)
+    gateway = (gateway or Gateway(ctx)) if ctx.settings.gateway_enabled else None
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         try:
+            if gateway:
+                await gateway.start()
             yield
         finally:
             manager.close()  # 关闭时取消所有进行中的 device-auth 登录
+            if gateway:
+                await gateway.close()
 
     app = FastAPI(
         docs_url=None, redoc_url=None, openapi_url=None, dependencies=[Depends(csrf_guard)], lifespan=lifespan
@@ -160,6 +178,8 @@ def create_app(
     app.state.templates.env.filters["rate"] = pricing.fmt_rate
     app.state.templates.env.filters["rate_value"] = pricing.fmt_rate_value
     app.mount("/static", StaticFiles(directory=str(base / "static")), name="static")
+    if gateway:
+        app.mount("/v1", gateway_api.create_api(gateway), name="api")
 
     @app.get("/favicon.ico", include_in_schema=False)
     def favicon() -> RedirectResponse:
@@ -174,6 +194,8 @@ def create_app(
         context.setdefault("admin", None)
         context.setdefault("csrf", "")
         context.setdefault("is_admin", context["admin"] == "admin")
+        context.setdefault("gateway_enabled", bool(gateway))
+        context.setdefault("managed", ctx.settings.manages_local_codex)
         context.setdefault("msg", request.query_params.get("msg", "") if flash else "")
         context.setdefault("err", request.query_params.get("err", "") if flash else "")
         return app.state.templates.TemplateResponse(request, name, context, status_code=status)
@@ -246,5 +268,9 @@ def create_app(
     from . import views
 
     views.register(app)
+    if gateway:
+        from . import gateway as gateway_views
+
+        gateway_views.register(app, gateway)
     app.add_middleware(SecurityHeadersMiddleware)
     return app

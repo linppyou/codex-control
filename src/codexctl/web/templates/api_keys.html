@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% block title %}API Keys{% if owner %} · {{ owner }}{% endif %} - codexctl{% endblock %}
+{% macro user_field(users, managed) %}
+{% if managed %}
+<label>用户 <select name="username" required><option value="">选择用户</option>
+  {% for user in users %}<option value="{{ user }}">{{ user }}</option>{% endfor %}
+</select></label>
+{% else %}
+<label>用户名 <input type="text" name="username" maxlength="32" pattern="[a-z_][a-z0-9_.\-]*" required></label>
+{% endif %}
+{% endmacro %}
+{% macro permission_fields(models, selected, default_model, fast) %}
+<fieldset class="key-models">
+  <legend>允许的模型</legend>
+  {% for id, available in models %}
+  <label><input type="checkbox" name="model_ids" value="{{ id }}"{% if id in selected %} checked{% endif %}>
+    <span>{{ id }}{% if not available %} <small class="muted">（当前不可用）</small>{% endif %}</span>
+  </label>
+  {% endfor %}
+</fieldset>
+<div class="form-row">
+  <label>默认模型 <select name="default_model" required><option value="">选择模型</option>
+    {% for id, available in models %}<option value="{{ id }}"{% if id == default_model %} selected{% endif %}>{{ id }}{% if not available %}（当前不可用）{% endif %}</option>{% endfor %}
+  </select></label>
+  <label><input type="checkbox" name="allow_fast" value="true"{% if fast %} checked{% endif %}> 允许已验证的 Fast 档</label>
+</div>
+{% endmacro %}
+{% macro key_action(id, action, label, csrf, confirmation, danger=false) %}
+<form method="post" action="/api-keys/{{ id }}/{{ action }}" class="inline" data-confirm="{{ confirmation }}">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <button class="btn small{% if danger %} danger{% endif %}">{{ label }}</button>
+</form>
+{% endmacro %}
+{% block content %}
+<div class="page-head">
+  <div>
+    {% if owner is not none %}<div class="crumb"><a href="/api-keys">API Keys</a></div>{% endif %}
+    <h1>{{ owner or ("未绑定 Key" if owner == "" else "API Keys") }}</h1>
+  </div>
+  <a class="btn" href="/api-keys/usage">API 用量</a>
+</div>
+
+{% if owner is none %}
+<section class="panel flush">
+  <div class="panel-head">
+    <h2>用户</h2>
+    <form method="get" action="/api-keys" class="form-row key-search">
+      <input type="text" name="q" value="{{ q }}" maxlength="80" placeholder="搜索用户名" aria-label="搜索用户名">
+      <button class="btn">搜索</button>
+      {% if q %}<a href="/api-keys">清除</a>{% endif %}
+    </form>
+    {% if not managed %}
+    <form method="get" action="/api-keys" class="form-row">
+      {{ user_field([], false) }}<button class="btn primary">打开用户</button>
+    </form>
+    {% endif %}
+  </div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>用户</th><th class="num">未撤销</th><th class="num">全部 Key</th><th>操作</th></tr></thead>
+    <tbody>
+      {% for name, total, unrevoked in groups %}
+      <tr><td class="key-owner"><a href="{{ keys_url(name) }}">{{ name or "未绑定" }}</a></td>
+        <td class="num">{{ unrevoked }}</td><td class="num">{{ total }}</td>
+        <td><a class="btn small" href="{{ keys_url(name) }}">管理</a></td></tr>
+      {% else %}
+      <tr><td colspan="4" class="empty">{{ "未找到符合条件的用户" if q else "还没有可管理的用户" }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+
+{% else %}
+{% if can_create %}
+<details class="panel key-create"{% if (not rows and not q) or requested_account is not none or catalog_error %} open{% endif %}>
+  <summary>创建 API Key</summary>
+  {% if accounts %}
+  <form method="get" action="/api-keys" class="form-row">
+    <input type="hidden" name="username" value="{{ owner }}">
+    <label>绑定账号 <select name="account_id">
+      <option value="0">{{ "用户当前分配的账号" if managed else "选择账号" }}</option>
+      {% for account in accounts %}<option value="{{ account.id }}"{% if account.id == requested_account %} selected{% endif %}>{{ account.display_name or account.label }}</option>{% endfor %}
+    </select></label>
+    <button class="btn">加载可用模型</button>
+  </form>
+  {% if catalog_error %}<p class="flash bad">{{ catalog_error }}</p>{% endif %}
+  {% if options %}
+  <form method="post" action="/api-keys/save" class="key-form">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="account_pk" value="{{ account_pk }}">
+    <input type="hidden" name="username" value="{{ owner }}">
+    <div class="form-row"><label>名称 <input type="text" name="name" value="{{ owner }}" maxlength="80" required></label>
+      <span class="muted">签发账号 {{ chosen.display_name or chosen.label }}</span></div>
+    {% set only = options[0][0] if options|length == 1 else "" %}
+    {{ permission_fields(options, [only] if only else [], only, false) }}
+    <div><button class="btn primary">创建</button></div>
+  </form>
+  {% elif not chosen %}<p>请选择要绑定的 ChatGPT 账号。</p>
+  {% else %}<p>此账号当前没有可选模型。<a href="/accounts/{{ chosen.label }}/models">查看账号模型</a></p>{% endif %}
+  {% else %}<p>请先导入或启用一个 ChatGPT 账号。</p>{% endif %}
+</details>
+{% endif %}
+
+<section class="panel flush">
+  <div class="panel-head">
+    <h2>API Keys</h2>
+    <form method="get" action="/api-keys" class="form-row key-search">
+      {% if owner %}<input type="hidden" name="username" value="{{ owner }}">
+      {% else %}<input type="hidden" name="unassigned" value="1">{% endif %}
+      <input type="text" name="q" value="{{ q }}" maxlength="80" placeholder="名称、Key 前缀、模型或账号" aria-label="搜索 API Keys">
+      <button class="btn">搜索</button>
+      {% if q %}<a href="{{ keys_url(owner) }}">清除</a>{% endif %}
+    </form>
+  </div>
+  {% for k in rows %}
+  {% set expired = k.expires_at is not none and k.expires_at <= now %}
+  <article class="key-record">
+    <div class="key-record-head">
+      <div><h3>{{ k.name }}</h3><code class="muted">cctl_{{ k.public_id }}</code></div>
+      <div>
+        {% if k.revoked_at is not none %}<span class="badge disabled">已撤销</span>
+        {% elif expired %}<span class="badge disabled">已到期</span>
+        {% elif k.account_status != "active" %}<span class="badge warning">账号不可用</span>
+        {% elif k.models|rejectattr("enabled")|list or k.models|rejectattr("upstream_available")|list or k.models|rejectattr("selectable")|list %}
+          <span class="badge warning">模型待修复</span>
+        {% else %}<span class="badge active">可用</span>{% endif %}
+      </div>
+    </div>
+    <dl class="key-record-data">
+      <div><dt>绑定账号</dt><dd><a href="/accounts/{{ k.label }}/models">{{ k.display_name or k.label }}</a></dd></div>
+      <div><dt>默认模型</dt><dd><code>{{ k.default_model_id }}</code></dd></div>
+      <div><dt>允许的模型</dt><dd>{{ k.models | map(attribute="model_id") | join("、") or "—" }}</dd></div>
+      <div><dt>最近使用</dt><dd>{{ fmt_ts(k.last_used_at) }}</dd></div>
+    </dl>
+    <div class="key-record-actions">
+      {% if k.revoked_at is none %}
+      <a class="btn small" href="/api-keys/{{ k.public_id }}/config">客户端配置</a>
+      {% if not expired %}
+      <form method="post" action="/api-keys/{{ k.public_id }}/rotate" class="inline" data-confirm="轮换后原 API Key 将失效。">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="version" value="{{ k.secret_version }}">
+        <button class="btn small">轮换</button>
+      </form>
+      {% endif %}
+      {{ key_action(k.public_id, "revoke", "撤销", csrf, "确定撤销此 API Key？") }}
+      {% endif %}
+      {{ key_action(k.public_id, "delete", "删除", csrf, "删除后此 Key 立即失效并从列表移除。历史用量会保留。确定删除？", true) }}
+    </div>
+    {% if k.revoked_at is none %}
+    <details class="key-edit">
+      <summary>编辑</summary>
+      <form method="post" action="/api-keys/save" class="key-form">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="public_id" value="{{ k.public_id }}">
+        <div class="form-row">
+          <label>名称 <input type="text" name="name" maxlength="80" value="{{ k.name }}" required></label>
+          {% if not k.username %}{{ user_field(users, managed) }}{% endif %}
+        </div>
+        {{ permission_fields(k.edit_models, k.models | map(attribute="model_id") | list, k.default_model_id, k.allow_fast) }}
+        <div><button class="btn small primary">保存</button></div>
+      </form>
+    </details>
+    {% endif %}
+  </article>
+  {% else %}<p class="empty">{{ "未找到符合条件的 Key" if q else "此用户还没有 API Key" }}</p>{% endfor %}
+</section>
+{% endif %}
+<script defer src="/static/confirm.js"></script>
+{% endblock %}

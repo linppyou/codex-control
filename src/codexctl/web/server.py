@@ -15,7 +15,7 @@ def serve(ctx: Context) -> None:
     s = ctx.settings
     app = create_app(ctx)
     if not s.web_socket:
-        uvicorn.run(app, host=s.web_host, port=s.web_port, proxy_headers=False, access_log=True, log_level="info")
+        uvicorn.run(app, host=s.web_host, port=s.web_port, proxy_headers=False, access_log=not s.gateway_enabled, log_level="info")
         return
     path = Path(s.web_socket)
     gid = grp.getgrnam(s.web_socket_group).gr_gid
@@ -31,6 +31,6 @@ def serve(ctx: Context) -> None:
     os.chown(path, -1, gid)
     os.chmod(path, 0o660)
     try:
-        uvicorn.run(app, fd=sock.fileno(), proxy_headers=False, access_log=True, log_level="info")
+        uvicorn.run(app, fd=sock.fileno(), proxy_headers=False, access_log=not s.gateway_enabled, log_level="info")
     finally:
         sock.close()

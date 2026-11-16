@@ -18,3 +18,7 @@
 # codex_package_url = "https://github.com/openai/codex/releases/download/rust-v{version}/codex-package-{arch}-unknown-linux-musl.tar.gz"
 # codex_auto_install = true
 # codex_install_timeout = 300.0
+deployment_mode = "managed" # 纯网关主机使用 "gateway"
+gateway_enabled = false
+gateway_client_version = "0.167.0"
+gateway_base_url = "https://codex-control.ppspace.xyz/v1"

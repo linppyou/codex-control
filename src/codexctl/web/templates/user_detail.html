@@ -11,6 +11,7 @@
   </div>
   <div class="toolbar">
     {% if is_admin %}
+      {% if gateway_enabled %}<a href="/api-keys?username={{ username }}" class="btn">API Keys</a>{% endif %}
       {% if stale %}
       <form method="post" action="/users/{{ username }}/restart-codex" class="inline" data-confirm="将结束 {{ username }} 的 {{ stale|length }} 个旧 codex 进程，会中断其正在运行的任务。确定？">
         <input type="hidden" name="csrf" value="{{ csrf }}">

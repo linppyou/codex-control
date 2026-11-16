@@ -9,6 +9,10 @@ _PATH_KEYS = {"state_dir", "key_file", "codex_bin", "codex_wrapper", "codex_requ
 
 @dataclass(frozen=True)
 class Settings:
+    deployment_mode: str = "managed"
+    gateway_enabled: bool = False
+    gateway_client_version: str = "0.167.0"
+    gateway_base_url: str = "https://codex-control.ppspace.xyz/v1"
     state_dir: Path = Path("/var/lib/codexctl")
     key_file: Path = Path("/etc/codexctl/master.key")
     codex_bin: Path = Path("/opt/codex/bin/codex")
@@ -40,6 +44,14 @@ class Settings:
     )
     codex_auto_install: bool = True
     codex_install_timeout: float = 300.0
+
+    def __post_init__(self) -> None:
+        if self.deployment_mode not in ("managed", "gateway"):
+            raise ValueError("deployment_mode 必须为 managed 或 gateway")
+
+    @property
+    def manages_local_codex(self) -> bool:
+        return self.deployment_mode == "managed"
 
     @property
     def db_path(self) -> Path:
