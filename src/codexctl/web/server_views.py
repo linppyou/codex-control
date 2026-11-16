@@ -104,11 +104,13 @@ def register(app) -> None:
             })
             if not inv or (server_id and server_id != server.id):
                 continue
+            data_stale = bool(inv.error) or (inv.synced_at is not None and now - inv.synced_at > sites.STALE_AFTER)
             for row in inv.rows:
                 status = _state(row["public"], now)
                 rows.append({
                     **row, "server": server, "date": sites.deployment_date(row["created_at"]) or "unknown",
                     "domain": row["domains"][0], "status": status,
+                    "data": row.get("data"), "data_stale": data_stale,
                     "origin_status": _state(row["origin"], now), "checked_at": _time(row["public"]["checked_at"]),
                 })
         available_dates = sorted({row["date"] for row in rows}, key=lambda day: (day != "unknown", day), reverse=True)
@@ -118,27 +120,32 @@ def register(app) -> None:
             if (not date or row["date"] == date) and (not state or row["status"] == state)
             and (not q or any(q.casefold() in domain for domain in row["domains"]))
         ]
-        server_totals = Counter(row["server"].id for row in filtered)
-        day_totals = Counter((row["server"].id, row["date"]) for row in filtered)
         filtered.sort(key=lambda row: (row["domain"], row["id"]))
         filtered.sort(key=lambda row: (row["date"] != "unknown", row["date"]), reverse=True)
         filtered.sort(key=lambda row: server_order[row["server"].id])
-        pages = max(1, (len(filtered) + PAGE_SIZE - 1) // PAGE_SIZE)
+        query = {key: val for key, val in {"date": date, "state": state, "q": q}.items() if val}
+
+        def page_url(owner_id: str, number: int = 1) -> str:
+            params = {**query, "server_id": owner_id}
+            if number > 1:
+                params["page"] = str(number)
+            return "/servers?" + urlencode(params)
+
+        pages = max(1, (len(filtered) + PAGE_SIZE - 1) // PAGE_SIZE) if server_id else 1
         page = max(1, min(page, pages))
         groups = []
-        page_rows = filtered[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]
-        for server, server_rows in groupby(page_rows, key=lambda row: row["server"]):
+        for server, matching_rows in groupby(filtered, key=lambda row: row["server"]):
+            server_rows = list(matching_rows)
+            day_totals = Counter(row["date"] for row in server_rows)
+            page_rows = server_rows[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]
             days = [
-                (day, list(day_rows), day_totals[server.id, day])
-                for day, day_rows in groupby(server_rows, key=lambda row: row["date"])
+                (day, list(day_rows), day_totals[day])
+                for day, day_rows in groupby(page_rows, key=lambda row: row["date"])
             ]
-            groups.append((server, days, server_totals[server.id]))
+            more = page_url(server.id) if not server_id and len(server_rows) > PAGE_SIZE else None
+            groups.append((server, days, len(server_rows), more))
         counts = Counter(row["status"] for row in rows)
         last_check = max((row["public"]["checked_at"] for row in rows), default=None)
-        query = {key: val for key, val in {"server_id": server_id, "date": date, "state": state, "q": q}.items() if val}
-
-        def page_url(number: int) -> str:
-            return "/servers?" + urlencode({**query, "page": number})
 
         return render(
             request, "servers.html", admin=admin[0], csrf=admin[1], summary=summary, groups=groups,
@@ -147,7 +154,8 @@ def register(app) -> None:
             anomalies=sum(counts[key] for key in ("down", "restricted", "redirect", "http_only")),
             unconfirmed=counts["unconfirmed"] + counts["stale"] + counts["pending"],
             last_check=_time(last_check), page=page, pages=pages,
-            previous=page_url(page - 1) if page > 1 else None, next_page=page_url(page + 1) if page < pages else None,
+            previous=page_url(server_id, page - 1) if page > 1 else None,
+            next_page=page_url(server_id, page + 1) if page < pages else None,
         )
 
     def editor(request, admin, server=None, fields=None, error=""):
