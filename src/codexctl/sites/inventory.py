@@ -13,10 +13,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from zoneinfo import ZoneInfo
 
-from . import db, site_probe, site_registry, site_ssh
-from .context import Context
-from .site_registry import Server
-from .vault import VaultError
+import codexctl.db as db
+import codexctl.sites.probe as site_probe
+import codexctl.sites.registry as site_registry
+import codexctl.sites.ssh as site_ssh
+from codexctl.context import Context
+from codexctl.sites.registry import Server
+from codexctl.vault import VaultError
 
 log = logging.getLogger(__name__)
 INTERVAL = 300

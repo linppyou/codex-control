@@ -7,8 +7,8 @@ from pathlib import Path
 
 import uvicorn
 
-from ..context import Context
-from .app import create_app
+from codexctl.context import Context
+from codexctl.web.app import create_app
 
 
 def serve(ctx: Context) -> None:

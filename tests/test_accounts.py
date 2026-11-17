@@ -1,8 +1,10 @@
 import pytest
-
-from codexctl import accounts, events, repo
-from codexctl.authfile import AuthBundle, AuthFileError
 from fakes import T0, make_auth_json
+
+import codexctl.accounts.service as accounts
+import codexctl.events as events
+import codexctl.repo as repo
+from codexctl.accounts.authfile import AuthBundle, AuthFileError
 
 
 def test_import_encrypts_and_publishes(ctx):
@@ -116,7 +118,7 @@ def test_device_login_missing_binary(ctx):
 
 
 def test_republish_account_rereads_under_lock(ctx):
-    from codexctl import locks
+    import codexctl.locks as locks
 
     accounts.import_account(ctx, "acc1", make_auth_json(), "t")
     accounts.republish_account(ctx, "acc1")

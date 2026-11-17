@@ -2,7 +2,7 @@ import os
 import signal
 from pathlib import Path
 
-from codexctl import procs
+import codexctl.users.procs as procs
 
 
 def make_root(tmp_path, btime=1_700_000_000):

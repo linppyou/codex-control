@@ -1,8 +1,11 @@
 import httpx
-
-from codexctl import accounts, events, quota, repo
-from codexctl.quota import QuotaWindow
 from fakes import T0, make_auth_json
+
+import codexctl.accounts.service as accounts
+import codexctl.events as events
+import codexctl.repo as repo
+import codexctl.usage.quota as quota
+from codexctl.usage.quota import QuotaWindow
 
 USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 BODY = {

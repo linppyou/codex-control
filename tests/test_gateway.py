@@ -8,12 +8,18 @@ from dataclasses import replace
 
 import httpx
 import pytest
+from fakes import make_auth_json
 from fastapi.testclient import TestClient
 
-from codexctl import accounts, daemon, db, pam, repo, webauth
-from codexctl.gateway import storage, upstream
+import codexctl.accounts.service as accounts
+import codexctl.daemon as daemon
+import codexctl.db as db
+import codexctl.gateway.storage as storage
+import codexctl.gateway.upstream as upstream
+import codexctl.repo as repo
+import codexctl.users.pam as pam
+import codexctl.users.webauth as webauth
 from codexctl.web.app import create_app
-from fakes import make_auth_json
 
 MODELS = {"models": [
     {"slug": "model-a", "service_tiers": [{"id": "priority"}], "prompt": "Keep upstream instructions"},
@@ -554,7 +560,8 @@ def test_legacy_key_migration_prefers_current_assignment_and_preserves_usage(set
 
 def test_client_configuration_copy_controls_and_profile_format(setup):
     import tomllib
-    from codexctl.web.gateway import _profile
+
+    from codexctl.web.routes.gateway import _profile
 
     config = tomllib.loads(_profile("https://example.com/v1/", "model-a", 400000))
     assert config["model_provider"] == "codexctl"
@@ -576,9 +583,10 @@ def test_client_configuration_copy_controls_and_profile_format(setup):
 
 def test_installed_codex_loads_generated_sidecar_profile(tmp_path):
     import os
-    from pathlib import Path
     import subprocess
-    from codexctl.web.gateway import _profile
+    from pathlib import Path
+
+    from codexctl.web.routes.gateway import _profile
 
     binary = Path("/opt/codex/bin/codex")
     if not binary.is_file():

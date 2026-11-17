@@ -3,10 +3,13 @@ import json
 
 import httpx
 import pytest
-
-from codexctl import accounts, events, refresher, repo
-from codexctl.authfile import AuthBundle, format_rfc3339
 from fakes import T0, make_auth_json, make_jwt
+
+import codexctl.accounts.refresher as refresher
+import codexctl.accounts.service as accounts
+import codexctl.events as events
+import codexctl.repo as repo
+from codexctl.accounts.authfile import AuthBundle, format_rfc3339
 
 TOKEN_URL = "https://auth.openai.com/oauth/token"
 

@@ -7,13 +7,15 @@ import tempfile
 import unicodedata
 from pathlib import Path
 
-from .locks import account_lock
-from . import events, repo
-from .authfile import AuthBundle
-from .context import Context
-from .db import transaction
-from .publisher import LABEL_RE
-from .sysusers import SysUser, UserError
+import codexctl.accounts.repository as account_repo
+import codexctl.events as events
+import codexctl.users.repository as user_repo
+from codexctl.accounts.authfile import AuthBundle
+from codexctl.accounts.publisher import LABEL_RE
+from codexctl.context import Context
+from codexctl.db import transaction
+from codexctl.locks import account_lock
+from codexctl.users.sysusers import SysUser, UserError
 
 
 class AccountError(Exception):
@@ -31,12 +33,12 @@ def _check_label(label: str) -> None:
 
 def check_new_label(ctx: Context, label: str) -> None:
     _check_label(label)
-    if repo.get_account(ctx.conn, label) is not None:
+    if account_repo.get_account(ctx.conn, label) is not None:
         raise AccountError(f"账号标签已存在：{label}")
 
 
-def require_account(ctx: Context, label: str) -> repo.Account:
-    acc = repo.get_account(ctx.conn, label)
+def require_account(ctx: Context, label: str) -> account_repo.Account:
+    acc = account_repo.get_account(ctx.conn, label)
     if acc is None:
         raise AccountError(f"账号不存在：{label}")
     return acc
@@ -44,7 +46,7 @@ def require_account(ctx: Context, label: str) -> repo.Account:
 
 def readers_for(ctx: Context, account_pk: int) -> list[SysUser]:
     users = []
-    for name in repo.active_usernames(ctx.conn, account_pk):
+    for name in user_repo.active_usernames(ctx.conn, account_pk):
         try:
             users.append(ctx.lookup_user(name, ctx.settings.min_uid))
         except UserError:
@@ -52,12 +54,12 @@ def readers_for(ctx: Context, account_pk: int) -> list[SysUser]:
     return users
 
 
-def load_bundle(ctx: Context, acc: repo.Account) -> AuthBundle:
-    plaintext = ctx.vault.decrypt(repo.load_secret(ctx.conn, acc.id), _aad(acc.label))
+def load_bundle(ctx: Context, acc: account_repo.Account) -> AuthBundle:
+    plaintext = ctx.vault.decrypt(account_repo.load_secret(ctx.conn, acc.id), _aad(acc.label))
     return AuthBundle.from_bytes(plaintext)
 
 
-def publish_account(ctx: Context, acc: repo.Account, bundle: AuthBundle | None = None) -> None:
+def publish_account(ctx: Context, acc: account_repo.Account, bundle: AuthBundle | None = None) -> None:
     if not ctx.settings.manages_local_codex:
         return
     bundle = bundle or load_bundle(ctx, acc)
@@ -74,17 +76,17 @@ def republish_account(ctx: Context, label: str) -> None:
         publish_account(ctx, acc, load_bundle(ctx, acc))
 
 
-def import_account(ctx: Context, label: str, data: bytes, actor: str) -> repo.Account:
+def import_account(ctx: Context, label: str, data: bytes, actor: str) -> account_repo.Account:
     _check_label(label)
     bundle = AuthBundle.from_bytes(data)
-    if repo.get_account(ctx.conn, label) is not None:
+    if account_repo.get_account(ctx.conn, label) is not None:
         raise AccountError(f"账号标签已存在：{label}")
-    dup = repo.find_by_account_id(ctx.conn, bundle.account_id)
+    dup = account_repo.find_by_account_id(ctx.conn, bundle.account_id)
     if dup is not None:
         raise AccountError(f"该 ChatGPT 账号已登记为 {dup.label}")
     now = ctx.now()
     with transaction(ctx.conn):
-        pk = repo.insert_account(
+        pk = account_repo.insert_account(
             ctx.conn,
             label=label,
             email=bundle.email,
@@ -94,14 +96,14 @@ def import_account(ctx: Context, label: str, data: bytes, actor: str) -> repo.Ac
             access_expires_at=bundle.access_expires_at,
             now=now,
         )
-        repo.store_secret(ctx.conn, pk, ctx.vault.encrypt(bundle.to_bytes(), _aad(label)), now)
+        account_repo.store_secret(ctx.conn, pk, ctx.vault.encrypt(bundle.to_bytes(), _aad(label)), now)
         events.audit(ctx.conn, actor, "account.add", label, f"email={bundle.email} plan={bundle.plan_type}", now=now)
     acc = require_account(ctx, label)
     publish_account(ctx, acc, bundle)
     return acc
 
 
-def relogin_account(ctx: Context, label: str, data: bytes, actor: str) -> repo.Account:
+def relogin_account(ctx: Context, label: str, data: bytes, actor: str) -> account_repo.Account:
     acc = require_account(ctx, label)
     bundle = AuthBundle.from_bytes(data)
     if bundle.account_id != acc.account_id:
@@ -109,8 +111,8 @@ def relogin_account(ctx: Context, label: str, data: bytes, actor: str) -> repo.A
     with account_lock(ctx.settings.state_dir, label):
         now = ctx.now()
         with transaction(ctx.conn):
-            repo.store_secret(ctx.conn, acc.id, ctx.vault.encrypt(bundle.to_bytes(), _aad(label)), now)
-            repo.update_token_meta(
+            account_repo.store_secret(ctx.conn, acc.id, ctx.vault.encrypt(bundle.to_bytes(), _aad(label)), now)
+            account_repo.update_token_meta(
                 ctx.conn,
                 acc.id,
                 email=bundle.email,
@@ -142,7 +144,7 @@ def set_display_name(ctx: Context, label: str, name: str, actor: str) -> str | N
         return value
     now = ctx.now()
     with transaction(ctx.conn):
-        repo.set_display_name(ctx.conn, acc.id, value)
+        account_repo.set_display_name(ctx.conn, acc.id, value)
         events.audit(ctx.conn, actor, "account.rename", label, f"{acc.display_name or '-'} -> {value or '-'}", now=now)
     return value
 
@@ -152,9 +154,9 @@ def set_disabled(ctx: Context, label: str, disabled: bool, actor: str) -> None:
     now = ctx.now()
     with account_lock(ctx.settings.state_dir, label, blocking=False), transaction(ctx.conn):
         if disabled:
-            repo.set_status(ctx.conn, acc.id, "disabled")
+            account_repo.set_status(ctx.conn, acc.id, "disabled")
         elif acc.status == "disabled":
-            repo.set_status(ctx.conn, acc.id, "active")
+            account_repo.set_status(ctx.conn, acc.id, "active")
         events.audit(ctx.conn, actor, "account.disable" if disabled else "account.enable", label, now=now)
 
 

@@ -1,19 +1,25 @@
 import dataclasses
-import httpx
 import json
 import re
 import time
 from urllib.parse import parse_qs, urlparse
 
+import httpx
 import pytest
+from fakes import make_auth_json
 from fastapi.testclient import TestClient
+from test_web import PW, do_login
 
-from codexctl import accounts, assignments, events, pam, procs, repo, webauth
-from codexctl.devicelogin import DeviceLoginManager
+import codexctl.accounts.service as accounts
+import codexctl.events as events
+import codexctl.repo as repo
+import codexctl.users.assignments as assignments
+import codexctl.users.pam as pam
+import codexctl.users.procs as procs
+import codexctl.users.webauth as webauth
+from codexctl.accounts.devicelogin import DeviceLoginManager
 from codexctl.locks import account_lock
 from codexctl.web.app import create_app
-from fakes import make_auth_json
-from test_web import PW, do_login
 
 
 @pytest.fixture
@@ -193,12 +199,12 @@ def test_refresh_success_failure_and_busy(c, ctx, monkeypatch):
     add_acc(ctx)
     calls = []
     monkeypatch.setattr(
-        "codexctl.refresher.refresh_account",
+        "codexctl.accounts.refresher.refresh_account",
         lambda ctx_, acc, actor, blocking=True: calls.append((actor, blocking)) or True,
     )
     assert qs(post(c, "/accounts/acc1/refresh"))[1] == {"msg": "刷新成功"}
     assert calls == [("web:admin", False)]
-    monkeypatch.setattr("codexctl.refresher.refresh_account", lambda *a, **k: False)
+    monkeypatch.setattr("codexctl.accounts.refresher.refresh_account", lambda *a, **k: False)
     repo.set_status(ctx.conn, 1, "needs_relogin", "token reused")
     assert "token reused" in qs(post(c, "/accounts/acc1/refresh"))[1]["err"]
     monkeypatch.undo()

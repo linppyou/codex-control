@@ -1,6 +1,6 @@
 import pytest
 
-from codexctl import pricing
+import codexctl.usage.pricing as pricing
 
 
 def test_price_table_matches_image():

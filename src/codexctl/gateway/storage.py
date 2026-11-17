@@ -9,9 +9,11 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import Any
 
-from .. import db, events, sysusers
-from ..context import Context
-from ..vault import Vault
+import codexctl.db as db
+import codexctl.events as events
+import codexctl.users.sysusers as sysusers
+from codexctl.context import Context
+from codexctl.vault import Vault
 
 TOKEN = re.compile(r"cctl_([0-9a-f]{24})\.[A-Za-z0-9_-]{43}")
 MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")

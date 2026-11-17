@@ -1,4 +1,5 @@
-from codexctl import db, events
+import codexctl.db as db
+import codexctl.events as events
 
 
 def test_audit_inserts_row():

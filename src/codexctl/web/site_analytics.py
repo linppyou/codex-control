@@ -4,8 +4,9 @@ import sqlite3
 from collections import Counter
 from datetime import datetime, timedelta
 
-from .. import site_registry, sites
-from .charts import comparison_series
+import codexctl.sites.inventory as sites
+import codexctl.sites.registry as site_registry
+from codexctl.web.charts import comparison_series
 
 
 def site_comparison(conn: sqlite3.Connection, days: int, now: int) -> dict:

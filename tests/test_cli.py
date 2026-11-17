@@ -1,7 +1,9 @@
 import pytest
-
-from codexctl import cli, procs, repo
 from fakes import make_auth_json
+
+import codexctl.cli as cli
+import codexctl.repo as repo
+import codexctl.users.procs as procs
 
 
 def run_cli(ctx, *argv):
@@ -57,7 +59,7 @@ def test_window_name():
 
 
 def test_refresh_busy_account(ctx, tmp_path, capsys):
-    from codexctl import locks
+    import codexctl.locks as locks
 
     f = tmp_path / "auth.json"
     f.write_bytes(make_auth_json())
@@ -68,7 +70,7 @@ def test_refresh_busy_account(ctx, tmp_path, capsys):
 
 
 def test_check_output_sanitized(ctx, monkeypatch, capsys):
-    from codexctl import watcher
+    import codexctl.usage.watcher as watcher
 
     monkeypatch.setattr(
         watcher, "run_checks", lambda c: [watcher.Finding("error", "k", "t", "bad \x1b[31m link")]
@@ -138,7 +140,7 @@ def test_sqlite_error_handled(ctx, monkeypatch, capsys):
     def boom(conn):
         raise sqlite3.OperationalError("locked")
 
-    monkeypatch.setattr(cli.repo, "list_accounts", boom)
+    monkeypatch.setattr(cli.account_repo, "list_accounts", boom)
     assert run_cli(ctx, "account", "list") == 1
     assert "错误：" in capsys.readouterr().err
 

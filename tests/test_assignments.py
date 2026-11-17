@@ -1,10 +1,13 @@
 import os
 
 import pytest
-
-from codexctl import accounts, assignments, procs, repo
-from codexctl.sysusers import UserError
 from fakes import make_auth_json
+
+import codexctl.accounts.service as accounts
+import codexctl.repo as repo
+import codexctl.users.assignments as assignments
+import codexctl.users.procs as procs
+from codexctl.users.sysusers import UserError
 
 BASE_ACL = "u::rw-,g::---,o::---"
 
@@ -188,8 +191,11 @@ def test_reconcile_ignores_dotdot_target(setup):
 
 
 def test_sync_acl_holds_account_lock(ctx, monkeypatch):
-    from codexctl import accounts, assignments, locks
     from fakes import make_auth_json
+
+    import codexctl.accounts.service as accounts
+    import codexctl.locks as locks
+    import codexctl.users.assignments as assignments
 
     acc = accounts.import_account(ctx, "acc1", make_auth_json(), "t")
     try:

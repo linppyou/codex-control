@@ -11,12 +11,15 @@ from typing import AsyncIterator
 import httpx
 from starlette.concurrency import run_in_threadpool
 
-from .. import accounts, db, refresher, repo
-from ..authfile import AuthBundle, AuthFileError
-from ..context import Context
-from ..vault import Vault, VaultError
-from . import storage
-from .storage import GatewayError, Key
+import codexctl.accounts.refresher as refresher
+import codexctl.accounts.repository as account_repo
+import codexctl.accounts.service as accounts
+import codexctl.db as db
+import codexctl.gateway.storage as storage
+from codexctl.accounts.authfile import AuthBundle, AuthFileError
+from codexctl.context import Context
+from codexctl.gateway.storage import GatewayError, Key
+from codexctl.vault import Vault, VaultError
 
 BASE = "https://chatgpt.com/backend-api/codex"
 VERSION = re.compile(r"[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}")
@@ -199,12 +202,12 @@ class Gateway:
         if self.client:
             await self.client.aclose()
 
-    def _read_credentials(self, account_pk: int) -> tuple[repo.Account, int, AuthBundle]:
+    def _read_credentials(self, account_pk: int) -> tuple[account_repo.Account, int, AuthBundle]:
         with db.connection(self.ctx.settings.db_path) as conn:
             ctx = replace(self.ctx, conn=conn)
             conn.execute("BEGIN")
-            acc = repo.get_account_by_pk(conn, account_pk)
-            version = repo.secret_version(conn, account_pk)
+            acc = account_repo.get_account_by_pk(conn, account_pk)
+            version = account_repo.secret_version(conn, account_pk)
             if acc is None or acc.status != "active" or version is None:
                 raise storage.unavailable()
             try:
@@ -212,7 +215,7 @@ class Gateway:
             except (AuthFileError, VaultError, LookupError):
                 raise storage.unavailable() from None
 
-    def _refresh_credentials(self, account: repo.Account, version: int) -> bool:
+    def _refresh_credentials(self, account: account_repo.Account, version: int) -> bool:
         with db.connection(self.ctx.settings.db_path) as conn:
             ctx = replace(self.ctx, conn=conn)
             try:

@@ -4,7 +4,7 @@ import tomllib
 from dataclasses import dataclass, fields
 from pathlib import Path
 
-from .sysusers import valid_name
+from codexctl.users.sysusers import valid_name
 
 _PATH_KEYS = {
     "state_dir", "key_file", "codex_bin", "codex_wrapper", "codex_requirements", "site_ssh_ca_key",

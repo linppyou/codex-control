@@ -30,3 +30,11 @@ def resolve_alert(conn: sqlite3.Connection, kind: str, target: str, *, now: int)
 
 def open_alerts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM alerts WHERE resolved_at IS NULL ORDER BY ts DESC, id DESC").fetchall()
+
+
+def recent_audit(conn: sqlite3.Connection, limit: int) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM audit_log ORDER BY ts DESC, id DESC LIMIT ?", (limit,)).fetchall()
+
+
+def recent_alerts(conn: sqlite3.Connection, limit: int) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM alerts ORDER BY ts DESC, id DESC LIMIT ?", (limit,)).fetchall()

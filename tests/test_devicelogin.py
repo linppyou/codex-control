@@ -4,8 +4,8 @@ import time
 
 import pytest
 
+from codexctl.accounts.devicelogin import DeviceLoginManager
 from codexctl.config import Settings
-from codexctl.devicelogin import DeviceLoginManager
 
 
 def wait_for(cond, timeout=5.0):
@@ -235,6 +235,6 @@ def test_finished_ids(mgr_factory, tmp_path):
     assert wait_for(lambda: lid in m.finished_ids())
     m.take_result(lid)
     assert m.finished_ids() == []
-    from codexctl.devicelogin import DeviceLoginError
+    from codexctl.accounts.devicelogin import DeviceLoginError
     with pytest.raises(DeviceLoginError):
         m.take_result(lid)

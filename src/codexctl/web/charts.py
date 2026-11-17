@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import time
 
-from ..cli import fmt_ts
+from codexctl.formatting import fmt_ts
+from codexctl.usage.analytics import comparison_series
 
 
 def fmt_md(ts: int) -> str:
@@ -16,23 +17,6 @@ def fmt_md_hm(ts: int) -> str:
 
 
 TOKEN_UNITS = ("", "K", "M", "B", "T")
-
-
-def comparison_series(daily: list[dict], names: list[str], maximum: int) -> list[dict]:
-    """Add coordinates to daily rows and build matching comparison lines."""
-    series = [{"name": name, "index": i, "points": []} for i, name in enumerate(names)]
-    for i, day in enumerate(daily):
-        day["x"] = round(70 + i * 850 / max(1, len(daily) - 1), 2)
-        for index, item in enumerate(series):
-            value = day["values"][index]
-            y = round(175 - max(0, value) / (maximum or 1) * 140, 2)
-            item["points"].append({"x": day["x"], "y": y, "value": value, "day": day["day"]})
-    for item in series:
-        item["path"] = " ".join(
-            ("M" if i == 0 else "L") + f"{point['x']},{point['y']}"
-            for i, point in enumerate(item["points"])
-        )
-    return series
 
 
 def fmt_tokens(n: int | float | None) -> str:

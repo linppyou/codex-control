@@ -2,11 +2,11 @@ import os
 import stat
 
 import pytest
-
-from codexctl.publisher import Publisher, PublishError
-from codexctl.runner import CommandError
-from codexctl.sysusers import SysUser
 from fakes import FakeRunner
+
+from codexctl.accounts.publisher import Publisher, PublishError
+from codexctl.runner import CommandError
+from codexctl.users.sysusers import SysUser
 
 
 def make_user(tmp_path, name="alice"):

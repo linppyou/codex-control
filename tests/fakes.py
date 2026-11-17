@@ -61,7 +61,7 @@ class FakeRunner:
 import os
 from pathlib import Path
 
-from codexctl.sysusers import SysUser, UserError
+from codexctl.users.sysusers import SysUser, UserError
 
 
 class FakeClock:

@@ -5,10 +5,10 @@ import stat
 
 import pytest
 
-from codexctl import useradmin
-from codexctl.codexinstall import CodexInstallError
-from codexctl.sysusers import UserError
-from codexctl.useradmin import UserAdminError
+import codexctl.users.service as useradmin
+from codexctl.users.codexinstall import CodexInstallError
+from codexctl.users.service import UserAdminError
+from codexctl.users.sysusers import UserError
 
 PW = "long-enough-password"
 

@@ -1,8 +1,9 @@
 import pytest
 
-from codexctl import db, webauth
+import codexctl.db as db
+import codexctl.users.webauth as webauth
 from codexctl.config import load_settings
-from codexctl.webauth import AuthError, LoginRateLimiter
+from codexctl.users.webauth import AuthError, LoginRateLimiter
 
 PW = "correct-horse-battery"
 

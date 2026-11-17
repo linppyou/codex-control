@@ -5,11 +5,12 @@ import shutil
 import sqlite3
 from typing import Callable
 
-from . import db, webauth
-from . import runner as runner_mod
-from .config import Settings
-from .runner import CommandError, Runner
-from .vault import VaultError, load_key
+import codexctl.db as db
+import codexctl.runner as runner_mod
+import codexctl.users.webauth as webauth
+from codexctl.config import Settings
+from codexctl.runner import CommandError, Runner
+from codexctl.vault import VaultError, load_key
 
 
 def selfcheck(

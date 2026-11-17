@@ -34,7 +34,7 @@ def test_run_installs_signal_handlers(ctx, monkeypatch):
 
     from apscheduler.schedulers.blocking import BlockingScheduler
 
-    from codexctl import daemon
+    import codexctl.daemon as daemon
 
     got = []
     monkeypatch.setattr(signal, "signal", lambda s, h: got.append(s))

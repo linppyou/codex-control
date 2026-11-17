@@ -1,9 +1,14 @@
 import json
 
 import pytest
-
-from codexctl.authfile import AuthBundle, AuthFileError, format_rfc3339, parse_rfc3339
 from fakes import T0, make_auth_json, make_jwt
+
+from codexctl.accounts.authfile import (
+    AuthBundle,
+    AuthFileError,
+    format_rfc3339,
+    parse_rfc3339,
+)
 
 
 def test_parses_fields():

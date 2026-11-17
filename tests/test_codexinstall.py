@@ -9,7 +9,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from codexctl.codexinstall import (
+from codexctl.config import Settings
+from codexctl.users.codexinstall import (
     REQUIREMENTS,
     WRAPPER,
     CodexInstallError,
@@ -17,7 +18,6 @@ from codexctl.codexinstall import (
     package_arch,
     wrapper_script,
 )
-from codexctl.config import Settings
 
 ROOT = Path(__file__).resolve().parents[1]
 

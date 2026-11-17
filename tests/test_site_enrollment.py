@@ -6,9 +6,13 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-
-from codexctl import site_access, site_enrollment, site_registry, sites, site_ssh
 from test_servers import create, host_key, login_client
+
+import codexctl.sites.access as site_access
+import codexctl.sites.enrollment as site_enrollment
+import codexctl.sites.inventory as sites
+import codexctl.sites.registry as site_registry
+import codexctl.sites.ssh as site_ssh
 
 
 def test_enrollment_token_rotation_expiry_and_connection_changes(ctx):

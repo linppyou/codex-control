@@ -3,7 +3,7 @@ import grp
 import os
 import stat
 
-from codexctl.web import server
+import codexctl.web.server as server
 
 
 def test_serve_unix_socket(ctx, monkeypatch):

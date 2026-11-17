@@ -4,7 +4,9 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from codexctl import pam, repo, webauth
+import codexctl.repo as repo
+import codexctl.users.pam as pam
+import codexctl.users.webauth as webauth
 from codexctl.web.app import create_app
 
 PW = "correct-horse-battery"
@@ -187,7 +189,7 @@ def test_cookie_attrs_on_delete_and_old_session_removed(client, ctx):
 
 
 def test_client_ip_rules(ctx):
-    from codexctl.web.app import client_ip, clean_text
+    from codexctl.web.app import clean_text, client_ip
 
     class Req:
         def __init__(self, host, real=None):

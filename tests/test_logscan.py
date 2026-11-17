@@ -2,10 +2,12 @@ import json
 import os
 
 import pytest
-
-from codexctl import accounts, logscan, repo
-from codexctl.authfile import format_rfc3339
 from fakes import T0, make_auth_json
+
+import codexctl.accounts.service as accounts
+import codexctl.repo as repo
+import codexctl.usage.logscan as logscan
+from codexctl.accounts.authfile import format_rfc3339
 
 
 def event(ts, total, *, info=True, rate=None):

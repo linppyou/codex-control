@@ -4,7 +4,8 @@ import stat
 
 import pytest
 
-from codexctl import db, pricing
+import codexctl.db as db
+import codexctl.usage.pricing as pricing
 
 
 def test_schema_created():

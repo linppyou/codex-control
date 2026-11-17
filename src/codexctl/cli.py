@@ -10,18 +10,33 @@ import tomllib
 from pathlib import Path
 from typing import Callable
 
-from . import (
-    accounts, assignments, codexinstall, daemon, db, dispatch_worker, locks, logscan, pricing, refresher, repo,
-    selfcheck, site_access, useradmin, watcher, webauth,
-)
-from .authfile import AuthFileError
-from .config import Settings, load_settings
-from .context import Context, open_context
-from .publisher import PublishError
-from .runner import CommandError
-from .sysusers import UserError
-from .useradmin import UserAdminError
-from .vault import VaultError, generate_key_file
+import codexctl.accounts.refresher as refresher
+import codexctl.accounts.repository as account_repo
+import codexctl.accounts.service as accounts
+import codexctl.daemon as daemon
+import codexctl.db as db
+import codexctl.dispatch.worker as dispatch_worker
+import codexctl.locks as locks
+import codexctl.selfcheck as selfcheck
+import codexctl.sites.access as site_access
+import codexctl.usage.logscan as logscan
+import codexctl.usage.pricing as pricing
+import codexctl.usage.repository as usage_repo
+import codexctl.usage.watcher as watcher
+import codexctl.users.assignments as assignments
+import codexctl.users.codexinstall as codexinstall
+import codexctl.users.repository as user_repo
+import codexctl.users.service as useradmin
+import codexctl.users.webauth as webauth
+from codexctl.accounts.authfile import AuthFileError
+from codexctl.accounts.publisher import PublishError
+from codexctl.config import Settings, load_settings
+from codexctl.context import Context, open_context
+from codexctl.formatting import fmt_ts, window_name
+from codexctl.runner import CommandError
+from codexctl.users.service import UserAdminError
+from codexctl.users.sysusers import UserError
+from codexctl.vault import VaultError, generate_key_file
 
 DEFAULT_CONFIG = Path("/etc/codexctl/config.toml")
 ACTOR = "cli"
@@ -170,20 +185,6 @@ def report(problems: list[str]) -> int:
     return 1
 
 
-def window_name(minutes: int | None) -> str:
-    if minutes is None:
-        return "未知窗口"
-    if minutes % 1440 == 0:
-        return f"{minutes // 1440}天"
-    if minutes % 60 == 0:
-        return f"{minutes // 60}小时"
-    return f"{minutes}分钟"
-
-
-def fmt_ts(ts: int | None) -> str:
-    return "-" if ts is None else time.strftime("%m-%d %H:%M", time.localtime(ts))
-
-
 def dispatch(ctx: Context, args: argparse.Namespace) -> int:
     if args.cmd == "dispatch-worker":
         dispatch_worker.run(ctx)
@@ -193,7 +194,7 @@ def dispatch(ctx: Context, args: argparse.Namespace) -> int:
     }:
         raise accounts.AccountError("此命令仅用于 managed 模式")
     if args.cmd == "web":
-        from .web import server
+        import codexctl.web.server as server
 
         server.serve(ctx)
         return 0
@@ -254,8 +255,8 @@ def dispatch(ctx: Context, args: argparse.Namespace) -> int:
         return user_cmd(ctx, args)
     if args.cmd == "users":
         for user in ctx.list_users(ctx.settings.min_uid):
-            a = repo.active_assignment(ctx.conn, user.name)
-            label = repo.get_account_by_pk(ctx.conn, a.account_pk).label if a else "-"
+            a = user_repo.active_assignment(ctx.conn, user.name)
+            label = account_repo.get_account_by_pk(ctx.conn, a.account_pk).label if a else "-"
             stale = assignments.stale_codex_procs(ctx, user.name)
             print(
                 f"{_safe(user.name):<20} {_safe(label):<12} {_safe(ctx.publisher.read_link(user).kind):<8} "
@@ -263,8 +264,8 @@ def dispatch(ctx: Context, args: argparse.Namespace) -> int:
             )
         return 0
     if args.cmd == "quota":
-        for acc in repo.list_accounts(ctx.conn):
-            rows = repo.latest_quota(ctx.conn, acc.id, api_fresh_since=ctx.now() - 600)
+        for acc in account_repo.list_accounts(ctx.conn):
+            rows = usage_repo.latest_quota(ctx.conn, acc.id, api_fresh_since=ctx.now() - 600)
             parts = [
                 f"{window_name(r['window_minutes'])} {r['used_percent']:.0f}% 重置于 {fmt_ts(r['resets_at'])} ({r['source']})"
                 for r in rows
@@ -273,8 +274,8 @@ def dispatch(ctx: Context, args: argparse.Namespace) -> int:
         return 0
     if args.cmd == "usage":
         summary: dict[tuple[str, str], dict] = {}
-        book = pricing.PriceBook(repo.list_prices(ctx.conn))
-        for r in repo.usage_summary_by_model(ctx.conn, ctx.now() - args.days * 86400):
+        book = pricing.PriceBook(usage_repo.list_prices(ctx.conn))
+        for r in usage_repo.usage_summary_by_model(ctx.conn, ctx.now() - args.days * 86400):
             key = (r["username"], r["label"] or "-")
             s = summary.setdefault(key, {
                 "total": 0, "input": 0, "output": 0, "turns": 0, "cost": None, "unpriced": 0,
@@ -348,8 +349,8 @@ def user_cmd(ctx: Context, args: argparse.Namespace) -> int:
 def account_cmd(ctx: Context, args: argparse.Namespace) -> int:
     c = args.acmd
     if c == "list":
-        for acc in repo.list_accounts(ctx.conn):
-            users = len(repo.active_usernames(ctx.conn, acc.id))
+        for acc in account_repo.list_accounts(ctx.conn):
+            users = len(user_repo.active_usernames(ctx.conn, acc.id))
             line = (
                 f"{_safe(acc.label):<12} {_safe(acc.display_name or '-'):<12} {_safe(acc.email or '-'):<28} {acc.plan_type or '-':<6} {acc.status:<14} "
                 f"用户数={users} 上次刷新={fmt_ts(acc.last_refresh)} token到期={fmt_ts(acc.access_expires_at)}"
@@ -377,7 +378,7 @@ def account_cmd(ctx: Context, args: argparse.Namespace) -> int:
         except locks.LockBusy:
             print(f"错误：账号 {args.label} 正在被刷新，请稍后再试", file=sys.stderr)
             return 1
-        print("刷新成功" if ok else _safe(f"刷新失败：{repo.get_account(ctx.conn, args.label).last_error}"))
+        print("刷新成功" if ok else _safe(f"刷新失败：{account_repo.get_account(ctx.conn, args.label).last_error}"))
         return 0 if ok else 1
     if c in ("disable", "enable"):
         accounts.set_disabled(ctx, args.label, c == "disable", ACTOR)

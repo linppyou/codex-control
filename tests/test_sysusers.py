@@ -2,13 +2,18 @@ import os
 import pwd
 
 import pytest
-
-from codexctl import sysusers
-from codexctl.runner import CommandError
-from codexctl.sysusers import (
-    UserError, create_user, list_users, lookup_user, user_exists, validate_password,
-)
 from fakes import FakeRunner
+
+import codexctl.users.sysusers as sysusers
+from codexctl.runner import CommandError
+from codexctl.users.sysusers import (
+    UserError,
+    create_user,
+    list_users,
+    lookup_user,
+    user_exists,
+    validate_password,
+)
 
 ME = pwd.getpwuid(os.getuid())
 

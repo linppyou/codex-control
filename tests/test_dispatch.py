@@ -4,17 +4,23 @@ import io
 import json
 import os
 import shutil
-from pathlib import Path
 import stat
 import subprocess
 import sys
 import zipfile
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
-from codexctl import db, dispatch_skills, dispatch_tasks, dispatch_worker, repo, site_registry, webauth
+import codexctl.db as db
+import codexctl.dispatch.skills as dispatch_skills
+import codexctl.dispatch.tasks as dispatch_tasks
+import codexctl.dispatch.worker as dispatch_worker
+import codexctl.repo as repo
+import codexctl.sites.registry as site_registry
+import codexctl.users.webauth as webauth
 from codexctl.web.app import SESSION_COOKIE, create_app
 
 
@@ -824,7 +830,7 @@ def test_shared_connection_uses_user_daemon_socket(ctx, tmp_path, monkeypatch):
     client = dispatch_worker._connect_shared(ctx, user, tmp_path, {'HOME': str(user.home)})
     assert client.proc is not None
     assert calls[0][0][-1] == str(socket)
-    assert calls[0][0][-2].endswith('dispatch_transport.py')
+    assert Path(calls[0][0][-2]) == Path(dispatch_worker.__file__).with_name('transport.py')
     assert calls[0][1]['user'] == user.uid
 
 
@@ -945,8 +951,9 @@ def test_task_pagination_and_filters_are_scoped_and_preserved(ctx):
 
 
 def test_task_status_uses_actual_child_outcome_and_preserves_return_filter(ctx):
-    from codexctl.web.dispatch_views import _task_status
     from urllib.parse import urlencode
+
+    from codexctl.web.routes.dispatch import _task_status
     task = {"status": "sent", "turn_status": "inProgress", "target_snapshot": '{"rows":[{}]}'}
     assert _task_status(task, {})[0] == "执行中"
     task["turn_status"] = "completed"

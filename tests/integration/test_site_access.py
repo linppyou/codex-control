@@ -7,8 +7,8 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from codexctl.config import Settings
-from codexctl.site_access import CERT_NAME, KEY_NAME, PRINCIPAL, provision, shared_key
-from codexctl.sysusers import SysUser
+from codexctl.sites.access import CERT_NAME, KEY_NAME, PRINCIPAL, provision, shared_key
+from codexctl.users.sysusers import SysUser
 
 pytestmark = [pytest.mark.integration, pytest.mark.skipif(os.geteuid() != 0, reason="需要 root")]
 

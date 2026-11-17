@@ -1,7 +1,8 @@
 from html.parser import HTMLParser
 
-from codexctl import repo
 from test_web_pages import add_acc, c, mgr
+
+import codexctl.repo as repo
 
 
 class Inputs(HTMLParser):
@@ -93,9 +94,10 @@ def test_mobile_account_records_label_actions(c, ctx):
 
 
 def test_member_page_shows_remaining_quota_and_line_chart(c, ctx):
-    from codexctl import webauth
-    from codexctl.web.app import SESSION_COOKIE
     from fastapi.testclient import TestClient
+
+    import codexctl.users.webauth as webauth
+    from codexctl.web.app import SESSION_COOKIE
 
     account = add_acc(ctx)
     ctx.test_users.add("alice")

@@ -1,6 +1,7 @@
 import pytest
 
-from codexctl import pricing, repo
+import codexctl.repo as repo
+import codexctl.usage.pricing as pricing
 
 
 def _insert(ctx, label="acc1", account_id="acct-1"):
@@ -52,7 +53,7 @@ def test_set_status(ctx):
 
 
 def test_usage_by_user_and_recent_lists(ctx):
-    from codexctl import events
+    import codexctl.events as events
 
     d = {f: 1 for f in repo.USAGE_FIELDS}
     d["total_tokens"] = 5

@@ -1,7 +1,11 @@
 import pytest
-
-from codexctl import accounts, assignments, events, repo, watcher
 from fakes import make_auth_json
+
+import codexctl.accounts.service as accounts
+import codexctl.events as events
+import codexctl.repo as repo
+import codexctl.usage.watcher as watcher
+import codexctl.users.assignments as assignments
 
 ACL_ALICE = "user::rw-\nuser:alice:r--\ngroup::---\nmask::r--\nother::---\n"
 

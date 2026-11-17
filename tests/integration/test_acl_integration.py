@@ -6,13 +6,16 @@ from pathlib import Path
 import httpx
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from fakes import make_auth_json
 
-from codexctl import accounts, assignments, db, repo
+import codexctl.accounts.service as accounts
+import codexctl.db as db
+import codexctl.repo as repo
+import codexctl.users.assignments as assignments
+from codexctl.accounts.publisher import Publisher
 from codexctl.config import Settings
 from codexctl.context import Context
-from codexctl.publisher import Publisher
 from codexctl.vault import Vault
-from fakes import make_auth_json
 
 pytestmark = [
     pytest.mark.integration,

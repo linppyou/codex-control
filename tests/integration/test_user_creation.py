@@ -5,8 +5,8 @@ import subprocess
 
 import pytest
 
-from codexctl import sysusers
-from codexctl.sysusers import UserError
+import codexctl.users.sysusers as sysusers
+from codexctl.users.sysusers import UserError
 
 pytestmark = [
     pytest.mark.integration,

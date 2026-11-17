@@ -1,8 +1,9 @@
+from fakes import FakeRunner
+
 from codexctl.config import Settings
 from codexctl.runner import CommandError
 from codexctl.selfcheck import selfcheck
 from codexctl.vault import generate_key_file
-from fakes import FakeRunner
 
 
 def good_settings(tmp_path):

@@ -13,11 +13,14 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
+from test_web import PW, do_login
 
-from codexctl import site_probe, site_registry, sites, webauth
+import codexctl.sites.inventory as sites
+import codexctl.sites.probe as site_probe
+import codexctl.sites.registry as site_registry
+import codexctl.users.webauth as webauth
 from codexctl.web.app import create_app
 from codexctl.web.site_analytics import site_comparison
-from test_web import PW, do_login
 
 
 def host_key():
