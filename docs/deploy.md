@@ -217,6 +217,12 @@ Web 面板启动时，如不存在 `admin` 登录账号，会以密码 `root@roo
 
 ### Linux 用户 SSH 登录站点
 
+启用 `site_ssh_enabled = true` 和 `site_ssh_shared = true` 后，所有普通执行用户共用一把部署密钥。总控在 `{state_dir}/site-access/shared/` 保存 root 管理的原始密钥，并在创建用户时把同一私钥写入该用户的专用目录，权限为该用户所有、`0400`。已有用户通过 `codexctl user site-ssh <用户名...>` 迁移。共享模式优先于 CA 配置，不签发逐用户证书。
+
+共享模式的服务器接入命令会同时安装受限采集公钥和共享部署公钥。执行一次接入命令后，已开通的用户即可使用同一公钥授权。已有服务器需要重新执行接入命令，或由管理员通过已有 SSH 权限追加共享公钥。服务器登记、修改、删除和接入完成时，自动刷新 `/etc/ssh/ssh_config.d/10-codexctl-shared-sites.conf` 及已知主机文件。各用户可直接运行 `ssh <服务器 IP>`，任务执行沿用用户目录中的私钥。
+
+共享公钥允许远端 root 登录。持有私钥的用户共享这些服务器的访问权限。迁移前应备份原有用户密钥和远端授权文件，以便恢复。
+
 在托管模式中启用 `site_ssh_enabled = true` 后，通过面板或 `codexctl user add` 创建的普通 Linux 用户会自动获得独立的 Ed25519 密钥。以 root 运行 `codexctl user site-ssh <用户名>` 可为已有用户开通站点 SSH 并显示其公钥。
 
 如需由总控自动签发 SSH 证书，以 root 运行 `ssh-keygen -t ed25519 -N '' -C codexctl-site-access-ca -f /etc/codexctl/site-access-ca`。在总控的配置中设置 `site_ssh_ca_key = "/etc/codexctl/site-access-ca"`。在需要信任该 CA 的站点，把下面的授权追加到 `/root/.ssh/authorized_keys`，使用实际的总控出站 IP 和完整 CA 公钥。

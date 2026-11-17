@@ -57,7 +57,8 @@ def create(
                 f"用户 {name} 已创建，但站点 SSH 开通失败：{e}。可用 codexctl user site-ssh {name} 重试"
             ) from e
         ssh_note = (
-            "已签发站点 SSH 证书" if ctx.settings.site_ssh_ca_key is not None
+            "已配置共享站点 SSH 密钥" if ctx.settings.site_ssh_shared
+            else "已签发站点 SSH 证书" if ctx.settings.site_ssh_ca_key is not None
             else "已生成站点 SSH 密钥，需在目标服务器授权公钥"
         )
         note = "；".join(filter(None, (note, ssh_note)))

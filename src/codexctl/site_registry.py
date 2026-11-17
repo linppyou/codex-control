@@ -11,7 +11,7 @@ from uuid import uuid4
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
-from . import db, events, site_probe
+from . import db, events, site_access, site_probe
 from .context import Context
 from .vault import Vault
 
@@ -117,6 +117,7 @@ def create(ctx: Context, actor: str, name: str, host: str, port: str, host_key: 
             events.audit(ctx.conn, actor, "server.create", server_id, name, now=ctx.now())
     except sqlite3.IntegrityError as exc:
         raise ServerError("该 IP 和端口已登记") from exc
+    site_access.sync_client_config(ctx)
     return Server(server_id, name, host, port_number, pinned, public, 0)
 
 
@@ -135,9 +136,11 @@ def update(ctx: Context, actor: str, server: Server, name: str, host: str, port:
             events.audit(ctx.conn, actor, "server.update", server.id, name, now=ctx.now())
     except sqlite3.IntegrityError as exc:
         raise ServerError("该 IP 和端口已登记") from exc
+    site_access.sync_client_config(ctx)
 
 
 def delete(ctx: Context, actor: str, server: Server) -> None:
     with db.transaction(ctx.conn):
         ctx.conn.execute("DELETE FROM site_servers WHERE id = ?", (server.id,))
         events.audit(ctx.conn, actor, "server.delete", server.id, server.name, now=ctx.now())
+    site_access.sync_client_config(ctx)

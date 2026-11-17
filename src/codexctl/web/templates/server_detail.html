@@ -27,7 +27,7 @@
   </label>
   <button type="button" class="btn" id="copy-enrollment">复制接入命令</button>
   <span class="hint" id="copy-enrollment-status" role="status"></span>
-  <p class="hint">脚本自动安装或更新采集器、配置采集公钥、回传主机公钥并验证 SSH 连接。执行成功后刷新本页查看同步状态，再点击「查看站点」。</p>
+  <p class="hint">脚本自动安装或更新采集器、配置采集公钥、回传主机公钥并验证 SSH 连接。启用共享密钥时，同时配置并验证部署权限。执行成功后刷新本页查看同步状态，再点击「查看站点」。</p>
   {% else %}
   <p class="hint">需要首次接入、命令已过期或更新采集器时，生成新命令并在目标服务器以 root 执行。</p>
   {% endif %}

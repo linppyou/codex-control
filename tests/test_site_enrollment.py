@@ -1,4 +1,5 @@
 import ast
+import dataclasses
 import json
 import subprocess
 from pathlib import Path
@@ -6,7 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from codexctl import site_enrollment, site_registry, sites
+from codexctl import site_access, site_enrollment, site_registry, sites, site_ssh
 from test_servers import create, host_key, login_client
 
 
@@ -42,7 +43,20 @@ def test_new_server_generates_command_and_instructions(ctx):
     assert "30 分钟" in page and "root" in page
 
 
-def test_enrollment_http_flow_and_single_use(ctx, monkeypatch):
+@pytest.mark.parametrize("shared", [False, True])
+def test_enrollment_http_flow_and_single_use(ctx, monkeypatch, shared):
+    ctx.settings = dataclasses.replace(ctx.settings, site_ssh_enabled=shared, site_ssh_shared=shared)
+    access_key = host_key()
+    monkeypatch.setattr(site_access, "sync_client_config", lambda ctx: None)
+    monkeypatch.setattr(site_access, "shared_authorization", lambda settings: access_key)
+    monkeypatch.setattr(site_access, "shared_key", lambda settings: Path("/shared-key"))
+    access_checks = []
+
+    def check_access(server, key, command, **kwargs):
+        access_checks.append((server.id, key, command))
+        return subprocess.CompletedProcess([], 0, "0\n", "")
+
+    monkeypatch.setattr(site_ssh, "run", check_access)
     client, csrf = login_client(ctx)
     server = site_registry.create(ctx, "test", "新服务器", "198.144.159.123", "22", "")
     token = site_enrollment.issue(ctx, server)
@@ -54,6 +68,7 @@ def test_enrollment_http_flow_and_single_use(ctx, monkeypatch):
     assert "no-store" in install.headers["cache-control"]
     ast.parse(install.text)
     assert server.authorized_key in install.text
+    assert (access_key in install.text) == shared
     reported_key = host_key()
     checked = []
 
@@ -70,6 +85,7 @@ def test_enrollment_http_flow_and_single_use(ctx, monkeypatch):
                          headers={"Authorization": "Bearer " + token})
     assert response.status_code == 200 and response.json() == {"sites": 1}
     assert checked == [server.id] and refreshed == [(ctx, server.id)]
+    assert access_checks == ([(server.id, Path("/shared-key"), "id -u")] if shared else [])
     assert site_registry.get(ctx.conn, server.id).host_key == reported_key
     snapshot = sites.snapshots(ctx.conn)[server.id]
     assert snapshot.rows[0]["domains"] == ["example.com"]
@@ -110,10 +126,12 @@ def test_reenrollment_preserves_existing_revision_and_inventory(ctx):
     assert sites.snapshots(ctx.conn)[server.id].synced_at == ctx.now()
 
 
-def test_install_script_runs_twice_without_duplicate_authorization(ctx, tmp_path, monkeypatch):
+@pytest.mark.parametrize("shared", [False, True])
+def test_install_script_runs_twice_without_duplicate_authorization(ctx, tmp_path, monkeypatch, shared):
     server = create(ctx)
     token = site_enrollment.issue(ctx, server)
-    script = site_enrollment.installer(server, token, "https://panel.example.com")
+    access_key = host_key() + " codexctl-shared" if shared else None
+    script = site_enrollment.installer(server, token, "https://panel.example.com", access_key=access_key)
     namespace = {"__name__": "installer_test"}
     exec(compile(script, "installer", "exec"), namespace)
     real_path = Path
@@ -137,6 +155,8 @@ def test_install_script_runs_twice_without_duplicate_authorization(ctx, tmp_path
     namespace["main"]()
     namespace["main"]()
     assert authorized.read_text().count(server.authorized_key) == 1
+    if shared:
+        assert authorized.read_text().count(access_key) == 1
     assert "unrelated-key original-comment" in authorized.read_text()
     assert authorized.stat().st_mode & 0o777 == 0o600
     collector = tmp_path / "usr/local/libexec/codexctl-site-inventory"

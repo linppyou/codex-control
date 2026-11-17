@@ -3,12 +3,13 @@ from __future__ import annotations
 from collections import Counter
 from datetime import datetime
 from itertools import groupby
+import subprocess
 from urllib.parse import urlencode
 
 from fastapi import BackgroundTasks, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
-from .. import site_enrollment, site_probe, site_registry, sites
+from .. import site_access, site_enrollment, site_probe, site_registry, site_ssh, sites
 from ..vault import VaultError
 from .app import current_admin
 
@@ -96,7 +97,10 @@ def register(app) -> None:
     def enrollment_install(request: Request, token: str = Form("")):
         with lock:
             server = authenticated_server(token)
-            script = site_enrollment.installer(server, token, base_url(request))
+            access_key = None
+            if ctx.settings.site_ssh_enabled and ctx.settings.site_ssh_shared and ctx.settings.manages_local_codex:
+                access_key = site_access.shared_authorization(ctx.settings)
+            script = site_enrollment.installer(server, token, base_url(request), access_key=access_key)
         return PlainTextResponse(script)
 
     @app.post("/site-enrollment/complete")
@@ -110,9 +114,13 @@ def register(app) -> None:
             if key is None:
                 raise site_registry.ServerError("服务器配置已变更，请重新生成接入命令")
             inventory = sites.collect(candidate, key)
+            if ctx.settings.site_ssh_enabled and ctx.settings.site_ssh_shared and ctx.settings.manages_local_codex:
+                access = site_ssh.run(candidate, site_access.shared_key(ctx.settings), "id -u", timeout=15)
+                if access.returncode or access.stdout.strip() != "0":
+                    raise site_registry.ServerError("共享部署密钥登录验证失败，请重新执行接入命令")
             with lock:
                 site_enrollment.complete(ctx, candidate, token, inventory)
-        except (site_registry.ServerError, sites.InventoryError, VaultError) as exc:
+        except (site_registry.ServerError, sites.InventoryError, VaultError, OSError, subprocess.TimeoutExpired) as exc:
             raise HTTPException(422, str(exc)) from exc
         background.add_task(sites.refresh, ctx, server.id)
         return {"sites": len(inventory)}
