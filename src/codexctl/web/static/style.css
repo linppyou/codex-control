@@ -426,56 +426,6 @@ progress.bad::-moz-progress-bar { background: var(--red); }
 .user-password summary { width: fit-content; font-weight: 600; cursor: pointer; }
 .user-password form { margin-top: 12px; }
 
-/* WP 建站中心 */
-.wp-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; align-items: start; }
-.wp-servers ul { list-style: none; margin: 0; padding: 5px 0; }
-.wp-servers li a { display: flex; flex-direction: column; gap: 1px; padding: 8px 16px; border-inline-start: 3px solid transparent; text-decoration: none; }
-.wp-servers li a:hover { background: #fafbfc; }
-.wp-servers li a[aria-current] { color: var(--text); border-inline-start-color: var(--green); background: var(--green-soft); }
-.wp-servers .mono { font-size: 12px; color: var(--text-2); }
-.wp-server-footer { padding: 11px 20px; border-top: 1px solid var(--line-soft); font-size: 13px; }
-.wp-workspace { min-width: 0; }
-.wp-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px 18px; }
-.wp-form .hint { color: var(--text-2); }
-.wp-field { display: flex; flex-direction: column; gap: 5px; font-weight: 600; }
-.wp-field > :is(input, select) { width: 100%; min-height: 38px; font-weight: 400; }
-.wp-full { grid-column: 1 / -1; margin: 0; }
-.wp-check { display: flex; align-items: center; gap: 5px; }
-.wp-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding-top: 12px; border-top: 1px solid var(--line-soft); }
-.wp-actions p { margin: 0; }
-.wp-actions .btn { min-height: 36px; justify-content: center; }
-.wp-layout button:disabled { opacity: .65; cursor: default; }
-.wp-jobs { min-width: 590px; }
-.wp-jobs td:last-child { width: 105px; }
-.wp-jobs td:first-child { width: 35%; }
-.wp-jobs td { vertical-align: top; }
-.wp-domain, .wp-job-meta, .wp-row-detail { overflow-wrap: anywhere; }
-.wp-row-detail { max-width: 28em; margin-top: 4px; }
-.wp-row-detail summary { cursor: pointer; color: var(--text-2); }
-.wp-history-error { margin: 16px 20px; }
-.wp-pages { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--line-soft); }
-#wp-tasks { scroll-margin-top: 114px; }
-@media (max-width: 850px) {
-  .wp-layout { grid-template-columns: minmax(0, 1fr); gap: 0; }
-  .wp-servers ul { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .wp-servers li a { padding: 6px 8px; }
-}
-@media (max-width: 630px) {
-  .wp-jobs { display: block; min-width: 0; }
-  .wp-jobs thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-  .wp-jobs tbody { display: block; }
-  .wp-jobs tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px 12px; padding: 12px 16px; border-bottom: 1px solid var(--line-soft); }
-  .wp-jobs tr:last-child { border-bottom: 0; }
-  .wp-jobs tr td { padding: 0; border: 0; }
-  .wp-jobs td:first-child, .wp-jobs td:last-child { grid-column: 1 / -1; width: auto; }
-  .wp-jobs td:last-child:not(:has(form)) { display: none; }
-}
-@media (max-width: 460px) {
-  .wp-form { grid-template-columns: minmax(0, 1fr); }
-  .wp-servers ul { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .wp-actions .btn { width: 100%; }
-}
-
 /* 网站迁移 */
 .dispatch-layout { display: grid; grid-template-columns: minmax(0, 3fr) minmax(260px, 2fr); gap: 16px; align-items: start; }
 .dispatch-layout > .panel { min-width: 0; }

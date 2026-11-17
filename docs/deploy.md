@@ -229,23 +229,11 @@ CA 私钥留在总控，仅 root 可读。证书的 Key ID 包含用户名和 UI
 
 在总控的 SSH 客户端配置中为这些站点设置 `User root`、登记端口，以及 `IdentityFile /var/lib/codexctl/site-access/%u-%i/id_ed25519`。如设置了 `state_dir`，该路径使用对应的状态目录。把登记的主机公钥写入 SSH 已知主机文件，并设置 `StrictHostKeyChecking yes`。各用户从总控运行 `ssh <站点 IP 或别名>` 即可使用其独立密钥。
 
-## WP 建站中心
+## WP 服务中心
 
-总控使用「服务器」里登记的 SSH 地址和已固定的主机公钥。每台目标服务器需要已安装宝塔 WP 建站中心（`ai_center`），并已配置可用的 PHP 和数据库环境。
+面板导航中的「WP 服务中心」直接跳转到外部服务，由该服务提供建站和网站维护功能。旧的 `/wp-center` 地址也会跳转到该服务。[WP 服务中心](https://ai.zhituowujie.shop/)
 
-1. 在总控主机以 root 生成一把建站专用密钥。默认路径可通过 `wp_ssh_key` 修改。已存在的密钥可继续使用。
-   ```bash
-   ssh-keygen -t ed25519 -N '' -C codexctl-wp-center -f /etc/codexctl/wp-center.key
-   ```
-2. 把 `deploy/wp-center.py` 安装到每台目标服务器。将下面这条授权行追加到目标服务器的 `/root/.ssh/authorized_keys`，用总控生成的完整公钥替换 `<公钥>`。确保脚本由 root 所有。
-   ```bash
-   install -D -o root -g root -m 0755 wp-center.py /usr/local/libexec/codexctl-wp-center
-   ```
-   ```text
-   restrict,command="/usr/local/libexec/codexctl-wp-center" <公钥>
-   ```
-3. 升级总控 Python 包，重启 `codexctl-web`。用 `admin` 打开「WP 建站中心」，切换到目标服务器，选择已登记的模板 ZIP，或放在目标服务器 `/www/wwwroot/default` 供建站中心发现的 ZIP。SQL 可从模板内选择，也可选已登记的独立 SQL。总控能从 SQL 唯一识别原域名时，该字段可留空。
-4. 将新域名解析到目标服务器后提交建站。宝塔后台负责创建站点、恢复模板和申请证书。在任务列表中查看当前状态。站点建成后证书申请、安装或覆盖失败时，点击对应域名旁的「重试 SSL」。使用「下一页」查找较早的宝塔任务。
+已有配置中的 `wp_ssh_key` 兼容忽略。
 
 ## API 网关
 

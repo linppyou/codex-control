@@ -322,11 +322,14 @@ def create_app(
         resp.delete_cookie(SESSION_COOKIE, **cookie_attrs())
         return resp
 
-    from . import dispatch_views, server_views, views, wp_views
+    @app.get("/wp-center")
+    def wp_center_redirect(admin: tuple[str, str] = Depends(current_admin)) -> RedirectResponse:
+        return RedirectResponse("https://ai.zhituowujie.shop/", status_code=303)
+
+    from . import dispatch_views, server_views, views
 
     views.register(app)
     server_views.register(app)
-    wp_views.register(app)
     dispatch_views.register(app)
     if gateway:
         from . import gateway as gateway_views
