@@ -95,10 +95,13 @@ def register(app) -> None:
         return task_detail(request, who, task)
 
     @app.post("/tasks/{task_id}/confirm")
-    def confirm(
+    async def confirm(
         request: Request, task_id: str, confirmed: str = Form(""),
         who: tuple[str, str] = Depends(current_user),
     ):
+        prompt = (await request.form()).get("prompt")
+        if prompt is not None and not isinstance(prompt, str):
+            raise HTTPException(422, "提示词须为文本")
         error = ""
         with lock:
             task = get_task(task_id, who[0])
@@ -108,9 +111,31 @@ def register(app) -> None:
                 error = "请先核对提示词并勾选确认"
             else:
                 try:
-                    dispatch_tasks.confirm(ctx, task, who[0])
+                    dispatch_tasks.confirm(ctx, task, who[0], prompt)
                 except dispatch_tasks.TaskError as exc:
                     error = str(exc)
+        if error:
+            if prompt is not None and task["status"] == "preview":
+                task = dict(task, prompt=prompt)
+            return task_detail(request, who, task, status=409, error=error)
+        return RedirectResponse(f"/tasks/{task_id}", status_code=303)
+
+    @app.post("/tasks/{task_id}/prompt")
+    def save_prompt(
+        request: Request, task_id: str, prompt: str = Form(""),
+        who: tuple[str, str] = Depends(current_user),
+    ):
+        error = ""
+        with lock:
+            task = get_task(task_id, who[0])
+            if task["owner"] != who[0] or who[0] == "admin":
+                raise HTTPException(403, "仅任务所属成员可以修改提示词")
+            try:
+                dispatch_tasks.save_prompt(ctx, task, who[0], prompt)
+            except dispatch_tasks.TaskError as exc:
+                error = str(exc)
+                if task["status"] == "preview":
+                    task = dict(task, prompt=prompt)
         if error:
             return task_detail(request, who, task, status=409, error=error)
         return RedirectResponse(f"/tasks/{task_id}", status_code=303)

@@ -129,6 +129,56 @@ def test_user_previews_and_confirms_exactly_once(ctx):
     assert dispatch_worker.claim(ctx) is None
 
 
+def test_prompt_editing_saves_draft_and_confirms_current_text(ctx):
+    form = task_form(ctx)
+    app = create_app(ctx)
+    alice, csrf = session(ctx, app, "alice")
+    bob, bob_csrf = session(ctx, app, "bob")
+    admin, admin_csrf = session(ctx, app, "admin")
+    assert import_file(alice, csrf, form).status_code == 200
+    task = ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone()
+    url = f"/tasks/{task['id']}"
+    draft = "手工修改\n</textarea><script>example()</script>\n保留换行和空格  "
+    assert '<textarea class="dispatch-prompt dispatch-prompt-editor"' in alice.get(url).text
+    assert "<textarea" not in admin.get(url).text
+    assert alice.post(url + "/prompt", data={"csrf": "invalid", "prompt": draft}).status_code == 403
+    assert bob.post(url + "/prompt", data={"csrf": bob_csrf, "prompt": draft}).status_code == 404
+    assert admin.post(url + "/prompt", data={"csrf": admin_csrf, "prompt": draft}).status_code == 403
+    assert alice.post(url + "/prompt", data={"csrf": csrf, "prompt": draft}).status_code == 303
+    saved = ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone()
+    assert saved["prompt"] == draft and saved["status"] == "preview"
+    assert dispatch_worker.claim(ctx) is None
+    page = alice.get(url).text
+    assert "&lt;/textarea&gt;&lt;script&gt;" in page
+    assert "<script>example()" not in page
+    assert import_file(alice, csrf, form).status_code == 200
+    assert ctx.conn.execute("SELECT prompt FROM dispatch_tasks").fetchone()[0] == draft
+
+    for prompt in ("", "  \n  "):
+        for action in ("/prompt", "/confirm"):
+            response = alice.post(url + action, data={"csrf": csrf, "confirmed": "1", "prompt": prompt})
+            assert response.status_code == 409 and "提示词不能为空" in response.text
+        assert ctx.conn.execute("SELECT prompt FROM dispatch_tasks").fetchone()[0] == draft
+
+    final_prompt = "确认发送时修改\n" + draft
+    response = alice.post(url + "/confirm", data={"csrf": csrf, "prompt": final_prompt})
+    assert response.status_code == 409 and "确认发送时修改" in response.text
+    assert ctx.conn.execute("SELECT prompt FROM dispatch_tasks").fetchone()[0] == draft
+    assert alice.post(url + "/confirm", data={
+        "csrf": csrf, "confirmed": "1", "prompt": final_prompt,
+    }).status_code == 303
+    assert "<textarea" not in alice.get(url).text
+    assert alice.post(url + "/prompt", data={"csrf": csrf, "prompt": draft}).status_code == 409
+    assert alice.post(url + "/confirm", data={
+        "csrf": csrf, "confirmed": "1", "prompt": draft,
+    }).status_code == 303
+    queued = dispatch_worker.claim(ctx)
+    assert queued["prompt"] == final_prompt
+    assert queued["csv"] == task["csv"] and queued["skills"] == task["skills"]
+    assert queued["target_snapshot"] == task["target_snapshot"]
+    assert dispatch_worker.claim(ctx) is None
+
+
 def test_import_matches_across_servers_and_renders_each_row(ctx):
     form = task_form(ctx)
     first = site_registry.get(ctx.conn, form["server_id"])
@@ -437,7 +487,7 @@ def test_worker_attaches_both_packages_and_persists_acceptance(ctx, tmp_path, mo
     dispatch_tasks.create_previews(ctx, "alice", rows, form["dispatcher"], form["migration"], upload=raw)
     task_id = rows[0].task_id
     row = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()
-    dispatch_tasks.confirm(ctx, row, "alice")
+    dispatch_tasks.confirm(ctx, row, "alice", row["prompt"] + "\n用户修改后的发送内容。")
     task = dispatch_worker.claim(ctx)
     run_root = tmp_path / "dispatch"
     run_root.mkdir()
@@ -469,6 +519,7 @@ for line in sys.stdin:
     elif method == 'turn/start':
         prompt, dispatcher, migration = params['input']
         assert prompt['type'] == 'text' and '统一分发' in prompt['text']
+        assert prompt['text'].endswith('用户修改后的发送内容。')
         assert Path('task.csv').read_text().splitlines()[0] == '网站,新域名,备注,折扣'
         assert '产品海报,8.5折' in Path('task.csv').read_text()
         targets = json.loads(Path('targets.json').read_text())

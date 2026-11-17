@@ -506,6 +506,8 @@ progress.bad::-moz-progress-bar { background: var(--red); }
 .dispatch-list-meta { display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; color: var(--text-2); font-size: 12px; }
 .dispatch-title { overflow-wrap: anywhere; }
 .dispatch-prompt { margin: 0; padding: 18px 20px; color: var(--text); background: #f8faf7; font: 13px/1.65 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.dispatch-prompt-editor { display: block; width: 100%; min-height: 320px; border: 0; border-radius: 0; resize: vertical; }
+.dispatch-prompt-editor:focus { outline: 2px solid var(--green); outline-offset: -2px; }
 .dispatch-confirm { display: grid; gap: 13px; border-top: 1px solid var(--line); }
 .dispatch-confirm label { display: flex; align-items: flex-start; gap: 8px; }
 .dispatch-confirm input { flex: none; margin-top: 3px; }
