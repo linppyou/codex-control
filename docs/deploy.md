@@ -252,6 +252,10 @@ deployment_mode = "gateway"
 gateway_enabled = false
 gateway_client_version = "0.167.0"
 gateway_base_url = "https://codex-control.ppspace.xyz/v1"
+gateway_http2 = true
+gateway_max_keepalive_connections = 128
+gateway_keepalive_expiry = 90.0
+gateway_transport = "http"
 ```
 
 运行 `codexctl init`，再运行 `codexctl admin create admin` 设置管理员密码。已有管理员可用 `codexctl admin passwd admin` 更改密码，已有会话随之失效。安装 HTTPS Nginx 配置后运行 `nginx -t` 并重载。把 `gateway_enabled` 改为 `true`，运行 `codexctl selfcheck` 后启动或重启 `codexctl` 与 `codexctl-web`。现有服务器如果仍需独立管理既有 Linux 用户，可以保留 `deployment_mode = "managed"` 并启用网关，新增的 API 请求仍直接转发模型调用。
@@ -275,7 +279,7 @@ Nginx 对 `/v1/` 关闭请求与响应缓冲及共享缓存，请求体允许 16
 
 Fast 测试按上游最终返回的档位判断。显示实际使用标准档时，请求已经完成，Fast 还未对该账号和模型通过验证。
 
-网关支持 `GET /v1/models`、版本化的 `GET /v1/codex/models` 和 `POST /v1/responses`。请求统一使用 Bearer Key。对话回放和上下文压缩走 Responses，请使用当前 Codex 版本。客户端把会话项随请求发送，密码、OAuth 凭证及工具执行权限由各自所在的客户端和服务器管理。服务器转发工具调用和客户端回传的结果。
+网关支持 `GET /v1/models`、版本化的 `GET /v1/codex/models` 和 `POST /v1/responses`。请求统一使用 Bearer Key。对话回放和上下文压缩走 Responses，请使用当前 Codex 版本。客户端把会话项随请求发送，密码、OAuth 凭证及工具执行权限由各自所在的客户端和服务器管理。服务器转发工具调用和客户端回传的结果。HTTP/2、上游连接池和凭证解密缓存默认启用。`gateway_transport = "auto"` 会优先尝试上游 Responses WebSocket，失败后回退到 HTTP SSE。切换前应完成同一账号的两轮 `previous_response_id` 续接测试。
 
 ### 核验与回退
 
