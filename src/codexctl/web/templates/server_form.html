@@ -7,6 +7,17 @@
     <h1>{{ '编辑服务器' if server else '添加服务器' }}</h1>
   </div>
 </div>
+{% if not server %}
+<section class="panel">
+  <h2>一条命令接入采集</h2>
+  <ol>
+    <li>填写服务器名称、公网 IP 和 SSH 端口，点击「添加服务器」。SSH 主机公钥可留空，由接入脚本自动回传。</li>
+    <li>复制下一页的接入命令，在这台服务器的宝塔终端或 SSH 终端中以 root 执行。服务器需要安装宝塔、Python 3 和 curl，并允许 root 公钥 SSH 登录。</li>
+    <li>脚本会安装采集器、配置专用采集公钥并验证连接。成功后返回面板刷新页面，点击「查看站点」。首次巡检完成后展示结果，之后每 5 分钟更新。</li>
+  </ol>
+  <p class="hint">接入命令有效期为 30 分钟，成功接入后失效。超时或需更新采集器时，可在服务器详情页重新生成。</p>
+</section>
+{% endif %}
 <form class="panel server-form" method="post" action="{{ '/servers/' ~ server.id ~ '/edit' if server else '/servers' }}">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <label>服务器名称 <input type="text" name="name" value="{{ fields.name }}" maxlength="60" required></label>
@@ -15,7 +26,7 @@
   <label>SSH 主机公钥
     <textarea name="host_key" rows="3" spellcheck="false" maxlength="512" aria-describedby="host-key-help">{{ fields.host_key }}</textarea>
   </label>
-  <p class="hint" id="host-key-help">从服务器控制台获取 <code>/etc/ssh/ssh_host_ed25519_key.pub</code>。可稍后补填，保存公钥后开始尝试连接。</p>
+  <p class="hint" id="host-key-help">使用接入命令时可留空。手动配置时，从服务器控制台获取 <code>/etc/ssh/ssh_host_ed25519_key.pub</code> 并粘贴完整内容。</p>
   <div class="form-row">
     <button type="submit" class="btn primary">{{ '保存' if server else '添加服务器' }}</button>
     <a class="btn ghost" href="{{ '/servers/' ~ server.id if server else '/servers' }}">取消</a>

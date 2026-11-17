@@ -174,6 +174,13 @@ CREATE TABLE IF NOT EXISTS site_inventories (
     error TEXT,
     snapshot TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS site_enrollments (
+    server_id TEXT PRIMARY KEY REFERENCES site_servers(id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    token_ciphertext BLOB NOT NULL,
+    expires_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS dispatch_skills (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL CHECK (kind IN ('dispatcher', 'migration')),

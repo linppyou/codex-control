@@ -28,6 +28,9 @@ codexctl = "codexctl.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/codexctl"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"deploy/collect-sites.py" = "codexctl/collect_sites.py"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = ["integration: needs root, real users and setfacl (run in Docker)"]

@@ -19,16 +19,36 @@
   </dl>
 </section>
 <section class="panel server-detail">
+  <h2>一条命令接入采集</h2>
+  {% if enrollment_command %}
+  <p>复制以下完整命令，在 <strong>{{ server.host }}</strong> 的宝塔终端或 SSH 终端中以 <strong>root</strong> 执行。需要 Python 3、curl 和 root 公钥 SSH 登录权限。</p>
+  <label class="server-key">接入命令（生成后 30 分钟内有效，成功后失效）
+    <textarea id="enrollment-command" readonly rows="5" spellcheck="false">{{ enrollment_command }}</textarea>
+  </label>
+  <button type="button" class="btn" id="copy-enrollment">复制接入命令</button>
+  <span class="hint" id="copy-enrollment-status" role="status"></span>
+  <p class="hint">脚本自动安装或更新采集器、配置采集公钥、回传主机公钥并验证 SSH 连接。执行成功后刷新本页查看同步状态，再点击「查看站点」。</p>
+  {% else %}
+  <p class="hint">需要首次接入、命令已过期或更新采集器时，生成新命令并在目标服务器以 root 执行。</p>
+  {% endif %}
+  <form method="post" action="/servers/{{ server.id }}/enrollment">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button type="submit" class="btn">重新生成接入命令</button>
+  </form>
+</section>
+<details class="panel server-detail">
+  <summary>手动配置 SSH 接入</summary>
   <h2>SSH 接入</h2>
   {% if server.fingerprint %}<p class="hint">主机指纹 <code class="server-wrap">{{ server.fingerprint }}</code></p>{% endif %}
   <p class="hint">在站点服务器安装只读采集脚本后，将以下一行添加到该服务器的 <code>/root/.ssh/authorized_keys</code>。</p>
   <label class="server-key">采集授权公钥
     <textarea readonly rows="3" spellcheck="false">{{ server.authorized_key }}</textarea>
   </label>
-</section>
+</details>
 <form method="post" action="/servers/{{ server.id }}/delete" data-confirm="删除 {{ server.name }} 及其巡检记录？">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <button class="btn danger" type="submit">删除服务器</button>
 </form>
 <script src="/static/confirm.js"></script>
+<script src="/static/server-enrollment.js"></script>
 {% endblock %}
