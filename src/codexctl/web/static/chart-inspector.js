@@ -67,7 +67,7 @@
         names.forEach(function (name, i) {
           if (!toggles[i] || toggles[i].getAttribute('aria-pressed') === 'true') value(name, values[i], shortValues[i], i);
         });
-        value('全部用户合计', hit.dataset.total, hit.dataset.totalShort);
+        value(chart.dataset.chartTotalLabel || '全部用户合计', hit.dataset.total, hit.dataset.totalShort);
       } else {
         value('总 Tokens', hit.dataset.total, hit.dataset.totalShort);
         value('输入', hit.dataset.input, hit.dataset.inputShort);
