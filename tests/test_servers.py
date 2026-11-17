@@ -478,3 +478,32 @@ def test_site_dashboard_handles_empty_pending_and_stale_inventories(ctx, monkeyp
     assert site_comparison(ctx.conn, 7, ctx.now())["stale"] == [first.name]
     ctx.conn.execute("UPDATE site_inventories SET revision = revision + 1")
     assert site_comparison(ctx.conn, 7, ctx.now())["series"] == []
+
+
+def test_pages_tolerate_malformed_historical_inventory(ctx):
+    client, _ = login_client(ctx)
+    server = create(ctx)
+    snapshot = [
+        {"id": "old", "domains": ["old.example.com"], "created_at": "invalid", "public": {"state": "unknown"}},
+        {"id": "valid", "domains": ["valid.example.com"], "created_at": ctx.now(),
+         "public": {"state": "up", "checked_at": ctx.now()}, "data": {"products": "bad"}},
+        {"id": "missing-domains"},
+        None,
+    ]
+    ctx.conn.execute("INSERT INTO site_inventories VALUES (?, ?, ?, ?, NULL, ?)",
+                     (server.id, server.revision, ctx.now(), ctx.now(), json.dumps(snapshot)))
+    inventory = sites.snapshots(ctx.conn)[server.id]
+    assert len(inventory.rows) == 2
+    assert inventory.rows[0]["created_at"] is None
+    assert inventory.rows[0]["public"]["state"] == "pending"
+    assert inventory.error == "部分站点缓存格式异常，请重新采集"
+    response = client.get("/servers")
+    assert response.status_code == 200 and "valid.example.com" in response.text
+    assert "日期未知" in response.text
+    assert client.get("/").status_code == 200
+    # Read-side normalization keeps the original inventory available for recovery.
+    assert json.loads(ctx.conn.execute("SELECT snapshot FROM site_inventories").fetchone()[0]) == snapshot
+    ctx.conn.execute("UPDATE site_inventories SET snapshot='invalid json'")
+    assert sites.snapshots(ctx.conn)[server.id].error == "站点缓存格式异常，请重新采集"
+    assert client.get("/servers").status_code == 200
+    assert client.get("/").status_code == 200

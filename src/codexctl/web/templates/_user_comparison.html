@@ -1,6 +1,6 @@
 <div class="panel flush analytics-panel" id="comparison">
   <div class="panel-head">
-    <div><div class="analytics-eyebrow">USAGE ANALYTICS</div><h2>用户用量对比</h2><div class="analytics-subtitle">每日 Token 趋势 · 服务器本地日期</div></div>
+    <div><div class="analytics-eyebrow">USAGE ANALYTICS</div><h2>用户用量对比</h2><div class="analytics-subtitle">每日 Token 趋势 · 北京时间</div></div>
     <nav class="analytics-range" aria-label="选择时间范围">{% for n in (7, 30, 90) %}<a href="?days={{ n }}#comparison"{% if days == n %} class="active" aria-current="page"{% endif %}>{{ n }} 天</a>{% endfor %}</nav>
   </div>
   <div class="analytics-metrics">

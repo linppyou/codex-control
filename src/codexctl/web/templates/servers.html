@@ -45,6 +45,11 @@
       {% if unconfirmed %}<span>待确认 <strong>{{ unconfirmed }}</strong></span>{% endif %}
     </div>
   </div>
+  <div class="form-row">
+    <span class="hint">筛选结果 {{ filtered }} 个站点</span>
+    <button class="btn small" type="button" data-site-expand="true">展开全部</button>
+    <button class="btn small" type="button" data-site-expand="false">折叠全部</button>
+  </div>
   <form method="get" action="/servers" class="form-row panel site-filters">
     <label>服务器
       <select name="server_id" aria-label="服务器">
@@ -125,4 +130,5 @@
 {% else %}
 <div class="panel empty-state">暂无服务器。添加服务器后即可配置站点巡检。</div>
 {% endif %}
+<script src="/static/server-list.js" defer></script>
 {% endblock %}

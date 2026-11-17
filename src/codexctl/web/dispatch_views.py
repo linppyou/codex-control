@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -19,6 +20,24 @@ TURN_STATUS = {"inProgress": "Codex 正在处理", "completed": "Codex 轮次已
                "failed": "Codex 轮次失败", "interrupted": "Codex 轮次已中断", "unknown": "Codex 轮次待核对"}
 
 
+def _task_status(task, child_counts):
+    if task["status"] != "sent":
+        return STATUS[task["status"]]
+    if child_counts.get("failed") or child_counts.get("blocked"):
+        return ("部分失败或受阻", "bad")
+    if task["turn_status"] == "inProgress" or any(
+        child_counts.get(state) for state in ("starting", "sending", "running")
+    ):
+        return ("执行中", "warn")
+    if task["turn_status"] == "completed":
+        target = json.loads(task["target_snapshot"])
+        expected = len(target.get("rows", [])) or 1
+        if child_counts.get("completed", 0) == expected and sum(child_counts.values()) == expected:
+            return ("已完成", "ok")
+        return ("轮次已结束，结果待核对", "warn")
+    return (TURN_STATUS.get(task["turn_status"], "已发送给 Codex"), "warn")
+
+
 def register(app) -> None:
     ctx = app.state.ctx
     render = app.state.render
@@ -30,23 +49,68 @@ def register(app) -> None:
             raise HTTPException(404, "任务不存在")
         return row
 
+    def back_url(request):
+        value = request.query_params.get("back", "/tasks")
+        parsed = urlsplit(value)
+        return value if parsed.path == "/tasks" and not parsed.scheme and not parsed.netloc else "/tasks"
+
+    def task_url(task_id, request):
+        return f"/tasks/{task_id}?" + urlencode({"back": back_url(request)})
+
     def task_page(request, who, selections=None, *, rows=(), status=200, err=""):
         user, csrf = who
+        state = request.query_params.get("state", "")
+        if state not in STATUS:
+            state = ""
+        query = request.query_params.get("q", "").strip()[:200]
+        try:
+            page = max(1, int(request.query_params.get("page", "1")))
+        except ValueError:
+            page = 1
+        where = "(?='admin' OR owner=? OR recipient=?)"
+        values = [user, user, user]
+        if state:
+            where += " AND status=?"
+            values.append(state)
+        if query:
+            where += " AND instr(lower(title || ' ' || owner || ' ' || recipient || ' ' || id), lower(?)) > 0"
+            values.append(query)
         with lock:
             catalog = dispatch_skills.list_skills(ctx.conn)
+            total = ctx.conn.execute(f"SELECT COUNT(*) FROM dispatch_tasks WHERE {where}", values).fetchone()[0]
+            pages = max(1, (total + 49) // 50)
+            page = min(page, pages)
             history = ctx.conn.execute(
-                """SELECT id, owner, recipient, title, status, turn_status, created_at FROM dispatch_tasks
-                   WHERE ?='admin' OR owner=? OR recipient=?
-                   ORDER BY created_at DESC, rowid DESC LIMIT 50""",
-                (user, user, user),
+                f"""SELECT id, owner, recipient, title, status, turn_status, created_at, target_snapshot FROM dispatch_tasks
+                    WHERE {where} ORDER BY created_at DESC, rowid DESC LIMIT 50 OFFSET ?""",
+                [*values, (page - 1) * 50],
             ).fetchall()
+            history = [dict(task) for task in history]
+            counts_by_task = {}
+            if history:
+                placeholders = ",".join("?" for _ in history)
+                child_counts = ctx.conn.execute(
+                    f"SELECT task_id, status, COUNT(*) FROM dispatch_children "
+                    f"WHERE task_id IN ({placeholders}) GROUP BY task_id, status",
+                    [task["id"] for task in history],
+                )
+                for task_id, child_status, count in child_counts:
+                    counts_by_task.setdefault(task_id, {})[child_status] = count
+            for task in history:
+                task["status_text"], task["status_class"] = _task_status(task, counts_by_task.get(task["id"], {}))
+
+        def page_url(number):
+            return "/tasks?" + urlencode({"state": state, "q": query, "page": number})
+
         return render(
             request, "dispatch_tasks.html", status=status, admin=user, csrf=csrf,
             selections=selections or {}, catalog=catalog, rows=rows, columns=dispatch_tasks.IMPORT_COLUMNS,
             matched=sum(bool(row.server_name) for row in rows),
             batch_id=next((row.task_id for row in rows if row.task_id), ""),
             status_map=STATUS, history=history, time=_time, err=err,
-            can_cancel=dispatch_tasks.can_cancel,
+            can_cancel=dispatch_tasks.can_cancel, state=state, query=query, page=page, pages=pages, total=total,
+            previous=page_url(page - 1) if page > 1 else None,
+            next_page=page_url(page + 1) if page < pages else None, list_url=page_url(page),
         )
 
     @app.get("/tasks", response_class=HTMLResponse)
@@ -81,10 +145,17 @@ def register(app) -> None:
             children = ctx.conn.execute(
                 "SELECT * FROM dispatch_children WHERE task_id=? ORDER BY row_number", (task["id"],),
             ).fetchall()
+        child_counts = {}
+        for child in children:
+            child_counts[child["status"]] = child_counts.get(child["status"], 0) + 1
+        status_text, status_class = _task_status(task, child_counts)
         return render(
             request, "dispatch_detail.html", status=status, admin=user, csrf=csrf, task=task,
             target=target, batch_rows=target.get("rows", []), skills=json.loads(task["skills"]),
-            children=children,
+            children=children, child_counts=child_counts, status_text=status_text, status_class=status_class, back_url=back_url(request), task_url=task_url(task["id"], request),
+            refreshing=task["status"] in {"queued", "sending", "cancelling"}
+                       or task["turn_status"] == "inProgress"
+                       or any(child["status"] in {"starting", "sending", "running"} for child in children),
             status_map=STATUS, turn_status=TURN_STATUS, kinds=dispatch_skills.KINDS,
             can_confirm=task["status"] == "preview" and user == task["owner"] and user != "admin"
                         and dispatch_tasks.batch_complete(target),
@@ -107,8 +178,8 @@ def register(app) -> None:
     @app.post("/tasks/{task_id}/confirm")
     async def confirm(
         request: Request, task_id: str, confirmed: str = Form(""),
-        model: str = Form(""), reasoning_effort: str = Form(""),
-        sandbox: str = Form(dispatch_tasks.DEFAULT_SANDBOX),
+        model: str | None = Form(None), reasoning_effort: str | None = Form(None),
+        sandbox: str | None = Form(None),
         who: tuple[str, str] = Depends(current_user),
     ):
         prompt = (await request.form()).get("prompt")
@@ -130,12 +201,16 @@ def register(app) -> None:
             if prompt is not None and task["status"] == "preview":
                 task = dict(task, prompt=prompt)
             return task_detail(request, who, task, status=409, error=error,
-                               execution={"model": model, "reasoning_effort": reasoning_effort, "sandbox": sandbox})
-        return RedirectResponse(f"/tasks/{task_id}", status_code=303)
+                               execution={"model": model if model is not None else task["model"] or dispatch_tasks.DEFAULT_MODEL,
+                                          "reasoning_effort": reasoning_effort if reasoning_effort is not None else task["reasoning_effort"] or dispatch_tasks.DEFAULT_REASONING_EFFORT,
+                                          "sandbox": sandbox if sandbox is not None else task["sandbox"]})
+        return RedirectResponse(task_url(task_id, request), status_code=303)
 
     @app.post("/tasks/{task_id}/prompt")
     def save_prompt(
         request: Request, task_id: str, prompt: str = Form(""),
+        model: str | None = Form(None), reasoning_effort: str | None = Form(None),
+        sandbox: str | None = Form(None),
         who: tuple[str, str] = Depends(current_user),
     ):
         error = ""
@@ -144,23 +219,26 @@ def register(app) -> None:
             if task["owner"] != who[0] or who[0] == "admin":
                 raise HTTPException(403, "仅任务所属成员可以修改提示词")
             try:
-                dispatch_tasks.save_prompt(ctx, task, who[0], prompt)
+                dispatch_tasks.save_prompt(ctx, task, who[0], prompt, model=model, reasoning_effort=reasoning_effort, sandbox=sandbox)
             except dispatch_tasks.TaskError as exc:
                 error = str(exc)
                 if task["status"] == "preview":
                     task = dict(task, prompt=prompt)
         if error:
-            return task_detail(request, who, task, status=409, error=error)
-        return RedirectResponse(f"/tasks/{task_id}", status_code=303)
+            return task_detail(request, who, task, status=409, error=error,
+                               execution={"model": model if model is not None else task["model"] or dispatch_tasks.DEFAULT_MODEL,
+                                          "reasoning_effort": reasoning_effort if reasoning_effort is not None else task["reasoning_effort"] or dispatch_tasks.DEFAULT_REASONING_EFFORT,
+                                          "sandbox": sandbox if sandbox is not None else task["sandbox"]})
+        return RedirectResponse(task_url(task_id, request), status_code=303)
 
     @app.post("/tasks/{task_id}/cancel")
-    def cancel_task(task_id: str, who: tuple[str, str] = Depends(current_user)):
+    def cancel_task(request: Request, task_id: str, who: tuple[str, str] = Depends(current_user)):
         with lock:
             task = get_task(task_id, who[0])
             if who[0] == "admin" or who[0] not in {task["owner"], task["recipient"]}:
                 raise HTTPException(403, "仅任务所属成员可以取消任务")
             dispatch_tasks.cancel(ctx, task_id, who[0])
-        return RedirectResponse(f"/tasks/{task_id}", status_code=303)
+        return RedirectResponse(task_url(task_id, request), status_code=303)
 
     @app.get("/skills", response_class=HTMLResponse)
     def skills(request: Request, edit: str = "", admin: tuple[str, str] = Depends(current_admin)):

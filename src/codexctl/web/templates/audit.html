@@ -1,31 +1,44 @@
 {% extends "base.html" %}
 {% block title %}审计 - codexctl{% endblock %}
 {% block content %}
-<div class="page-head"><div><h1>审计</h1><div class="sub">管理操作与告警历史</div></div></div>
-<div class="section-head"><span class="section-title"><span class="section-mark"></span>最近操作</span><span class="muted mono">{{ audit|length }} 条</span></div>
+<div class="page-head"><div><h1>审计</h1><div class="sub">管理操作与告警历史 · 北京时间</div></div></div>
+{% set search = filters|default({}) %}
+<form method="get" action="/audit" class="panel form-row audit-filters">
+  <label>开始日期<input type="date" name="start" value="{{ search.get('start', '') }}"></label>
+  <label>结束日期<input type="date" name="end" value="{{ search.get('end', '') }}"></label>
+  <label>操作者<input type="text" name="actor" value="{{ search.get('actor', '') }}" maxlength="64"></label>
+  <label>动作<input type="text" name="action" value="{{ search.get('action', '') }}" maxlength="120"></label>
+  <label>关键词<input type="text" name="q" value="{{ search.get('q', '') }}" maxlength="200"></label>
+  <label>告警级别<select name="level"><option value="">全部</option>{% for value, label in [('info', '信息'), ('warning', '警告'), ('error', '错误'), ('critical', '严重')] %}<option value="{{ value }}"{% if search.get('level') == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+  <button class="btn primary" type="submit">筛选</button><a class="btn" href="/audit">清除</a>
+  <p class="hint form-hint">操作者和动作筛选适用于操作记录，级别筛选适用于告警，关键词和日期适用于两者。</p>
+</form>
+<div class="section-head" id="audit-records"><span class="section-title"><span class="section-mark"></span>操作记录</span><span class="muted mono">{{ audit_pagination.total if audit_pagination is defined else audit|length }} 条</span></div>
 <div class="panel flush">
-<div class="table-wrap"><table>
+<div class="table-wrap"><table class="mobile-cards">
   <thead><tr><th>时间</th><th>操作者</th><th>动作</th><th>对象</th><th>详情</th></tr></thead>
   <tbody>
   {% for r in audit %}
-  <tr><td class="mono nowrap">{{ r.ts }}</td><td>{{ r.actor }}</td><td class="mono">{{ r.action }}</td><td>{{ r.target }}</td><td class="muted">{{ r.detail }}</td></tr>
+  <tr><td class="mono nowrap" data-label="时间">{{ r.ts }}</td><td data-label="操作者">{{ r.actor }}</td><td class="mono mobile-wide" data-label="动作">{{ r.action }}</td><td class="mobile-wide" data-label="对象">{{ r.target }}</td><td class="muted mobile-wide" data-label="详情">{{ r.detail or '—' }}</td></tr>
   {% else %}
-  <tr><td colspan="5" class="empty">暂无操作记录</td></tr>
+  <tr><td colspan="5" class="empty">暂无符合条件的操作记录</td></tr>
   {% endfor %}
   </tbody>
 </table></div>
+{% if audit_pagination is defined and audit_pagination.pages > 1 %}<nav class="audit-pagination" aria-label="操作记录分页">{% if audit_pagination.previous %}<a class="btn" href="{{ audit_pagination.previous }}">上一页</a>{% endif %}<span>第 {{ audit_pagination.page }} / {{ audit_pagination.pages }} 页</span>{% if audit_pagination.next %}<a class="btn" href="{{ audit_pagination.next }}">下一页</a>{% endif %}</nav>{% endif %}
 </div>
-<div class="section-head"><span class="section-title"><span class="section-mark red"></span>最近告警</span><span class="muted mono">{{ alerts|length }} 条</span></div>
+<div class="section-head" id="alert-records"><span class="section-title"><span class="section-mark red"></span>告警记录</span><span class="muted mono">{{ alert_pagination.total if alert_pagination is defined else alerts|length }} 条</span></div>
 <div class="panel flush">
-<div class="table-wrap"><table>
+<div class="table-wrap"><table class="mobile-cards">
   <thead><tr><th>时间</th><th>级别</th><th>类型</th><th>对象</th><th>消息</th><th>解决时间</th></tr></thead>
   <tbody>
   {% for r in alerts %}
-  <tr><td class="mono nowrap">{{ r.ts }}</td><td><span class="badge {{ r.level }}">{{ r.level }}</span></td><td class="mono">{{ r.kind }}</td><td>{{ r.target }}</td><td>{{ r.message }}</td><td class="mono nowrap">{% if r.resolved %}{{ r.resolved }}{% else %}<span class="badge bad">未解决</span>{% endif %}</td></tr>
+  <tr><td class="mono nowrap" data-label="时间">{{ r.ts }}</td><td data-label="级别"><span class="badge {{ r.level }}">{{ {'info': '信息', 'warning': '警告', 'warn': '警告', 'error': '错误', 'critical': '严重'}.get(r.level, r.level) }}</span></td><td class="mono mobile-wide" data-label="类型">{{ r.kind }}</td><td class="mobile-wide" data-label="对象">{{ r.target }}</td><td class="mobile-wide" data-label="消息">{{ r.message }}</td><td class="mono nowrap" data-label="解决时间">{% if r.resolved %}{{ r.resolved }}{% else %}<span class="badge bad">未解决</span>{% endif %}</td></tr>
   {% else %}
-  <tr><td colspan="6" class="empty">暂无告警</td></tr>
+  <tr><td colspan="6" class="empty">暂无符合条件的告警</td></tr>
   {% endfor %}
   </tbody>
 </table></div>
+{% if alert_pagination is defined and alert_pagination.pages > 1 %}<nav class="audit-pagination" aria-label="告警记录分页">{% if alert_pagination.previous %}<a class="btn" href="{{ alert_pagination.previous }}">上一页</a>{% endif %}<span>第 {{ alert_pagination.page }} / {{ alert_pagination.pages }} 页</span>{% if alert_pagination.next %}<a class="btn" href="{{ alert_pagination.next }}">下一页</a>{% endif %}</nav>{% endif %}
 </div>
 {% endblock %}

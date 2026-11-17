@@ -5,7 +5,7 @@
 {%- endmacro %}
 {% block content %}
 <div class="page-head">
-  <div><h1>用量</h1><div class="sub">今天、近 7 天与全部的 token 用量与估算费用，按模型和用户汇总</div></div>
+  <div><h1>用量</h1><div class="sub">今天、近 7 天与全部的 token 用量与估算费用，按模型和用户汇总 · 北京时间</div></div>
   <div class="toolbar"><a class="btn" href="/usage.csv">导出 CSV</a></div>
 </div>
 <div class="usage-grid">
@@ -35,7 +35,7 @@
           <span class="model-name{% if not m.known %} muted{% endif %}">{{ m.name }}</span>
           <span class="model-val" title="{{ '{:,}'.format(m.total) }} tokens · {{ m.turns }} 次{% if m.cost is not none %} · 估算 {{ m.cost|usd }}{% endif %}">{{ m.total|tokens }} <span class="muted">{{ m.pct }}%</span><span class="model-cost{% if m.cost is none %} muted{% endif %}">{% if m.cost is not none %}{{ m.cost|usd }}{% else %}未定价{% endif %}</span></span>
         </div>
-        <div class="model-bar"><span style="width: {{ m.pct }}%"></span></div>
+        <progress class="model-bar" max="100" value="{{ m.pct }}" aria-label="{{ m.name }} 用量占比 {{ m.pct }}%">{{ m.pct }}%</progress>
       </li>
       {% endfor %}
     </ul>

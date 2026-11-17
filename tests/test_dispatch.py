@@ -960,3 +960,130 @@ def test_shared_events_do_not_complete_another_thread(tmp_path):
     client.read(None)
     assert client.completed == ('owned-turn', 'completed')
     dispatch_worker._stop(proc)
+
+
+def test_draft_persists_execution_options_and_legacy_confirm_uses_them(ctx):
+    form = task_form(ctx)
+    alice, csrf = session(ctx, create_app(ctx), "alice")
+    import_file(alice, csrf, form)
+    task = ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone()
+    url = f"/tasks/{task['id']}"
+    response = alice.post(url + "/prompt", data={
+        "csrf": csrf, "prompt": "新的提示词", "model": " gpt-6.1-sol ",
+        "reasoning_effort": " high ", "sandbox": "danger-full-access",
+    })
+    assert response.status_code == 303
+    saved = ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone()
+    assert (saved["status"], saved["prompt"], saved["model"], saved["reasoning_effort"]) == (
+        "preview", "新的提示词", "gpt-6.1-sol", "high",
+    )
+    page = alice.get(url).text
+    assert 'value="gpt-6.1-sol"' in page and 'value="high"' in page
+    # Old clients only send the prompt and retain the already saved execution settings.
+    assert alice.post(url + "/prompt", data={"csrf": csrf, "prompt": "再改提示词"}).status_code == 303
+    assert alice.post(url + "/confirm", data={"csrf": csrf, "confirmed": "1"}).status_code == 303
+    saved = ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone()
+    assert (saved["prompt"], saved["model"], saved["reasoning_effort"]) == (
+        "再改提示词", "gpt-6.1-sol", "high",
+    )
+
+
+@pytest.mark.parametrize("invalid", [{"model": "bad\nmodel"}, {"reasoning_effort": "Bad"},
+                                    {"sandbox": "workspace-write"}])
+def test_invalid_draft_preserves_all_input_and_does_not_write(ctx, invalid):
+    form = task_form(ctx)
+    alice, csrf = session(ctx, create_app(ctx), "alice")
+    import_file(alice, csrf, form)
+    original = dict(ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone())
+    data = {"csrf": csrf, "prompt": "未保存的新内容", "model": "gpt-6.1-sol",
+            "reasoning_effort": "high", "sandbox": "danger-full-access", **invalid}
+    response = alice.post(f"/tasks/{original['id']}/prompt", data=data)
+    assert response.status_code == 409
+    assert "未保存的新内容" in response.text
+    from html import escape
+    for name in ("model", "reasoning_effort", "sandbox"):
+        assert f'value="{escape(data[name], quote=True)}"' in response.text
+    assert dict(ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone()) == original
+
+
+@pytest.mark.parametrize("status,turn_status,child_status,refreshing", [
+    ("preview", None, None, False), ("queued", None, None, True),
+    ("sending", None, None, True), ("cancelling", None, None, True),
+    ("sent", "inProgress", None, True), ("sent", "completed", "running", True),
+    ("sent", "completed", "completed", False), ("cancelled", "interrupted", None, False),
+])
+def test_detail_refreshes_until_parent_and_children_finish(ctx, status, turn_status, child_status, refreshing):
+    form = task_form(ctx)
+    app = create_app(ctx)
+    alice, csrf = session(ctx, app, "alice")
+    bob, _ = session(ctx, app, "bob")
+    import_file(alice, csrf, form)
+    task = ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone()
+    ctx.conn.execute("UPDATE dispatch_tasks SET status=?, turn_status=? WHERE id=?",
+                     (status, turn_status, task["id"]))
+    if child_status:
+        ctx.conn.execute(
+            "INSERT INTO dispatch_children(task_id,row_number,dispatch_id,title,status) VALUES (?,1,'test','site',?)",
+            (task["id"], child_status),
+        )
+    url = f"/tasks/{task['id']}"
+    page = alice.get(url)
+    assert page.status_code == 200
+    assert f'data-dispatch-refresh="{str(refreshing).lower()}"' in page.text
+    assert bob.get(url).status_code == 404
+
+
+def test_task_pagination_and_filters_are_scoped_and_preserved(ctx):
+    form = task_form(ctx)
+    app = create_app(ctx)
+    alice, csrf = session(ctx, app, "alice")
+    bob, _ = session(ctx, app, "bob")
+    admin, _ = session(ctx, app, "admin")
+    import_file(alice, csrf, form)
+    original = dict(ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone())
+    columns = list(original)
+    insert = f"INSERT INTO dispatch_tasks ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})"
+    for number in range(55):
+        row = dict(original, id=f"{number:032x}", title=f"分页任务 {number:02}",
+                   status="cancelled", created_at=ctx.now() + number + 1)
+        ctx.conn.execute(insert, [row[key] for key in columns])
+    row = dict(original, id="f" * 32, owner="bob", recipient="bob", title="其他成员私有任务")
+    ctx.conn.execute(insert, [row[key] for key in columns])
+    first = alice.get("/tasks?state=cancelled&q=分页任务")
+    assert first.status_code == 200 and "共 55 条" in first.text
+    assert first.text.count('class="dispatch-list-title"') == 50
+    assert 'state=cancelled&amp;q=%E5%88%86%E9%A1%B5%E4%BB%BB%E5%8A%A1&amp;page=2' in first.text
+    second = alice.get("/tasks?state=cancelled&q=分页任务&page=2")
+    assert second.text.count('class="dispatch-list-title"') == 5
+    assert "第 2 / 2 页" in second.text and "上一页" in second.text
+    assert '其他成员私有任务' not in alice.get("/tasks").text
+    assert '其他成员私有任务' in bob.get("/tasks").text
+    assert '其他成员私有任务' in admin.get("/tasks?q=私有").text
+    assert "没有符合筛选条件的任务" in alice.get("/tasks?q=不存在").text
+    assert "第 1 / 1 页" in alice.get("/tasks?state=preview&page=999").text
+    assert alice.get("/tasks?page=invalid").status_code == 200
+    assert alice.get("/tasks?state=' OR 1=1 --").status_code == 200
+
+
+def test_task_status_uses_actual_child_outcome_and_preserves_return_filter(ctx):
+    from codexctl.web.dispatch_views import _task_status
+    from urllib.parse import urlencode
+    task = {"status": "sent", "turn_status": "inProgress", "target_snapshot": '{"rows":[{}]}'}
+    assert _task_status(task, {})[0] == "执行中"
+    task["turn_status"] = "completed"
+    assert _task_status(task, {"completed": 1})[0] == "已完成"
+    assert _task_status(task, {"blocked": 1})[0] == "部分失败或受阻"
+    assert _task_status(task, {})[0] == "轮次已结束，结果待核对"
+    form = task_form(ctx)
+    alice, csrf = session(ctx, create_app(ctx), "alice")
+    import_file(alice, csrf, form)
+    row = ctx.conn.execute("SELECT id FROM dispatch_tasks").fetchone()
+    back = "/tasks?state=preview&q=原始关键词&page=2"
+    query = urlencode({"back": back})
+    url = f"/tasks/{row['id']}?{query}"
+    page = alice.get(url)
+    assert 'href="/tasks?state=preview&amp;q=原始关键词&amp;page=2"' in page.text
+    saved = alice.post(f"/tasks/{row['id']}/prompt?{query}", data={"csrf": csrf, "prompt": "草稿"})
+    assert saved.headers["location"].endswith(query)
+    page = alice.get(f"/tasks/{row['id']}?back=//evil.example/tasks")
+    assert 'href="/tasks"' in page.text and 'href="//evil.example' not in page.text

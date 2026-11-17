@@ -81,12 +81,20 @@
 
   <section class="panel flush" aria-labelledby="dispatch-history-title">
     <div class="panel-head"><h2 id="dispatch-history-title">{{ '任务记录' if is_admin else '我的任务' }}</h2></div>
+    <form method="get" action="/tasks" class="panel-body form-row" role="search">
+      <label>状态<select name="state"><option value="">全部</option>
+        {% for value, label in status_map.items() %}<option value="{{ value }}"{% if state == value %} selected{% endif %}>{{ label[0] }}</option>{% endfor %}
+      </select></label>
+      <label>关键词<input type="text" name="q" value="{{ query }}" maxlength="200" placeholder="任务名称、成员或任务 ID"></label>
+      <button class="btn" type="submit">筛选</button>
+      {% if state or query %}<a class="btn ghost" href="/tasks">清除筛选</a>{% endif %}
+    </form>
     {% if history %}
     <ul class="dispatch-list">
       {% for task in history %}
-      {% set status_text, status_class = status_map[task.status] %}
+      {% set status_text, status_class = task.status_text, task.status_class %}
       <li>
-        <a href="/tasks/{{ task.id }}" class="dispatch-list-title">{{ task.title }}</a>
+        <a href="/tasks/{{ task.id }}?back={{ list_url|urlencode }}" class="dispatch-list-title">{{ task.title }}</a>
         <div class="dispatch-list-meta">
           <span class="badge {{ status_class }}">{{ status_text }}</span>
           {% if is_admin %}<span>{{ task.recipient }}</span>{% endif %}
@@ -101,7 +109,12 @@
       </li>
       {% endfor %}
     </ul>
-    {% else %}<p class="empty-state">暂无任务记录</p>{% endif %}
+    {% else %}<p class="empty-state">{{ '没有符合筛选条件的任务' if state or query else '暂无任务记录' }}</p>{% endif %}
+    <nav class="panel-body form-row" aria-label="任务分页">
+      {% if previous %}<a class="btn" href="{{ previous }}">上一页</a>{% endif %}
+      <span class="hint">第 {{ page }} / {{ pages }} 页 · 共 {{ total }} 条</span>
+      {% if next_page %}<a class="btn" href="{{ next_page }}">下一页</a>{% endif %}
+    </nav>
   </section>
 </div>
 {% endblock %}

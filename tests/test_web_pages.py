@@ -369,7 +369,7 @@ def test_users_page_shows_cost(c, ctx):
     d.update(input_tokens=1_000_000, output_tokens=0, total_tokens=1_000_000)
     repo.insert_usage(ctx.conn, "alice", None, ctx.now(), d, "f", "gpt-5.2")
     t = c.get("/users").text
-    assert "24 小时 tokens / 费用" in t
+    assert "今天 tokens / 费用" in t
     assert "$1.75" in t
 
 
@@ -919,3 +919,64 @@ def test_usage_charts_default_to_seven_days(ctx):
     html = detail("alice", request("/users/alice"), admin=("admin", "test")).body.decode()
     assert 'option value="7" selected' in html and html.count('class="chart-hit"') == 7
     assert 'href="?days=30#comparison" class="active"' in dashboard(request("/"), days=30, admin=("admin", "test")).body.decode()
+
+
+def test_usage_dates_use_beijing_days_across_views(c, ctx, monkeypatch):
+    import os
+    from datetime import datetime, timezone
+
+    monkeypatch.setenv("TZ", "UTC")
+    time.tzset()
+    try:
+        ctx.test_clock.t = int(datetime(2026, 11, 17, 0, 30, tzinfo=timezone.utc).timestamp())
+        ctx.test_users.add("alice")
+        account = add_acc(ctx)
+        delta = {field: 0 for field in repo.USAGE_FIELDS}
+        delta.update(input_tokens=100, total_tokens=100)
+        before = ctx.now() - 9 * 3600
+        after = ctx.now() - 7 * 3600
+        repo.insert_usage(ctx.conn, "alice", account.id, before, delta, "yesterday", "model")
+        repo.insert_usage(ctx.conn, "alice", account.id, after, delta, "today", "model")
+        captured = {}
+        render = c.app.state.templates.TemplateResponse
+        def capture(request, name, context, **kwargs):
+            captured[name] = context
+            return render(request, name, context, **kwargs)
+        monkeypatch.setattr(c.app.state.templates, "TemplateResponse", capture)
+        assert c.get("/users").status_code == 200
+        assert captured["users.html"]["rows"][0]["t24"] == 100
+        assert c.get("/users/alice").status_code == 200
+        assert captured["user_detail.html"]["summary"]["today"] == 100
+        assert captured["user_detail.html"]["daily"][-1]["total"] == 100
+        assert c.get("/usage").status_code == 200
+        assert captured["usage.html"]["periods"][0]["total"] == 100
+        assert c.get("/").status_code == 200
+        assert captured["dashboard.html"]["daily"][-1]["total"] == 100
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
+def test_audit_pagination_filters_and_date_validation(c, ctx, monkeypatch):
+    for i in range(55):
+        events.audit(ctx.conn, "filter-user", "filter.action", f"record-{i:02}", "needle", now=ctx.now() + i)
+        ctx.conn.execute("INSERT INTO alerts(ts,level,kind,target,message) VALUES (?, 'warning', 'test', ?, 'needle')",
+                         (ctx.now() + i, f"alert-{i:02}"))
+    captured = {}
+    render = c.app.state.templates.TemplateResponse
+    def capture(request, name, context, **kwargs):
+        captured.update(context)
+        return render(request, name, context, **kwargs)
+    monkeypatch.setattr(c.app.state.templates, "TemplateResponse", capture)
+    assert c.get("/audit?actor=filter-user&action=filter.action&q=needle&level=warning").status_code == 200
+    assert len(captured["audit"]) == 50 and len(captured["alerts"]) == 50
+    assert captured["audit_pagination"]["total"] == 55
+    assert "actor=filter-user" in captured["audit_pagination"]["next"]
+    assert c.get(captured["audit_pagination"]["next"]).status_code == 200
+    assert len(captured["audit"]) == 5
+    assert captured["alert_pagination"]["page"] == 1
+    assert c.get("/audit?q=no-match").status_code == 200
+    assert captured["audit_pagination"]["total"] == 0
+    assert c.get("/audit?start=2026-13-01").status_code == 422
+    assert c.get("/audit?end=9999-12-31").status_code == 422
+    assert c.get("/audit?start=2026-11-18&end=2026-11-17").status_code == 422

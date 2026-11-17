@@ -386,7 +386,26 @@ def _validate_legacy_target(conn: sqlite3.Connection, target_id: str, snapshot: 
         raise TaskError("目标站服务器或部署配置已变更，请重新导入 CSV")
 
 
-def save_prompt(ctx: Context, task: sqlite3.Row, actor: str, prompt: str) -> None:
+def _execution_options(task: sqlite3.Row, model: str | None, reasoning_effort: str | None,
+                       sandbox: str | None) -> tuple[str, str, str]:
+    model = (task["model"] if model is None else model) or DEFAULT_MODEL
+    reasoning_effort = (task["reasoning_effort"] if reasoning_effort is None else reasoning_effort) or DEFAULT_REASONING_EFFORT
+    sandbox = task["sandbox"] if sandbox is None else sandbox
+    model = model.strip() or DEFAULT_MODEL
+    reasoning_effort = reasoning_effort.strip() or DEFAULT_REASONING_EFFORT
+    if sandbox != DEFAULT_SANDBOX:
+        raise TaskError("任务统一使用不受 Codex 沙箱限制的执行模式")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}", model):
+        raise TaskError("模型 ID 最多 128 个字符，请使用字母、数字或 . _ : / + -")
+    if not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", reasoning_effort):
+        raise TaskError("思考程度须为最多 32 个字符的小写英文标识")
+    return model, reasoning_effort, sandbox
+
+
+def save_prompt(
+    ctx: Context, task: sqlite3.Row, actor: str, prompt: str, *,
+    model: str | None = None, reasoning_effort: str | None = None, sandbox: str | None = None,
+) -> None:
     with db.transaction(ctx.conn):
         current = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task["id"],)).fetchone()
         if current is None or actor == "admin" or current["owner"] != actor:
@@ -395,14 +414,18 @@ def save_prompt(ctx: Context, task: sqlite3.Row, actor: str, prompt: str) -> Non
             raise TaskError("仅待人工确认的任务可以修改提示词")
         if not prompt.strip():
             raise TaskError("提示词不能为空")
-        ctx.conn.execute("UPDATE dispatch_tasks SET prompt=? WHERE id=?", (prompt, task["id"]))
+        model, reasoning_effort, sandbox = _execution_options(current, model, reasoning_effort, sandbox)
+        ctx.conn.execute(
+            "UPDATE dispatch_tasks SET prompt=?, model=?, reasoning_effort=?, sandbox=? WHERE id=?",
+            (prompt, model, reasoning_effort, sandbox, task["id"]),
+        )
         events.audit(ctx.conn, actor, "dispatch.prompt", task["id"], task["title"], now=ctx.now())
 
 
 def confirm(
     ctx: Context, task: sqlite3.Row, actor: str, prompt: str | None = None, *,
-    model: str = DEFAULT_MODEL, reasoning_effort: str = DEFAULT_REASONING_EFFORT,
-    sandbox: str = DEFAULT_SANDBOX,
+    model: str | None = None, reasoning_effort: str | None = None,
+    sandbox: str | None = None,
 ) -> None:
     with db.transaction(ctx.conn):
         current = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task["id"],)).fetchone()
@@ -414,14 +437,7 @@ def confirm(
             prompt = current["prompt"]
         if not prompt.strip():
             raise TaskError("提示词不能为空")
-        model = model.strip() or DEFAULT_MODEL
-        reasoning_effort = reasoning_effort.strip() or DEFAULT_REASONING_EFFORT
-        if sandbox != DEFAULT_SANDBOX:
-            raise TaskError("任务统一使用不受 Codex 沙箱限制的执行模式")
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}", model):
-            raise TaskError("模型 ID 最多 128 个字符，请使用字母、数字或 . _ : / + -")
-        if not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", reasoning_effort):
-            raise TaskError("思考程度须为最多 32 个字符的小写英文标识")
+        model, reasoning_effort, sandbox = _execution_options(current, model, reasoning_effort, sandbox)
         validate_snapshot(ctx, current)
         ctx.conn.execute(
             "UPDATE dispatch_tasks SET prompt=?, status='queued', confirmed_at=?, model=?, reasoning_effort=?, sandbox=? WHERE id=?",

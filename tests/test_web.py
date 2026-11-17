@@ -41,7 +41,8 @@ def test_wp_center_links_to_external_service(client):
     assert response.status_code == 303 and response.headers["location"] == "/login"
     do_login(client)
     page = client.get("/")
-    assert '<a href="https://ai.zhituowujie.shop/">WP 服务中心</a>' in page.text
+    assert 'href="https://ai.zhituowujie.shop/" target="_blank" rel="noopener noreferrer"' in page.text
+    assert 'WP 服务中心 ↗</a>' in page.text
     response = client.get("/wp-center?server_id=old-server")
     assert response.status_code == 303
     assert response.headers["location"] == "https://ai.zhituowujie.shop/"

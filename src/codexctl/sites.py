@@ -58,7 +58,9 @@ class InventoryError(Exception):
 
 
 def deployment_date(timestamp: int | None) -> str | None:
-    return datetime.fromtimestamp(timestamp, BEIJING).date().isoformat() if timestamp is not None else None
+    if type(timestamp) is not int or not 0 <= timestamp < 253402185600:
+        return None
+    return datetime.fromtimestamp(timestamp, BEIJING).date().isoformat()
 
 
 def _domains(values: list) -> tuple[str, ...]:
@@ -136,13 +138,54 @@ def collect(server: Server, key: bytes) -> list[Site]:
         raise InventoryError("远程站点数据格式异常") from exc
 
 
+def _cached_probe(value: object) -> dict:
+    probe = asdict(site_probe.Probe("pending")) | {"checked_at": 0}
+    if not isinstance(value, dict):
+        return probe
+    if isinstance(value.get("state"), str) and value["state"] in {"up", "http_only", "redirect", "restricted", "down", "pending"}:
+        probe["state"] = value["state"]
+    for key in ("reason", "entry_url", "final_host"):
+        if isinstance(value.get(key), str):
+            probe[key] = value[key]
+    for key in ("code", "checked_at"):
+        if type(value.get(key)) is int and 0 <= value[key] < 253402185600:
+            probe[key] = value[key]
+    return probe
+
+
 def snapshots(conn: sqlite3.Connection) -> dict[str, Inventory]:
-    return {
-        row["server_id"]: Inventory(
-            row["revision"], row["attempted_at"], row["synced_at"], row["error"], json.loads(row["snapshot"]),
+    inventories = {}
+    for row in conn.execute("SELECT * FROM site_inventories"):
+        error = row["error"]
+        try:
+            cached = json.loads(row["snapshot"])
+        except (ValueError, TypeError):
+            cached = None
+        rows = []
+        if not isinstance(cached, list):
+            cached = []
+            error = error or "站点缓存格式异常，请重新采集"
+        for item in cached:
+            if not isinstance(item, dict) or not isinstance(item.get("domains"), (list, tuple)):
+                error = error or "部分站点缓存格式异常，请重新采集"
+                continue
+            domains = _domains(list(item["domains"]))
+            if not domains or not isinstance(item.get("id"), (str, int)):
+                error = error or "部分站点缓存格式异常，请重新采集"
+                continue
+            data = _site_data(item.get("data"))
+            created = item.get("created_at")
+            rows.append({
+                "id": str(item["id"]), "domains": list(domains),
+                "created_at": created if deployment_date(created) is not None else None,
+                "data": asdict(data) if data is not None else None,
+                "public": _cached_probe(item.get("public")),
+                "origin": _cached_probe(item["origin"]) if item.get("origin") is not None else None,
+            })
+        inventories[row["server_id"]] = Inventory(
+            row["revision"], row["attempted_at"], row["synced_at"], error, rows,
         )
-        for row in conn.execute("SELECT * FROM site_inventories")
-    }
+    return inventories
 
 
 def _collect(server: Server, key: bytes, clock) -> tuple[list[Site] | None, int, str | None]:

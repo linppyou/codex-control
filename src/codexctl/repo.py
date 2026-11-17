@@ -460,9 +460,9 @@ def user_session_count(conn: sqlite3.Connection, username: str, model: str = "",
 
 
 def user_daily_usage(conn: sqlite3.Connection, username: str, since: int, until: int) -> list[sqlite3.Row]:
-    """Aggregate by server-local calendar day, within a half-open time range."""
+    """Aggregate by Beijing calendar day, within a half-open time range."""
     return conn.execute("""
-        SELECT date(ts, 'unixepoch', 'localtime') AS day, COUNT(*) AS turns,
+        SELECT date(ts, 'unixepoch', '+8 hours') AS day, COUNT(*) AS turns,
                SUM(total_tokens) AS total, SUM(input_tokens) AS input,
                SUM(cached_input_tokens) AS cached, SUM(output_tokens) AS output
         FROM usage_events WHERE username = ? AND ts >= ? AND ts < ?
@@ -471,9 +471,9 @@ def user_daily_usage(conn: sqlite3.Connection, username: str, since: int, until:
 
 
 def usage_daily_by_user_model(conn: sqlite3.Connection, since: int, until: int) -> list[sqlite3.Row]:
-    """Summarize a bounded range by local calendar day, user and model."""
+    """Summarize a bounded range by Beijing calendar day, user and model."""
     return conn.execute("""
-        SELECT date(ts, 'unixepoch', 'localtime') AS day, username, model,
+        SELECT date(ts, 'unixepoch', '+8 hours') AS day, username, model,
                SUM(total_tokens) AS total, SUM(input_tokens) AS input,
                SUM(cached_input_tokens) AS cached, SUM(output_tokens) AS output,
                COUNT(*) AS turns

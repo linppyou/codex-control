@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta
 
 from fastapi import Depends, Form, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
-from .. import db, pricing, repo, sysusers, webauth
+from .. import db, pricing, repo, sites, sysusers, webauth
 from ..cli import fmt_ts
 from ..gateway import storage, upstream
 from ..gateway.storage import GatewayError
@@ -173,7 +174,8 @@ def register(app, gateway: Gateway):
     def usage_page(request: Request, admin: tuple[str, str] = Depends(current_admin)):
         with db.connection(ctx.settings.db_path) as conn:
             book = pricing.PriceBook(repo.list_prices(conn))
-            summaries = storage.usage_summary(conn, ctx.now() - 7 * 86400)
+            midnight = datetime.fromtimestamp(ctx.now(), sites.BEIJING).replace(hour=0, minute=0, second=0, microsecond=0)
+            summaries = storage.usage_summary(conn, int((midnight - timedelta(days=6)).timestamp()))
         rows = [
             dict(row, cost=book.cost(row["model_id"], row["input_tokens"], row["cached_input_tokens"], row["output_tokens"])
                  if row["input_tokens"] is not None and row["output_tokens"] is not None else None)

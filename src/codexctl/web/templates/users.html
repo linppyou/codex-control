@@ -2,7 +2,7 @@
 {% block title %}用户 - codexctl{% endblock %}
 {% block content %}
 <div class="page-head">
-  <div><h1>用户</h1><div class="sub">{{ rows|length }} 个用户{% if is_admin %} · 勾选后批量分配或回收{% endif %}</div></div>
+  <div><h1>用户</h1><div class="sub">{{ rows|length }} 个用户 · 北京时间{% if is_admin %} · 勾选后批量分配或回收{% endif %}</div></div>
   <div class="toolbar">
     {% if gateway_enabled and is_admin %}<a class="btn" href="/usage/api">API 用量</a>{% endif %}
     {% if managed %}<span class="seg">{% if show_all %}<a href="/users">隐藏内置用户</a><strong>显示全部</strong>{% else %}<strong>常规用户</strong><a href="/users?all=1">显示全部用户</a>{% endif %}</span>{% endif %}
@@ -20,19 +20,19 @@
     <button class="btn danger" formaction="/users/unassign">回收</button>
   </div>
 </form>{% endif %}
-<div class="table-wrap"><table>
-  <thead><tr>{% if is_admin %}<th class="sel"></th>{% endif %}<th>用户名</th><th>当前账号</th>{% if gateway_enabled %}<th>API Key</th>{% endif %}{% if managed %}<th>链接</th><th>旧 codex 进程</th><th class="num">24 小时 tokens / 费用</th><th class="num">7 天 tokens / 费用</th>{% if is_admin %}<th>操作</th>{% endif %}{% endif %}</tr></thead>
+<div class="table-wrap"><table class="mobile-cards users-table">
+  <thead><tr>{% if is_admin %}<th class="sel"><span class="sr-only">选择用户</span></th>{% endif %}<th>用户名</th><th>当前账号</th>{% if gateway_enabled %}<th>API Key</th>{% endif %}{% if managed %}<th>链接</th><th>旧 codex 进程</th><th class="num">今天 tokens / 费用</th><th class="num">7 天 tokens / 费用</th>{% if is_admin %}<th>操作</th>{% endif %}{% endif %}</tr></thead>
   <tbody>
   {% for r in rows %}
   <tr>
-    {% if is_admin %}<td class="sel"><input type="checkbox" name="users" value="{{ r.name }}" form="bulk"></td>{% endif %}
-    <td><a href="/users/{{ r.name }}" class="user-link"><b>{{ r.name }}</b></a></td><td>{% if r.account %}<span class="tag">{{ r.account }}</span>{% if r.account_label %} <span class="tag">{{ r.account_label }}</span>{% endif %}{% else %}<span class="muted">-</span>{% endif %}</td>
-    {% if gateway_enabled %}<td>{% if r.key %}<a href="/users/{{ r.name }}/api-key" class="btn small" aria-label="查看 {{ r.name }} 的 API Key">查看</a>{% else %}<span class="muted">未生成</span>{% endif %}</td>{% endif %}
+    {% if is_admin %}<td class="sel mobile-wide"><label><input type="checkbox" name="users" value="{{ r.name }}" form="bulk" aria-label="选择 {{ r.name }}"><span class="mobile-only">选择 {{ r.name }}</span></label></td>{% endif %}
+    <td data-label="用户名"><a href="/users/{{ r.name }}" class="user-link"><b>{{ r.name }}</b></a></td><td data-label="当前账号">{% if r.account %}<span class="tag">{{ r.account }}</span>{% if r.account_label %} <span class="tag">{{ r.account_label }}</span>{% endif %}{% else %}<span class="muted">-</span>{% endif %}</td>
+    {% if gateway_enabled %}<td data-label="API Key">{% if r.key %}<a href="/users/{{ r.name }}/api-key" class="btn small" aria-label="查看 {{ r.name }} 的 API Key">查看</a>{% else %}<span class="muted">未生成</span>{% endif %}</td>{% endif %}
     {% if managed %}
-    <td class="mono">{{ r.link }}{% if r.target %} <span class="muted">{{ r.target }}</span>{% endif %}</td>
-    <td>{% if r.stale %}<span class="badge bad" title="{{ r.stale_title }}">{{ r.stale|length }} 个旧进程（仍用旧账号）</span>{% else %}<span class="muted">-</span>{% endif %}</td>
-    <td class="num" title="{{ '{:,}'.format(r.t24) }} tokens{% if r.c24 is not none %} · 估算 {{ r.c24|usd }}{% endif %}{% if r.u24 %} · {{ r.u24 }} 个模型未定价{% endif %}">{{ r.t24|tokens }}{% if r.t24 %}<div class="cost{% if r.c24 is none %} muted{% endif %}">{% if r.c24 is not none %}{{ r.c24|usd }}{% if r.u24 %}*{% endif %}{% else %}未定价{% endif %}</div>{% endif %}</td><td class="num" title="{{ '{:,}'.format(r.t7) }} tokens{% if r.c7 is not none %} · 估算 {{ r.c7|usd }}{% endif %}{% if r.u7 %} · {{ r.u7 }} 个模型未定价{% endif %}">{{ r.t7|tokens }}{% if r.t7 %}<div class="cost{% if r.c7 is none %} muted{% endif %}">{% if r.c7 is not none %}{{ r.c7|usd }}{% if r.u7 %}*{% endif %}{% else %}未定价{% endif %}</div>{% endif %}</td>
-    {% if is_admin %}<td class="ops">{% if r.stale %}<form method="post" action="/users/{{ r.name }}/restart-codex" class="inline" data-confirm="将结束 {{ r.name }} 的 {{ r.stale|length }} 个旧 codex 进程，会中断其正在运行的任务。确定？"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn small danger">重启 codex</button></form>{% endif %}<form method="post" action="/users/{{ r.name }}/fix" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn small">修复</button></form></td>{% endif %}
+    <td class="mono mobile-wide" data-label="链接">{{ {"symlink": "已链接", "no_codex_dir": "未初始化", "missing": "缺少链接", "regular": "普通文件", "wrong_target": "链接目标异常"}.get(r.link, r.link) }}{% if r.target %} <span class="muted">{{ r.target }}</span>{% endif %}</td>
+    <td data-label="旧 Codex 进程">{% if r.stale %}<span class="badge bad" title="{{ r.stale_title }}">{{ r.stale|length }} 个旧进程（仍用旧账号）</span>{% else %}<span class="muted">-</span>{% endif %}</td>
+    <td class="num" data-label="今天用量 / 费用" title="{{ '{:,}'.format(r.t24) }} tokens{% if r.c24 is not none %} · 估算 {{ r.c24|usd }}{% endif %}{% if r.u24 %} · {{ r.u24 }} 个模型未定价{% endif %}">{{ r.t24|tokens }}{% if r.t24 %}<div class="cost{% if r.c24 is none %} muted{% endif %}">{% if r.c24 is not none %}{{ r.c24|usd }}{% if r.u24 %}*{% endif %}{% else %}未定价{% endif %}</div>{% endif %}</td><td class="num" data-label="近 7 天用量 / 费用" title="{{ '{:,}'.format(r.t7) }} tokens{% if r.c7 is not none %} · 估算 {{ r.c7|usd }}{% endif %}{% if r.u7 %} · {{ r.u7 }} 个模型未定价{% endif %}">{{ r.t7|tokens }}{% if r.t7 %}<div class="cost{% if r.c7 is none %} muted{% endif %}">{% if r.c7 is not none %}{{ r.c7|usd }}{% if r.u7 %}*{% endif %}{% else %}未定价{% endif %}</div>{% endif %}</td>
+    {% if is_admin %}<td class="ops mobile-wide" data-label="操作">{% if r.stale %}<form method="post" action="/users/{{ r.name }}/restart-codex" class="inline" data-confirm="将结束 {{ r.name }} 的 {{ r.stale|length }} 个旧 codex 进程，会中断其正在运行的任务。确定？"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn small danger">重启 codex</button></form>{% endif %}<form method="post" action="/users/{{ r.name }}/fix" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn small">修复</button></form></td>{% endif %}
     {% endif %}
   </tr>
   {% else %}

@@ -550,3 +550,47 @@ def test_legacy_key_migration_prefers_current_assignment_and_preserves_usage(set
         assert summary["label"] == accs[1].label and summary["total_tokens"] == 13
         assert summary["revoked_at"] is not None
     db.connect(ctx.settings.db_path).close()
+
+
+def test_client_configuration_copy_controls_and_profile_format(setup):
+    import tomllib
+    from codexctl.web.gateway import _profile
+
+    config = tomllib.loads(_profile("https://example.com/v1/", "model-a", 400000))
+    assert config["model_provider"] == "codexctl"
+    assert config["model"] == "model-a"
+    assert "profiles" not in config
+    assert config["model_providers"]["codexctl"]["base_url"] == "https://example.com/v1"
+    ctx, accs, tokens = setup
+    with client_for(ctx, lambda request: httpx.Response(200, json=MODELS)) as client:
+        login(client)
+        html = client.get(f"/users/{accs[0].label}/api-key").text
+        assert 'id="api-token" type="password"' in html
+        assert 'data-copy-target="api-token"' in html
+        assert 'data-copy-target="api-base-url"' in html
+        assert 'data-copy-target="codex-profile"' in html
+        assert "~/.codex/codexctl.config.toml" in html
+        assert "codex --profile codexctl mcp list --json" in html
+        assert 'api-config.js' in html
+
+
+def test_installed_codex_loads_generated_sidecar_profile(tmp_path):
+    import os
+    from pathlib import Path
+    import subprocess
+    from codexctl.web.gateway import _profile
+
+    binary = Path("/opt/codex/bin/codex")
+    if not binary.is_file():
+        pytest.skip("需要已安装的 Codex CLI 验证配置加载")
+    config = tmp_path / "codexctl.config.toml"
+    config.write_text(_profile("http://127.0.0.1:9/v1", "fixture-model", 400000))
+    environment = {"PATH": os.environ.get("PATH", ""), "CODEX_HOME": str(tmp_path)}
+    command = [str(binary), "--profile", "codexctl", "mcp", "list", "--json"]
+    result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == []
+    config.write_text('model_provider="missing-fixture-provider"\n')
+    result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=20)
+    assert result.returncode != 0
+    assert "missing-fixture-provider" in result.stderr

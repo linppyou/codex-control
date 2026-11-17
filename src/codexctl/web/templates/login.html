@@ -8,9 +8,12 @@
   <form method="post" action="/login">
     <input type="hidden" name="csrf" value="{{ prelogin }}">
     <label>用户名 <input type="text" name="username" maxlength="64" autocomplete="username" required autofocus></label>
-    <label>密码 <input type="password" name="password" maxlength="1024" autocomplete="current-password" required></label>
+    <label>密码 <input id="login-password" type="password" name="password" maxlength="1024" autocomplete="current-password" aria-describedby="caps-lock-status" required></label>
+    <button type="button" class="btn small" id="toggle-password" aria-controls="login-password" aria-pressed="false">显示密码</button>
+    <p id="caps-lock-status" class="hint" role="status" hidden>大写锁定已开启</p>
     <button type="submit" class="btn primary">登录</button>
   </form>
 </div>
 </div>
+<script src="/static/login-form.js" defer></script>
 {% endblock %}
