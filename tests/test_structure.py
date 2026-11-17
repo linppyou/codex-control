@@ -142,10 +142,10 @@ def test_repository_exports_keep_identity():
     assert repo.usage_summary is usage_repository.usage_summary
 
 
-def test_schema_is_unchanged():
+def test_schema_matches_expected_definition():
     assert (
         hashlib.sha256(db.SCHEMA.encode()).hexdigest()
-        == "db41b14eb1a5067fee24e7862e813b95cb121326d5b6dd7c4e12324d2958afa6"
+        == "f528ebfa5e09175669b63e06947dcddd6c37fa515d74c5bfbb5efa47e0cee771"
     )
 
 

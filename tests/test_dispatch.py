@@ -588,7 +588,10 @@ for line in sys.stdin:
     if method == 'thread/start':
         assert params['sandbox'] == 'danger-full-access'
         assert params['approvalPolicy'] == 'never'
-        assert 'dynamicTools' not in params and 'developerInstructions' not in params
+        assert {tool['name'] for tool in params['dynamicTools']} == {
+            'list_projects', 'create_thread', 'send_message_to_thread', 'wait_threads', 'read_thread', 'set_thread_title',
+        }
+        assert 'task-dispatcher' in params['developerInstructions']
         assert params['cwd'] == os.getcwd()
         assert Path.cwd().name == EXPECTED_DIRECTORY
         assert 'BAOTA_SHOP_API_KEY' not in os.environ

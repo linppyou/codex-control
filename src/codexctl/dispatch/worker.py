@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
+from collections import deque
 from contextlib import suppress
 from dataclasses import replace
 from pathlib import Path
@@ -47,8 +48,13 @@ class AppServer:
         self.buffer = bytearray()
         self.next_id = 1
         self.completed: tuple[str, str] | None = None
+        self.turn_error = ""
         self.result_text = ""
         self.thread_id = None
+        self.responses = {}
+        self.tool_requests = deque()
+        self.tool_handler = None
+        self.event_handler = None
 
     def send(self, message: dict) -> None:
         self.proc.stdin.write(json.dumps(message, ensure_ascii=False).encode() + b"\n")
@@ -83,6 +89,16 @@ class AppServer:
         except ValueError as exc:
             raise DeliveryError("Codex 返回了无法识别的回执") from exc
         params = message.get('params', {})
+        if self.event_handler:
+            self.event_handler(message)
+        if 'id' in message and 'method' not in message:
+            self.responses[message['id']] = message
+        if message.get('method') == 'item/tool/call':
+            self.tool_requests.append(message)
+            return message
+        if 'method' in message and 'id' in message:
+            self.send({'id': message['id'], 'error': {'code': -32601, 'message': 'Unsupported request'}})
+            return message
         belongs = not self.thread_id or not params.get('threadId') or params['threadId'] == self.thread_id
         if not belongs and 'method' in message:
             return message
@@ -92,14 +108,13 @@ class AppServer:
             if not isinstance(turn, dict):
                 raise DeliveryError("Codex 的轮次结束回执无效")
             self.completed = (turn.get("id"), turn.get("status"))
+            self.turn_error = (turn.get("error") or {}).get("message", "")
         elif message.get("method") == "item/agentMessage/delta":
             self.result_text = (self.result_text + message.get("params", {}).get("delta", ""))[-65536:]
         elif message.get("method") == "item/completed":
             item = message.get("params", {}).get("item", {})
             if item.get("type") == "agentMessage":
                 self.result_text = item.get("text", "")[-65536:]
-        elif "method" in message and "id" in message:
-            self.send({"id": message["id"], "error": {"code": -32601, "message": "Unsupported request"}})
         return message
 
     def call(self, method: str, params: dict) -> dict:
@@ -108,8 +123,9 @@ class AppServer:
         self.send({"id": request_id, "method": method, "params": params})
         deadline = time.monotonic() + 45
         while time.monotonic() < deadline:
-            message = self.read(deadline)
-            if message.get("id") != request_id or "method" in message:
+            message = self.responses.pop(request_id, None)
+            if message is None:
+                self.read(deadline)
                 continue
             if "error" in message:
                 error = message['error']
@@ -123,6 +139,13 @@ class AppServer:
 
     def wait_turn(self, turn_id: str, check_cancel=None) -> str:
         while self.completed is None or self.completed[0] != turn_id:
+            if self.tool_requests:
+                request = self.tool_requests.popleft()
+                if self.tool_handler:
+                    self.tool_handler(request)
+                else:
+                    self.send({"id": request["id"], "error": {"code": -32601, "message": "Unsupported tool"}})
+                continue
             self.read(None, check_cancel)
         status = self.completed[1]
         return status if status in ("completed", "failed", "interrupted") else "unknown"
@@ -256,6 +279,7 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
     requested = False
     accepted = False
     client = None
+    bridge = None
     thread_id = turn_id = None
     cancelled = False
     cancel_error = ""
@@ -302,7 +326,9 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
         client.call("initialize", {"clientInfo": {"name": "codexctl_dispatch", "version": "0.1.0"},
                                    "capabilities": {"experimentalApi": True}})
         client.send({"method": "initialized"})
-        thread_id = _id(client.call("thread/start", {
+        from codexctl.dispatch.threads import ThreadTools, TOOL_INSTRUCTIONS, tool_specs
+
+        thread_options = {
             "cwd": cwd, "approvalPolicy": "never", "sandbox": task['sandbox'],
             "historyMode": "legacy",
             "config": {
@@ -311,6 +337,12 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
                 "shell_environment_policy.inherit": "all",
                 "shell_environment_policy.set": env,
             },
+        }
+        bridge = ThreadTools(ctx, task, client, thread_options, skill_inputs, check_cancel)
+        client.tool_handler = bridge.handle
+        client.event_handler = bridge.observe
+        thread_id = _id(client.call("thread/start", {
+            **thread_options, "dynamicTools": tool_specs(), "developerInstructions": TOOL_INSTRUCTIONS,
         }), "thread")
         client.thread_id = thread_id
         _record(ctx, task, "sending", thread_id=thread_id, account_label=label)
@@ -328,9 +360,15 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
         accepted = True
         check_cancel()
         status = client.wait_turn(turn_id, check_cancel)
-        _record(ctx, task, "sent", turn_status=status, result_text=client.result_text)
+        bridge.wait_for_children()
+        _record(ctx, task, "sent", client.turn_error, turn_status=status, result_text=client.result_text)
     except TaskCancelled:
         cancelled = True
+        if bridge is not None:
+            try:
+                bridge.cancel_children()
+            except (OSError, ValueError):
+                cancel_error = "部分子会话的中断回执未确认，请核对保留的 Codex 会话"
         if client is not None and thread_id and turn_id:
             try:
                 client.call("turn/interrupt", {"threadId": thread_id, "turnId": turn_id})

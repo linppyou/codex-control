@@ -237,6 +237,13 @@ CREATE TABLE IF NOT EXISTS dispatch_children (
     PRIMARY KEY (task_id, row_number),
     UNIQUE (task_id, dispatch_id)
 );
+CREATE TABLE IF NOT EXISTS dispatch_tool_calls (
+    task_id TEXT NOT NULL REFERENCES dispatch_tasks(id) ON DELETE CASCADE,
+    call_id TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    response TEXT,
+    PRIMARY KEY (task_id, call_id)
+);
 CREATE TABLE IF NOT EXISTS account_models (
     account_pk INTEGER NOT NULL REFERENCES accounts(id),
     model_id TEXT NOT NULL,

@@ -307,4 +307,6 @@ curl -fsS -H "Authorization: Bearer ${CODEXCTL_API_KEY}" https://codex-control.p
 
 Worker 与 Codex 桌面端连接同一用户的共享 App Server，使用用户现有配置。运行中可在桌面端查看、补充指令或中断同一会话。结束后 Worker 取消订阅并关闭自己的连接，保留共享服务和其他客户端。
 
+Worker 通过 App Server 的 `dynamicTools` 为总控会话注册 `list_projects`、`create_thread`、`send_message_to_thread`、`wait_threads`、`read_thread` 和 `set_thread_title`，并处理 `item/tool/call` 回调。项目范围是本次执行用户的工作目录，工具返回真实子会话和轮次 ID。子会话自动接收选定的迁移 Skill，状态及结果写入 `dispatch_children`。工具回执写入 `dispatch_tool_calls`，重复调用复用原回执；创建结果未知时保留记录供核对。取消批次会中断其运行中的子会话，总控先结束时 Worker 继续跟踪已启动的子会话。
+
 `dispatch_browser_python` 和 `dispatch_chrome_binary` 分别通过 `BROWSER_PYTHON`、`HTW_CHROME_BINARY` 及 `CHROME_BIN` 传入会话，浏览器依赖检查由 Codex 执行。连接桥接使用 `websockets>=15,<16`，通过用户 `.codex/app-server-control/app-server-control.sock` 连接共享服务，首次连接时尝试启动该用户的 App Server daemon。
