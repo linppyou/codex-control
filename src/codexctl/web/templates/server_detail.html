@@ -5,7 +5,7 @@
   <div><div class="crumb"><a href="/servers">服务器</a></div><h1>{{ server.name }}</h1></div>
   <div class="form-row">
     <a class="btn" href="/servers?server_id={{ server.id }}">查看站点</a>
-    <a class="btn primary" href="/servers/{{ server.id }}/edit">编辑</a>
+    {% if is_admin %}<a class="btn primary" href="/servers/{{ server.id }}/edit">编辑</a>{% endif %}
   </div>
 </div>
 <section class="panel server-detail">
@@ -18,6 +18,7 @@
     <dt>上次成功同步</dt><dd>{{ synced_at ~ '（北京时间）' if synced_at else '—' }}</dd>
   </dl>
 </section>
+{% if is_admin %}
 <section class="panel server-detail">
   <h2>一条命令接入采集</h2>
   {% if enrollment_command %}
@@ -51,4 +52,5 @@
 </form>
 <script src="/static/confirm.js"></script>
 <script src="/static/server-enrollment.js"></script>
+{% endif %}
 {% endblock %}
