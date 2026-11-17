@@ -9,12 +9,14 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
 
 from codexctl import site_probe, site_registry, sites, webauth
 from codexctl.web.app import create_app
+from codexctl.web.site_analytics import site_comparison
 from test_web import PW, do_login
 
 
@@ -412,3 +414,67 @@ def test_overview_displays_import_counts_empty_unknown_and_stale_data(ctx, monke
     assert "导入情况待确认" in client.get("/servers?q=unknown").text
     ctx.test_clock.t += sites.STALE_AFTER + 1
     assert "上次数据" in client.get("/servers?q=imported").text
+
+
+@pytest.mark.parametrize("days", [7, 30, 90])
+def test_site_dashboard_counts_creation_dates_per_server(ctx, monkeypatch, days):
+    ctx.test_clock.t = int(datetime(2026, 11, 17, 1, tzinfo=sites.BEIJING).timestamp())
+    client, _ = login_client(ctx)
+    first = create(ctx, name="一号服务器")
+    second = create(ctx, name="二号服务器", host="104.255.153.35")
+    midnight = int(datetime(2026, 11, 16, 16, tzinfo=timezone.utc).timestamp())
+    rows = [
+        sites.Site("1", midnight, ("one.example.com", "www.one.example.com")),
+        sites.Site("2", midnight - 1, ("two.example.com",)),
+        sites.Site("3", midnight - 89 * 86400, ("old.example.com",)),
+        sites.Site("4", midnight + 86400, ("future.example.com",)),
+        sites.Site("5", None, ("unknown.example.com",)),
+    ]
+    monkeypatch.setattr(sites, "collect", lambda server, key: rows if server.id == first.id else [rows[0]])
+    monkeypatch.setattr(site_probe, "probe", lambda *args: site_probe.Probe("up", 200))
+    sites._refresh(ctx.conn, ctx)
+
+    data = site_comparison(ctx.conn, days, ctx.now())
+    assert data["total"] == (4 if days == 90 else 3)
+    assert data["today"] == 2 and data["unknown_dates"] == 1
+    assert len(data["daily"]) == days
+    assert data["daily"][-1]["values"] == [1, 1]
+    assert data["daily"][-2]["values"] == [1, 0]
+    assert [row["id"] for row in data["ranking"]] == [first.id, second.id]
+    assert data["pending"] == data["stale"] == []
+    assert data["series"][0]["points"][-1]["value"] == 1
+
+    html = client.get(f"/?days={days}").text
+    panel = html.split('id="site-comparison"', 1)[1].split('</section>', 1)[0]
+    assert html.index('>用户用量对比</h2>') < html.index('id="site-comparison"') < html.index('>未解决告警</span>')
+    assert f'href="?days={days}#site-comparison" class="active"' in panel
+    assert panel.count('class="chart-hit"') == days
+    assert panel.count('class="compare-line ') == 2
+    assert 'data-chart-total-label="全部服务器合计"' in panel
+    assert "一号服务器" in panel and "二号服务器" in panel
+    assert "查看每日服务器建站数量" in panel and "缺少创建日期" in panel
+
+
+def test_site_dashboard_handles_empty_pending_and_stale_inventories(ctx, monkeypatch):
+    client, _ = login_client(ctx)
+    assert "暂无服务器，请先在服务器页面添加" in client.get("/").text
+    first = create(ctx, name="已采集服务器")
+    pending = create(ctx, name="待采集服务器", host="104.255.153.35")
+    assert "等待服务器站点数据采集" in client.get("/").text
+    monkeypatch.setattr(sites, "collect", lambda *args: [])
+    sites._refresh(ctx.conn, ctx)
+    ctx.conn.execute("DELETE FROM site_inventories WHERE server_id = ?", (pending.id,))
+    ctx.test_clock.t += sites.STALE_AFTER + 1
+    data = site_comparison(ctx.conn, 7, ctx.now())
+    assert data["pending"] == [pending.name] and data["stale"] == [first.name]
+    assert data["total"] == data["today"] == 0 and data["scale"] == 2
+    assert data["series"][0]["points"][-1]["y"] == 175
+    html = client.get("/?days=123").text
+    assert 'href="?days=7#site-comparison" class="active"' in html
+    assert "以下服务器使用上次采集数据" in html
+    assert "等待采集的服务器" in html
+    ctx.conn.execute("UPDATE site_inventories SET error = 'SSH 连接或认证失败' WHERE server_id = ?", (first.id,))
+    ctx.test_clock.t -= sites.STALE_AFTER + 1
+    assert site_comparison(ctx.conn, 7, ctx.now())["stale"] == [first.name]
+    ctx.conn.execute("UPDATE site_inventories SET revision = revision + 1")
+    assert site_comparison(ctx.conn, 7, ctx.now())["series"] == []

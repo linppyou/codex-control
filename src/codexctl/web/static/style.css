@@ -363,6 +363,7 @@ progress.bad::-moz-progress-bar { background: var(--red); }
 .analytics-range a:hover { color: var(--green); }
 .analytics-range a.active { background: white; color: #285d3a; box-shadow: 0 1px 4px rgba(30, 55, 39, .12); }
 .analytics-metrics { background: #fafcfb; }
+.site-analytics-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .analytics-metrics > div { padding: 18px 24px; }
 .analytics-metrics strong { margin-top: 3px; color: #1d3427; font-size: 24px; letter-spacing: -.03em; }
 .compare-chart-area { padding: 24px 24px 20px; }

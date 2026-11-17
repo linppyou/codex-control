@@ -28,7 +28,8 @@ from ..runner import CommandError
 from ..sysusers import UserError
 from ..useradmin import UserAdminError
 from .app import clean_text, current_admin, current_user
-from .charts import fmt_md, fmt_md_hm, quota_chart, week_trend_chart
+from .charts import comparison_series, fmt_md, fmt_md_hm, quota_chart, week_trend_chart
+from .site_analytics import site_comparison
 
 HANDLED = (
     accounts.AccountError, assignments.AssignError, UserError, AuthFileError,
@@ -291,6 +292,7 @@ def register(app) -> None:
             msg, err = _complete_finished_logins(app, admin)
             cards = _account_rows(ctx)
             analytics = user_comparison(days)
+            site_analytics = site_comparison(ctx.conn, analytics["days"], ctx.now())
             alerts = [
                 {
                     "level": clean_text(a["level"], 16), "kind": clean_text(a["kind"]),
@@ -299,7 +301,8 @@ def register(app) -> None:
                 }
                 for a in events.open_alerts(ctx.conn)
             ]
-        return render(request, "dashboard.html", admin=admin[0], csrf=admin[1], cards=cards, alerts=alerts, **analytics, **_flash(msg, err))
+        return render(request, "dashboard.html", admin=admin[0], csrf=admin[1], cards=cards, alerts=alerts,
+                      site_analytics=site_analytics, **analytics, **_flash(msg, err))
 
     @app.get("/accounts", response_class=HTMLResponse)
     def accounts_page(request: Request, admin: tuple[str, str] = Depends(current_admin)):
@@ -1088,15 +1091,7 @@ def register(app) -> None:
                           "show_label": i == 0 or i == days - 1 or (days <= 7 or (days <= 30 and i % 5 == 0) or (days > 30 and i % 15 == 0))})
         series_names = [u["name"] for u in ranking]
         daily_max = max((value for d in daily for value in d["values"]), default=0)
-        series = [{"name": name, "index": i, "points": []} for i, name in enumerate(series_names)]
-        for i, d in enumerate(daily):
-            d["x"] = round(70 + i * 850 / max(1, days - 1), 2)
-            for index, item in enumerate(series):
-                value = d["values"][index]
-                y = round(175 - max(0, value) / (daily_max or 1) * 140, 2)
-                item["points"].append({"x": d["x"], "y": y, "value": value, "day": d["day"]})
-        for item in series:
-            item["path"] = " ".join(("M" if i == 0 else "L") + f"{p['x']},{p['y']}" for i, p in enumerate(item["points"]))
+        series = comparison_series(daily, series_names, daily_max)
         total_tokens = sum(u["total"] for u in ranking)
         total_turns = sum(u["turns"] for u in ranking)
         total_cost = sum(u["cost"] for u in ranking)
