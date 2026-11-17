@@ -300,9 +300,23 @@ curl -fsS -H "Authorization: Bearer ${CODEXCTL_API_KEY}" https://codex-control.p
 
 1. 管理员在「任务 → Skill 管理」分别上传分发 Skill 和迁移 Skill 的 ZIP。ZIP 可直接使用发布包，最多 8 MiB，面板从 `SKILL.md` 读取名称及版本。包作为该任务的工程文件交给 Codex，发布包的安装器由面板跳过。
 2. 成员在「任务」上传 CSV 或 XLSX，最大 512 KiB，须包含 `网站,新域名,备注,折扣` 四列表头，顺序不限，其他列自动忽略。CSV 支持 UTF-8 或 GB18030 编码，XLSX 读取首个工作表，公式单元格需先粘贴为值。系统按新域名查询所有服务器最近一次成功巡检的绑定域名。结果同时显示导入内容与逐行匹配结果，全部行有效且站点匹配唯一时生成一份批次提示词。出现未匹配、重复或无效数据时，修正并重新上传后生成和执行；旧批次中的未匹配站点也需修正后重新上传。备注可留空。折扣可填写 `3` 或 `8.5折` 等数值，留空默认 `3`（3 折）。
-3. 生成的提示词提供目标服务器的 SSH 主机及端口。实际部署使用执行环境中配置的 SSH 登录，独立子会话也需要能连接同一目标。站点清单的受限 SSH 密钥用于巡检。升级前已经确认的宝塔 API 任务继续使用原有凭据环境变量。
+3. 生成的提示词提供目标服务器的 SSH 主机及端口。实际部署使用执行环境中配置的 SSH 登录，独立子会话也需要能连接同一目标。站点清单的受限 SSH 密钥用于巡检。升级前已经确认的宝塔 API 任务继续使用原有凭据环境变量。确认发送前可修改模型 ID 和思考程度，默认使用 `gpt-6.1-terra` 和 `medium`（中等），留空也使用这两个默认值。填写的模型和档位须由执行环境支持，选择随任务保存，并通过 `turn/start` 的 `model` 和 `effort` 传给 Codex。
 4. 成员核对批次提示词并确认后，Worker 启动该成员的 Codex App Server。原始上传文件以 `upload.csv` 或 `upload.xlsx` 原样存入任务目录，同时提供包含全部任务的 `task.csv`、逐行部署清单 `targets.json` 和所选 Skill。提示词引用文件路径，并列出各目标域名对应的部署服务器及 SSH 端口。Web 进程和 Worker 可以独立重启，Worker 中断时，状态未知的发送保留原会话 ID 供核对。
 5. 面板显示实际的 Codex 会话 ID、轮次 ID 和发送回执。任务文件位于 `state_dir/dispatch/<任务ID>`，权限属于执行用户。App Server 回执表示已交接，站点上线和验收以 Codex 后续结果为准。
 6. 成员可在任务列表或详情点击「取消任务」。待确认和排队任务立即取消，执行中的任务先显示「正在取消」，Worker 请求中断当前 Codex 轮次并停止本机任务进程后显示「已取消」。已完成的操作保留，结果未知的原会话需要按页面提示核对。
 
 管理员发布的 Skill 在 Worker 启动及发送任务前同步到各普通用户的 `~/.agents/skills` 和 `~/.codex/skills`。旧发布版本保留供已有会话继续读取，跨主机子会话仍需传递任务 Skill 文件。
+
+### 任务子会话与 SSH 执行
+
+任务默认使用 `gpt-6.1-terra`、`medium` 和 `danger-full-access`（不使用 Codex 沙箱），以任务接收人的 Linux 用户身份执行。任务确认页统一使用此执行权限。批准策略为 `never`，子会话继承本批次的模型、思考程度、执行权限和两个 Skill。
+
+Worker 通过 App Server 的动态工具提供项目查询、独立会话创建、等待、读取、续跑、重命名和取消。每个 CSV 数据行仅绑定一个真实子会话，最多同时运行三个。会话标识与结果保存在数据库，Worker 中断后标记为待核对，避免重复创建。取消批次时同步中断子会话。
+
+SSH 部署任务要求执行用户已有站点私钥，目标服务器已登记主机公钥。Worker 在任务目录生成 `.ssh/config` 和 `known_hosts`，通过任务目录中的 ssh/scp/sftp 包装脚本使用该配置。这样在 `workspace-write` 模式下也可避开系统 SSH 配置的属主映射错误。每站子会话收到本行明确的 SSH 地址、端口和目标站身份。
+
+任务详情展示总控回复、每站真实会话 ID、执行结果及阻塞。Codex 轮次结束后，若仍有未创建或未完成的子任务，页面显示批次未完成提示。
+
+Worker 与 Codex 桌面端连接同一用户的共享 App Server。运行中可在桌面端恢复同一会话、补充指令或中断，避免独立进程竞争会话写入权。数据库仍使用原 threadId 跟踪。人工中断后停止自动续发该会话；结束后 Worker 取消订阅并关闭自己的连接，保留共享服务和其他客户端。
+
+任务派发前使用 `dispatch_browser_python` 和 `dispatch_chrome_binary` 以接收人的系统身份实际启动 Chromium。默认路径为 `/opt/codexctl/browser-runtime/venv/bin/python` 和 `/opt/codexctl/browser-runtime/chromium/chrome`。公共目录需可被执行用户读取及进入；浏览器缓存、配置和采集产物放在用户可写目录。Worker 将验证过的路径通过 `BROWSER_PYTHON`、`HTW_CHROME_BINARY`、`CHROME_BIN` 及会话级环境配置传给主子会话。缺失或无法启动时返回具体错误。依赖中需要 `websockets>=15,<16`；该客户端通过用户 `.codex/app-server-control/app-server-control.sock` 连接共享服务，首次使用时尝试启动用户的 App Server daemon。

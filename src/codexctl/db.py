@@ -214,6 +214,9 @@ CREATE TABLE IF NOT EXISTS dispatch_tasks (
     prompt TEXT NOT NULL,
     csv TEXT NOT NULL,
     upload BLOB,
+    model TEXT,
+    reasoning_effort TEXT,
+    sandbox TEXT NOT NULL DEFAULT 'danger-full-access',
     status TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     confirmed_at INTEGER,
@@ -221,10 +224,24 @@ CREATE TABLE IF NOT EXISTS dispatch_tasks (
     thread_id TEXT,
     turn_id TEXT,
     turn_status TEXT,
+    result_text TEXT NOT NULL DEFAULT '',
     error TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS dispatch_tasks_owner ON dispatch_tasks(owner, created_at DESC);
 CREATE INDEX IF NOT EXISTS dispatch_tasks_queue ON dispatch_tasks(status, confirmed_at);
+CREATE TABLE IF NOT EXISTS dispatch_children (
+    task_id TEXT NOT NULL REFERENCES dispatch_tasks(id) ON DELETE CASCADE,
+    row_number INTEGER NOT NULL,
+    dispatch_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    thread_id TEXT,
+    turn_id TEXT,
+    status TEXT NOT NULL,
+    result_text TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (task_id, row_number),
+    UNIQUE (task_id, dispatch_id)
+);
 CREATE TABLE IF NOT EXISTS account_models (
     account_pk INTEGER NOT NULL REFERENCES accounts(id),
     model_id TEXT NOT NULL,
@@ -309,6 +326,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
     with transaction(conn):
         if "upload" not in {r["name"] for r in conn.execute("PRAGMA table_info(dispatch_tasks)")}:
             conn.execute("ALTER TABLE dispatch_tasks ADD COLUMN upload BLOB")
+        task_columns = {r["name"] for r in conn.execute("PRAGMA table_info(dispatch_tasks)")}
+        for column in ("model", "reasoning_effort"):
+            if column not in task_columns:
+                conn.execute(f"ALTER TABLE dispatch_tasks ADD COLUMN {column} TEXT")
+        if "result_text" not in task_columns:
+            conn.execute("ALTER TABLE dispatch_tasks ADD COLUMN result_text TEXT NOT NULL DEFAULT ''")
+        if "sandbox" not in task_columns:
+            conn.execute("ALTER TABLE dispatch_tasks ADD COLUMN sandbox TEXT NOT NULL DEFAULT 'workspace-write'")
         if "system_uid" not in {r["name"] for r in conn.execute("PRAGMA table_info(web_sessions)")}:
             conn.execute("ALTER TABLE web_sessions ADD COLUMN system_uid INTEGER")
         if "password_configured" not in {r["name"] for r in conn.execute("PRAGMA table_info(admins)")}:

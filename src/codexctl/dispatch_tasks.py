@@ -4,6 +4,7 @@ import csv
 import hashlib
 import io
 import json
+import re
 import sqlite3
 import zipfile
 from collections import Counter, defaultdict
@@ -22,6 +23,9 @@ from .sysusers import SysUser, UserError, valid_name
 
 MAX_CSV_UPLOAD = 512 * 1024
 IMPORT_COLUMNS = ("网站", "新域名", "备注", "折扣")
+DEFAULT_MODEL = "gpt-6.1-terra"
+DEFAULT_REASONING_EFFORT = "medium"
+DEFAULT_SANDBOX = "danger-full-access"
 _LEGACY_TARGET_FIELDS = """
     SELECT t.id, t.server_id, t.server_revision, t.domain, t.endpoint, t.credential_env,
            t.project, t.users, s.name AS server_name, s.host AS server_host, s.port AS server_port
@@ -328,10 +332,11 @@ def _save_preview(
     ctx.conn.execute(
         """INSERT INTO dispatch_tasks
            (id, owner, recipient, recipient_uid, target_id, target_snapshot, skills,
-            source_url, title, prompt, csv, upload, status, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'preview', ?)""",
+            source_url, title, prompt, csv, upload, model, reasoning_effort, sandbox, status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'preview', ?)""",
         (task_id, user.name, user.name, user.uid, task_id, target_snapshot, skills_snapshot,
-         rows[0].source or rows[0].values[0], title, prompt, csv_text, upload, ctx.now()),
+         rows[0].source or rows[0].values[0], title, prompt, csv_text, upload,
+         DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, DEFAULT_SANDBOX, ctx.now()),
     )
     return task_id
 
@@ -381,16 +386,29 @@ def _validate_legacy_target(conn: sqlite3.Connection, target_id: str, snapshot: 
         raise TaskError("目标站服务器或部署配置已变更，请重新导入 CSV")
 
 
-def confirm(ctx: Context, task: sqlite3.Row, actor: str) -> None:
+def confirm(
+    ctx: Context, task: sqlite3.Row, actor: str, *,
+    model: str = DEFAULT_MODEL, reasoning_effort: str = DEFAULT_REASONING_EFFORT,
+    sandbox: str = DEFAULT_SANDBOX,
+) -> None:
     with db.transaction(ctx.conn):
         current = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task["id"],)).fetchone()
         if current is None or current["status"] != "preview":
             return
         if actor == "admin" or current["owner"] != actor:
             raise TaskError("请由导入任务的成员确认发送")
+        model = model.strip() or DEFAULT_MODEL
+        reasoning_effort = reasoning_effort.strip() or DEFAULT_REASONING_EFFORT
+        if sandbox != DEFAULT_SANDBOX:
+            raise TaskError("任务统一使用不受 Codex 沙箱限制的执行模式")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}", model):
+            raise TaskError("模型 ID 最多 128 个字符，请使用字母、数字或 . _ : / + -")
+        if not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", reasoning_effort):
+            raise TaskError("思考程度须为最多 32 个字符的小写英文标识")
         validate_snapshot(ctx, current)
         ctx.conn.execute(
-            "UPDATE dispatch_tasks SET status='queued', confirmed_at=? WHERE id=?", (ctx.now(), task["id"])
+            "UPDATE dispatch_tasks SET status='queued', confirmed_at=?, model=?, reasoning_effort=?, sandbox=? WHERE id=?",
+            (ctx.now(), model, reasoning_effort, sandbox, task["id"]),
         )
         events.audit(ctx.conn, actor, "dispatch.confirm", task["id"], task["title"], now=ctx.now())
 

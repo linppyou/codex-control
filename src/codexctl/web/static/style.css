@@ -510,6 +510,7 @@ progress.bad::-moz-progress-bar { background: var(--red); }
 .dispatch-confirm { display: grid; gap: 13px; border-top: 1px solid var(--line); }
 .dispatch-confirm label { display: flex; align-items: flex-start; gap: 8px; }
 .dispatch-confirm input { flex: none; margin-top: 3px; }
+.dispatch-confirm .dispatch-form label { display: grid; }
 .dispatch-summary dl { display: grid; gap: 10px; margin: 13px 0; overflow-wrap: anywhere; }
 .dispatch-summary dt { color: var(--text-2); font-size: 12px; }
 .dispatch-summary dd { margin: 1px 0 0; }

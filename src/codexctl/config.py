@@ -8,6 +8,7 @@ from .sysusers import valid_name
 
 _PATH_KEYS = {
     "state_dir", "key_file", "codex_bin", "codex_wrapper", "codex_requirements", "wp_ssh_key", "site_ssh_ca_key",
+    "dispatch_browser_python", "dispatch_chrome_binary",
 }
 
 
@@ -20,6 +21,8 @@ class Settings:
     state_dir: Path = Path("/var/lib/codexctl")
     key_file: Path = Path("/etc/codexctl/master.key")
     codex_bin: Path = Path("/opt/codex/bin/codex")
+    dispatch_browser_python: Path = Path("/opt/codexctl/browser-runtime/venv/bin/python")
+    dispatch_chrome_binary: Path = Path("/opt/codexctl/browser-runtime/chromium/chrome")
     setfacl_bin: str = "setfacl"
     getfacl_bin: str = "getfacl"
     min_uid: int = 1000
