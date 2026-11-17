@@ -9,6 +9,18 @@
     {% if result.state == 'redirect' and result.final_host %}<span class="hint server-wrap">{{ result.final_host }}</span>{% endif %}
   {% endif %}
 {% endmacro %}
+{% macro multi_filter(label, selected) %}
+  <details class="site-filter" data-site-filter>
+    <summary>{{ label }} <span data-filter-selection>{{ ('已选 ' ~ selected|length ~ ' 项') if selected else '全部' }}</span></summary>
+    <div class="site-filter-options" role="group" aria-label="{{ label }}">
+      <button class="btn small" type="button" data-filter-clear hidden>清空选择</button>
+      {{ caller() }}
+    </div>
+  </details>
+{% endmacro %}
+{% macro filter_option(name, value, label, selected) %}
+  <label><input type="checkbox" name="{{ name }}" value="{{ value }}"{% if value in selected %} checked{% endif %}>{{ label }}</label>
+{% endmacro %}
 {% block content %}
 <div class="page-head">
   <h1>服务器</h1>
@@ -51,31 +63,22 @@
     <button class="btn small" type="button" data-site-expand="false">折叠全部</button>
   </div>
   <form method="get" action="/servers" class="form-row panel site-filters">
-    <label>服务器
-      <select name="server_id" aria-label="服务器">
-        <option value="">全部</option>
-        {% for item in summary %}<option value="{{ item.server.id }}"{% if server_id == item.server.id %} selected{% endif %}>{{ item.server.name }}</option>{% endfor %}
-      </select>
-    </label>
-    <label>建站日期
-      <select name="date" aria-label="建站日期">
-        <option value="">全部</option>
-        {% for day in available_dates %}<option value="{{ day }}"{% if day == date %} selected{% endif %}>{{ '日期未知' if day == 'unknown' else day }}</option>{% endfor %}
-      </select>
-    </label>
-    <label>状态
-      <select name="state" aria-label="状态">
-        <option value="">全部</option>
-        {% for key, value in statuses.items() %}<option value="{{ key }}"{% if key == state %} selected{% endif %}>{{ value[0] }}</option>{% endfor %}
-      </select>
-    </label>
+    {% call multi_filter('服务器', server_ids) %}
+      {% for item in summary %}{{ filter_option('server_id', item.server.id, item.server.name, server_ids) }}{% endfor %}
+    {% endcall %}
+    {% call multi_filter('建站日期', dates) %}
+      {% for day in available_dates %}{{ filter_option('date', day, '日期未知' if day == 'unknown' else day, dates) }}{% endfor %}
+    {% endcall %}
+    {% call multi_filter('状态', states) %}
+      {% for key, value in statuses.items() %}{{ filter_option('state', key, value[0], states) }}{% endfor %}
+    {% endcall %}
     <label>域名 <input type="text" name="q" value="{{ q }}" maxlength="253" spellcheck="false"></label>
     <button class="btn" type="submit">筛选</button>
-    {% if server_id or date or state or q %}<a class="btn ghost" href="/servers">清除筛选</a>{% endif %}
+    {% if server_ids or dates or states or q %}<a class="btn ghost" href="/servers">清除筛选</a>{% endif %}
   </form>
 
   {% for server, days, count, more in groups %}
-  <details class="panel flush site-server"{% if server_id %} open{% endif %}>
+  <details class="panel flush site-server"{% if server_ids %} open{% endif %}>
     <summary class="panel-head site-server-toggle" id="site-server-{{ server.id }}">
       <span class="site-server-title">{{ server.name }}</span>
       <span class="hint">{{ count }} 个站点</span>
