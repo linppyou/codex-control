@@ -3,6 +3,8 @@ import dataclasses
 import io
 import json
 import os
+import shutil
+from pathlib import Path
 import stat
 import subprocess
 import sys
@@ -12,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
-from codexctl import db, dispatch_runtime, dispatch_skills, dispatch_tasks, dispatch_worker, repo, site_registry, webauth
+from codexctl import db, dispatch_skills, dispatch_tasks, dispatch_worker, repo, site_registry, webauth
 from codexctl.web.app import SESSION_COOKIE, create_app
 
 
@@ -527,10 +529,11 @@ def test_zip_traversal_rejected(ctx):
     assert dispatch_skills.list_skills(ctx.conn) == []
 
 
+@pytest.mark.parametrize("directory", [None, "~/custom-work"])
 @pytest.mark.parametrize("cancel_running", [False, True])
 @pytest.mark.parametrize("execution", [None, {}, {"model": "gpt-6.1-sol"}, {"reasoning_effort": "xhigh"},
                                         {"model": "gpt-6.1-sol", "reasoning_effort": "high"}])
-def test_worker_attaches_both_packages_and_persists_acceptance(ctx, tmp_path, monkeypatch, cancel_running, execution):
+def test_worker_attaches_both_packages_and_persists_acceptance(ctx, tmp_path, monkeypatch, cancel_running, execution, directory):
     form = task_form(ctx)
     second = site_registry.create(ctx, "admin", "第二台", "8.8.8.8", "2222", "")
     inventory(ctx, second, ("9", ["second.example.com"]))
@@ -542,7 +545,7 @@ def test_worker_attaches_both_packages_and_persists_acceptance(ctx, tmp_path, mo
     dispatch_tasks.create_previews(ctx, "alice", rows, form["dispatcher"], form["migration"], upload=raw)
     task_id = rows[0].task_id
     row = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()
-    dispatch_tasks.confirm(ctx, row, "alice", row["prompt"] + "\n用户修改后的发送内容。", **(execution or {}))
+    dispatch_tasks.confirm(ctx, row, "alice", row["prompt"] + "\n用户修改后的发送内容。", working_directory=directory, **(execution or {}))
     expected = dict(model="gpt-6.1-terra", reasoning_effort="medium")
     if execution is None:
         ctx.conn.execute("UPDATE dispatch_tasks SET model=NULL, reasoning_effort=NULL WHERE id=?", (task_id,))
@@ -556,8 +559,11 @@ def test_worker_attaches_both_packages_and_persists_acceptance(ctx, tmp_path, mo
     monkeypatch.setattr(dispatch_worker.os, "chown", lambda *args: None)
     monkeypatch.setattr(ctx.publisher, "link_skills", lambda *args: None)
 
-    monkeypatch.setattr(dispatch_worker, "_stage_ssh", lambda *args: "SSH test instructions")
-    monkeypatch.setattr(dispatch_worker, "_browser_environment", lambda *args: "Browser test instructions")
+    def prepare(user, directory, env, source):
+        target = Path(directory) / ".codexctl-tasks" / source.name
+        shutil.copytree(source, target)
+        return target
+    monkeypatch.setattr(dispatch_worker, "_prepare_workspace", prepare)
 
     # A stdio fixture verifies the actual JSON-RPC payload and can complete the turn before its acknowledgement.
     fake = tmp_path / "app-server.py"
@@ -576,6 +582,9 @@ for line in sys.stdin:
     if method == 'thread/start':
         assert params['sandbox'] == 'danger-full-access'
         assert params['approvalPolicy'] == 'never'
+        assert 'dynamicTools' not in params and 'developerInstructions' not in params
+        assert params['cwd'] == os.getcwd()
+        assert Path.cwd().name == EXPECTED_DIRECTORY
         assert 'BAOTA_SHOP_API_KEY' not in os.environ
         result = {'thread': {'id': 'codex-thread'}}
     elif method == 'thread/name/set':
@@ -588,17 +597,21 @@ for line in sys.stdin:
         assert ('model' in params) == ('model' in expected)
         assert ('effort' in params) == ('reasoning_effort' in expected)
         prompt, dispatcher, migration = params['input']
-        assert prompt['type'] == 'text' and '统一分发' in prompt['text']
+        assert prompt['type'] == 'text' and '执行本次文件中的全部任务' in prompt['text']
+        for requirement in ['capabilities', 'api.describe', 'site.probe', 'zdy-AI', 'context.update', '退避重试', '不必逐步征求确认']:
+            assert requirement in prompt['text']
+        files = Path(dispatcher['path']).parents[3]
+        assert str(files / 'task.csv') in prompt['text']
         assert '用户修改后的发送内容。' in prompt['text']
-        assert Path('task.csv').read_text().splitlines()[0] == '网站,新域名,备注,折扣'
-        assert '产品海报,8.5折' in Path('task.csv').read_text()
-        targets = json.loads(Path('targets.json').read_text())
+        assert (files / 'task.csv').read_text().splitlines()[0] == '网站,新域名,备注,折扣'
+        assert '产品海报,8.5折' in (files / 'task.csv').read_text()
+        targets = json.loads((files / 'targets.json').read_text())
         assert targets[0]['target']['server_port'] == 22
         assert targets[0]['csv_row'] == 1
         assert targets[1]['target']['server_port'] == 2222
-        assert len(Path('task.csv').read_text().splitlines()) == 3
-        assert Path('upload.csv').read_bytes().startswith(bytes([239, 187, 191]))
-        assert Path('upload.csv').read_text(encoding='utf-8-sig').startswith('网站,新域名,备注,折扣')
+        assert len((files / 'task.csv').read_text().splitlines()) == 3
+        assert (files / 'upload.csv').read_bytes().startswith(bytes([239, 187, 191]))
+        assert (files / 'upload.csv').read_text(encoding='utf-8-sig').startswith('网站,新域名,备注,折扣')
         assert '产品海报' not in prompt['text'] and 'other.example.com' not in prompt['text']
         assert 'shop.example.com' in prompt['text'] and 'second.example.com' in prompt['text']
         for item in (dispatcher, migration):
@@ -617,7 +630,7 @@ for line in sys.stdin:
     else:
         result = {}
     print(json.dumps({'id': message['id'], 'result': result}), flush=True)
-""".replace("CANCEL_RUNNING", repr(cancel_running)).replace("EXECUTION_OPTIONS", repr(expected)), encoding="utf-8")
+""".replace("CANCEL_RUNNING", repr(cancel_running)).replace("EXECUTION_OPTIONS", repr(expected)).replace("EXPECTED_DIRECTORY", repr("custom-work" if directory else "wp_front")), encoding="utf-8")
     popen = subprocess.Popen
 
     def launch(args, **kwargs):
@@ -640,11 +653,13 @@ for line in sys.stdin:
             return original_wait(client, turn_id, check_cancel)
 
         monkeypatch.setattr(dispatch_worker.AppServer, "wait_turn", wait_and_cancel)
-    dispatch_worker.deliver(ctx, run_root, task)
+    dispatch_worker.deliver(ctx, tmp_path, task)
     sent = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()
     assert (sent["status"], sent["thread_id"], sent["turn_id"], sent["turn_status"]) == (
         "cancelled" if cancel_running else "sent", "codex-thread", "codex-turn", "interrupted" if cancel_running else "completed",
     )
+    assert not sent["error"]
+    assert ctx.conn.execute("SELECT count(*) FROM dispatch_children").fetchone()[0] == 0
     assert "fixture-secret" not in json.dumps({key: sent[key] for key in sent.keys() if key != "upload"})
 
 
@@ -745,122 +760,6 @@ def test_legacy_preview_rechecks_assignment_before_confirmation(ctx):
     assert ctx.conn.execute("SELECT status FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()[0] == "preview"
 
 
-def test_stage_ssh_uses_pinned_hosts_and_user_key(ctx, tmp_path, monkeypatch):
-    form = task_form(ctx)
-    server = site_registry.get(ctx.conn, form['server_id'])
-    ctx.conn.execute('UPDATE site_servers SET host_key=? WHERE id=?', (server.public_key, server.id))
-    rows = dispatch_tasks.parse_import(f'网站,新域名,备注,折扣\na.example.com,{form["target"]},,3\n'.encode())
-    task_id = dispatch_tasks.create_previews(ctx, 'alice', rows, form['dispatcher'], form['migration'])
-    task = ctx.conn.execute('SELECT * FROM dispatch_tasks WHERE id=?', (task_id,)).fetchone()
-    user = ctx.lookup_user('alice', 1000)
-    key = ctx.settings.state_dir / 'site-access' / f'alice-{user.uid}' / 'id_ed25519'
-    key.parent.mkdir(parents=True)
-    key.write_text('fixture')
-    monkeypatch.setattr(dispatch_worker.os, 'chown', lambda *args: None)
-    root = tmp_path / 'work'
-    root.mkdir()
-    instructions = dispatch_worker._stage_ssh(ctx, task, user, root)
-    config = (root / '.ssh/config').read_text()
-    assert 'StrictHostKeyChecking yes' in config
-    assert 'GlobalKnownHostsFile /dev/null' in config
-    assert f'IdentityFile "{key}"' in config
-    assert 'User root' in config and 'Port 22' in config
-    assert (root / '.ssh/known_hosts').read_text() == f'1.1.1.1 {server.public_key}\n'
-    assert str(root / '.ssh/config') in instructions
-    for name in ('ssh', 'scp', 'sftp'):
-        text = (root / 'bin' / name).read_text()
-        assert f'exec /usr/bin/{name} -F ' in text
-        assert '"$@"' in text
-
-
-def test_runtime_creates_real_children_once_and_reuses_skill_inputs(ctx, tmp_path, monkeypatch):
-    form = task_form(ctx)
-    rows = dispatch_tasks.parse_import(f'网站,新域名,备注,折扣\na.example.com,{form["target"]},,3\n'.encode())
-    task_id = dispatch_tasks.create_previews(ctx, 'alice', rows, form['dispatcher'], form['migration'])
-    dispatch_tasks.confirm(ctx, ctx.conn.execute('SELECT * FROM dispatch_tasks').fetchone(), 'alice')
-    task = ctx.conn.execute('SELECT * FROM dispatch_tasks').fetchone()
-    user = ctx.lookup_user('alice', 1000)
-    calls = []
-
-    class FakeClient:
-        def __init__(self, proc):
-            self.proc = proc
-            self.result_text = ''
-            self.completed = None
-
-        def send(self, message):
-            pass
-
-        def call(self, method, params):
-            calls.append((method, params))
-            if method == 'thread/start':
-                return {'thread': {'id': 'child-1'}}
-            if method == 'turn/start':
-                return {'turn': {'id': 'turn-1'}}
-            return {}
-
-        def wait_turn(self, turn_id, check):
-            check()
-            self.result_text = '{"outcome":"completed","summary":"checked"}'
-            return 'completed'
-
-    monkeypatch.setattr(dispatch_worker, 'AppServer', FakeClient)
-    monkeypatch.setattr(dispatch_worker, '_connect_shared', lambda *args: FakeClient(object()))
-    monkeypatch.setattr(dispatch_worker, '_stop', lambda proc: None)
-    monkeypatch.setattr(dispatch_runtime.os, 'chown', lambda *args: None)
-    skills = [{'type': 'skill', 'name': 'migration', 'path': '/tmp/skill/SKILL.md'}]
-    runtime = dispatch_runtime.DispatchRuntime(ctx, task, user, tmp_path, {}, skills, 'SSH pinned', lambda: None)
-    try:
-        options = {'row': 1, 'title': 'a 迁移 shop', 'prompt': 'Read skill and check'}
-        first = runtime.create(options)
-        second = runtime.create(options)
-        assert first['threadId'] == second['threadId'] == 'child-1'
-        result = runtime._dispatch('wait_threads', {'targets': [{'threadId': 'child-1'}], 'timeoutMs': 1000})
-        assert result['threads'][0]['status'] == 'completed'
-        assert len([call for call in calls if call[0] == 'thread/start']) == 1
-        assert runtime.children['child-1']['released'] is True
-        assert runtime.children['child-1']['client'] is None
-        turn = next(params for method, params in calls if method == 'turn/start')
-        assert turn['model'] == 'gpt-6.1-terra' and turn['effort'] == 'medium'
-        assert turn['input'][1:] == skills
-        assert 'outputSchema' in turn
-        stored = ctx.conn.execute('SELECT * FROM dispatch_children').fetchone()
-        assert stored['status'] == 'completed' and stored['thread_id'] == 'child-1'
-        runtime._dispatch('send_message_to_thread', {'threadId': 'child-1', 'prompt': 'Check again'})
-        runtime._dispatch('wait_threads', {'targets': [{'threadId': 'child-1'}], 'timeoutMs': 1000})
-        assert any(method == 'thread/resume' for method, _ in calls)
-        denied = runtime.handle({'tool': 'read_thread', 'arguments': {'threadId': 'unrelated'}})
-        assert denied['success'] is False
-        wrong_row = runtime.handle({'tool': 'create_thread', 'arguments': dict(options, row=2)})
-        assert wrong_row['success'] is False
-    finally:
-        runtime.close()
-
-
-def test_runtime_cancels_running_child(ctx, tmp_path, monkeypatch):
-    from concurrent.futures import Future
-    form = task_form(ctx)
-    rows = dispatch_tasks.parse_import(f'网站,新域名,备注,折扣\na.example.com,{form["target"]},,3\n'.encode())
-    task_id = dispatch_tasks.create_previews(ctx, 'alice', rows, form['dispatcher'], form['migration'])
-    task = ctx.conn.execute('SELECT * FROM dispatch_tasks').fetchone()
-    runtime = dispatch_runtime.DispatchRuntime(ctx, task, ctx.lookup_user('alice', 1000), tmp_path, {}, [], '', lambda: None)
-    calls = []
-    class Client:
-        proc = object()
-        def call(self, method, params):
-            calls.append(method)
-            return {}
-        def wait_turn(self, turn, check):
-            check()
-    child = dict(row=1, threadId='child-1', turnId='turn-1', title='child', status='running',
-                 result='', error='', revision=1, saved_revision=0, cancelled=True, future=None, client=Client())
-    monkeypatch.setattr(dispatch_worker, '_stop', lambda proc: None)
-    runtime._wait(child)
-    assert child['status'] == 'interrupted'
-    assert calls == ['turn/interrupt', 'thread/unsubscribe']
-    runtime.close()
-
-
 def test_task_page_shows_blocked_child_and_result(ctx):
     form = task_form(ctx)
     alice, csrf = session(ctx, create_app(ctx), 'alice')
@@ -927,26 +826,6 @@ def test_shared_connection_uses_user_daemon_socket(ctx, tmp_path, monkeypatch):
     assert calls[0][0][-1] == str(socket)
     assert calls[0][0][-2].endswith('dispatch_transport.py')
     assert calls[0][1]['user'] == user.uid
-
-
-def test_browser_preflight_sets_verified_paths(ctx, tmp_path, monkeypatch):
-    task_form(ctx)
-    user = ctx.lookup_user('alice', 1000)
-    env = {}
-    calls = []
-    def run(args, **kwargs):
-        calls.append((args, kwargs))
-        return subprocess.CompletedProcess(args, 0, 'ok', '')
-    monkeypatch.setattr(dispatch_worker.subprocess, 'run', run)
-    text = dispatch_worker._browser_environment(ctx, user, tmp_path, env)
-    assert env['HTW_CHROME_BINARY'] == str(ctx.settings.dispatch_chrome_binary)
-    assert env['BROWSER_PYTHON'] == str(ctx.settings.dispatch_browser_python)
-    assert calls[0][1]['user'] == user.uid
-    assert 'chromium.launch' in calls[0][0][-1]
-    assert str(ctx.settings.dispatch_chrome_binary) in text
-    monkeypatch.setattr(dispatch_worker.subprocess, 'run', lambda *a, **k: subprocess.CompletedProcess(a, 1, '', 'Permission denied'))
-    with pytest.raises(dispatch_worker.DeliveryError, match='Permission denied'):
-        dispatch_worker._browser_environment(ctx, user, tmp_path, env)
 
 
 def test_shared_events_do_not_complete_another_thread(tmp_path):
@@ -1073,7 +952,7 @@ def test_task_status_uses_actual_child_outcome_and_preserves_return_filter(ctx):
     task["turn_status"] = "completed"
     assert _task_status(task, {"completed": 1})[0] == "已完成"
     assert _task_status(task, {"blocked": 1})[0] == "部分失败或受阻"
-    assert _task_status(task, {})[0] == "轮次已结束，结果待核对"
+    assert _task_status(task, {})[0] == "Codex 轮次已结束"
     form = task_form(ctx)
     alice, csrf = session(ctx, create_app(ctx), "alice")
     import_file(alice, csrf, form)
@@ -1087,3 +966,66 @@ def test_task_status_uses_actual_child_outcome_and_preserves_return_filter(ctx):
     assert saved.headers["location"].endswith(query)
     page = alice.get(f"/tasks/{row['id']}?back=//evil.example/tasks")
     assert 'href="/tasks"' in page.text and 'href="//evil.example' not in page.text
+
+
+def test_working_directory_saved_and_validated(ctx):
+    form = task_form(ctx)
+    alice, csrf = session(ctx, create_app(ctx), "alice")
+    import_file(alice, csrf, form)
+    task = ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone()
+    home = ctx.lookup_user("alice", 1000).home
+    assert task["working_directory"] == str(home / "wp_front")
+    url = f"/tasks/{task['id']}"
+    assert 'name="working_directory"' in alice.get(url).text
+    assert alice.post(url + "/prompt", data={
+        "csrf": csrf, "prompt": task["prompt"], "working_directory": "~/projects/shop",
+    }).status_code == 303
+    saved = ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone()
+    assert saved["working_directory"] == str(home / "projects/shop")
+    assert alice.post(url + "/prompt", data={
+        "csrf": csrf, "prompt": task["prompt"], "working_directory": "bad\npath",
+    }).status_code == 409
+    assert alice.post(url + "/confirm", data={"csrf": csrf, "confirmed": "1"}).status_code == 303
+    assert ctx.conn.execute("SELECT working_directory FROM dispatch_tasks").fetchone()[0] == saved["working_directory"]
+    for value, expected in [("", home / "wp_front"), ("relative", home / "relative"),
+                            ("/tmp/custom", Path("/tmp/custom"))]:
+        assert dispatch_tasks.execution_directory(ctx.lookup_user("alice", 1000), saved, value) == str(expected)
+
+
+def test_legacy_task_defaults_to_home_workspace(ctx):
+    form = task_form(ctx)
+    rows = dispatch_tasks.parse_import(f'网站,新域名,备注,折扣\na.example.com,{form["target"]},,3\n'.encode())
+    dispatch_tasks.create_previews(ctx, "alice", rows, form["dispatcher"], form["migration"])
+    ctx.conn.execute("UPDATE dispatch_tasks SET working_directory=NULL")
+    task = ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone()
+    user = ctx.lookup_user("alice", 1000)
+    assert dispatch_tasks.execution_directory(user, task) == str(user.home / "wp_front")
+
+
+def test_staging_keeps_tasks_separate_in_existing_workspace(ctx, tmp_path, monkeypatch):
+    form = task_form(ctx)
+    rows = dispatch_tasks.parse_import(f'网站,新域名,备注,折扣\na.example.com,{form["target"]},,3\n'.encode())
+    dispatch_tasks.create_previews(ctx, "alice", rows, form["dispatcher"], form["migration"])
+    task = dict(ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone())
+    user = ctx.lookup_user("alice", 1000)
+    packages = [dispatch_skills.get(ctx.conn, skill["id"], with_archive=True)["archive"]
+                for skill in json.loads(task["skills"])]
+    run = subprocess.run
+    def run_as_current_user(args, **kwargs):
+        assert kwargs.pop("user") == user.uid
+        assert kwargs.pop("group") == user.gid
+        assert kwargs.pop("extra_groups") == []
+        return run(args, **kwargs)
+    monkeypatch.setattr(dispatch_worker.subprocess, "run", run_as_current_user)
+    monkeypatch.setattr(dispatch_worker.os, "chown", lambda *args: None)
+    (tmp_path / "task.csv").write_text("existing workspace file")
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    first = dispatch_worker._stage(staging, task, user, packages)
+    second = dispatch_worker._stage(staging, dict(task, id="second-task"), user, packages)
+    for identifier in (task["id"], "second-task"):
+        target = dispatch_worker._prepare_workspace(user, str(tmp_path), dict(os.environ), staging / identifier)
+        assert (target / "task.csv").read_bytes() == task["csv"].encode("utf-8")
+    assert (tmp_path / "task.csv").read_text() == "existing workspace file"
+    assert first[0]["path"] != second[0]["path"]
+    assert Path(first[0]["path"]).is_file() and Path(second[0]["path"]).is_file()

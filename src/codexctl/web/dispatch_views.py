@@ -30,6 +30,8 @@ def _task_status(task, child_counts):
     ):
         return ("执行中", "warn")
     if task["turn_status"] == "completed":
+        if not child_counts:
+            return ("Codex 轮次已结束", "info")
         target = json.loads(task["target_snapshot"])
         expected = len(target.get("rows", [])) or 1
         if child_counts.get("completed", 0) == expected and sum(child_counts.values()) == expected:
@@ -162,10 +164,12 @@ def register(app) -> None:
             batch_complete=dispatch_tasks.batch_complete(target),
             can_cancel=user != "admin" and user in {task["owner"], task["recipient"]} and dispatch_tasks.can_cancel(task),
             time=_time, err=error,
+            working_directory=task["working_directory"] or f"~{task['recipient']}/wp_front",
             execution=execution if execution is not None else {
                 "model": task["model"] or dispatch_tasks.DEFAULT_MODEL,
                 "reasoning_effort": task["reasoning_effort"] or dispatch_tasks.DEFAULT_REASONING_EFFORT,
                 "sandbox": dispatch_tasks.DEFAULT_SANDBOX,
+                "working_directory": task["working_directory"] or "~/wp_front",
             },
         )
 
@@ -179,7 +183,7 @@ def register(app) -> None:
     async def confirm(
         request: Request, task_id: str, confirmed: str = Form(""),
         model: str | None = Form(None), reasoning_effort: str | None = Form(None),
-        sandbox: str | None = Form(None),
+        sandbox: str | None = Form(None), working_directory: str | None = Form(None),
         who: tuple[str, str] = Depends(current_user),
     ):
         prompt = (await request.form()).get("prompt")
@@ -194,7 +198,7 @@ def register(app) -> None:
                 error = "请先核对提示词并勾选确认"
             else:
                 try:
-                    dispatch_tasks.confirm(ctx, task, who[0], prompt, model=model, reasoning_effort=reasoning_effort, sandbox=sandbox)
+                    dispatch_tasks.confirm(ctx, task, who[0], prompt, model=model, reasoning_effort=reasoning_effort, sandbox=sandbox, working_directory=working_directory)
                 except dispatch_tasks.TaskError as exc:
                     error = str(exc)
         if error:
@@ -203,14 +207,15 @@ def register(app) -> None:
             return task_detail(request, who, task, status=409, error=error,
                                execution={"model": model if model is not None else task["model"] or dispatch_tasks.DEFAULT_MODEL,
                                           "reasoning_effort": reasoning_effort if reasoning_effort is not None else task["reasoning_effort"] or dispatch_tasks.DEFAULT_REASONING_EFFORT,
-                                          "sandbox": sandbox if sandbox is not None else task["sandbox"]})
+                                          "sandbox": sandbox if sandbox is not None else task["sandbox"],
+                                          "working_directory": working_directory if working_directory is not None else task["working_directory"] or "~/wp_front"})
         return RedirectResponse(task_url(task_id, request), status_code=303)
 
     @app.post("/tasks/{task_id}/prompt")
     def save_prompt(
         request: Request, task_id: str, prompt: str = Form(""),
         model: str | None = Form(None), reasoning_effort: str | None = Form(None),
-        sandbox: str | None = Form(None),
+        sandbox: str | None = Form(None), working_directory: str | None = Form(None),
         who: tuple[str, str] = Depends(current_user),
     ):
         error = ""
@@ -219,7 +224,7 @@ def register(app) -> None:
             if task["owner"] != who[0] or who[0] == "admin":
                 raise HTTPException(403, "仅任务所属成员可以修改提示词")
             try:
-                dispatch_tasks.save_prompt(ctx, task, who[0], prompt, model=model, reasoning_effort=reasoning_effort, sandbox=sandbox)
+                dispatch_tasks.save_prompt(ctx, task, who[0], prompt, model=model, reasoning_effort=reasoning_effort, sandbox=sandbox, working_directory=working_directory)
             except dispatch_tasks.TaskError as exc:
                 error = str(exc)
                 if task["status"] == "preview":
@@ -228,7 +233,8 @@ def register(app) -> None:
             return task_detail(request, who, task, status=409, error=error,
                                execution={"model": model if model is not None else task["model"] or dispatch_tasks.DEFAULT_MODEL,
                                           "reasoning_effort": reasoning_effort if reasoning_effort is not None else task["reasoning_effort"] or dispatch_tasks.DEFAULT_REASONING_EFFORT,
-                                          "sandbox": sandbox if sandbox is not None else task["sandbox"]})
+                                          "sandbox": sandbox if sandbox is not None else task["sandbox"],
+                                          "working_directory": working_directory if working_directory is not None else task["working_directory"] or "~/wp_front"})
         return RedirectResponse(task_url(task_id, request), status_code=303)
 
     @app.post("/tasks/{task_id}/cancel")

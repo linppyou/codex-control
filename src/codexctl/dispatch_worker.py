@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import csv
 import fcntl
 import hashlib
-import io
 import json
 import logging
 import os
-import shlex
 import selectors
 import signal
 import sqlite3
@@ -20,7 +17,7 @@ from contextlib import suppress
 from dataclasses import replace
 from pathlib import Path
 
-from . import db, dispatch_runtime, dispatch_skills, dispatch_tasks, events, site_access, site_registry
+from . import db, dispatch_skills, dispatch_tasks, events
 from .context import Context
 from .publisher import PublishError
 from .sysusers import SysUser
@@ -48,8 +45,6 @@ class AppServer:
         self.next_id = 1
         self.completed: tuple[str, str] | None = None
         self.result_text = ""
-        self.on_request = None
-        self.on_message = None
         self.thread_id = None
 
     def send(self, message: dict) -> None:
@@ -101,12 +96,7 @@ class AppServer:
             if item.get("type") == "agentMessage":
                 self.result_text = item.get("text", "")[-65536:]
         elif "method" in message and "id" in message:
-            if message["method"] == "item/tool/call" and self.on_request is not None:
-                self.send({"id": message["id"], "result": self.on_request(message.get("params", {}))})
-            else:
-                self.send({"id": message["id"], "error": {"code": -32601, "message": "Unsupported request"}})
-        if self.on_message is not None:
-            self.on_message(message)
+            self.send({"id": message["id"], "error": {"code": -32601, "message": "Unsupported request"}})
         return message
 
     def call(self, method: str, params: dict) -> dict:
@@ -168,53 +158,6 @@ def _stage(run_root: Path, task: sqlite3.Row, user: SysUser, packages: list[byte
     return inputs
 
 
-def _stage_ssh(ctx: Context, task: sqlite3.Row, user: SysUser, root: Path) -> str:
-    snapshot = json.loads(task["target_snapshot"])
-    if snapshot.get("deployment_method") != "ssh":
-        return ""
-    targets = snapshot.get("targets", [snapshot])
-    key = ctx.settings.state_dir / "site-access" / f"{user.name}-{user.uid}" / site_access.KEY_NAME
-    if not key.is_file():
-        raise DeliveryError(f"执行用户 {user.name} 尚未配置站点 SSH 私钥")
-    config, known_hosts = [], []
-    for server_id in dict.fromkeys(target["server_id"] for target in targets):
-        server = site_registry.get(ctx.conn, server_id)
-        if server is None or not server.host_key:
-            raise DeliveryError("目标服务器尚未登记 SSH 主机公钥")
-        host = server.host if server.port == 22 else f"[{server.host}]:{server.port}"
-        known_hosts.append(f"{host} {server.host_key}\n")
-        config.append(
-            f"Host {server.host}\n    HostName {server.host}\n    Port {server.port}\n"
-            f"    User root\n    IdentityFile {json.dumps(str(key))}\n"
-        )
-    directory = root / ".ssh"
-    directory.mkdir(mode=0o700)
-    known_path = directory / "known_hosts"
-    known_path.write_text("".join(known_hosts), encoding="ascii")
-    config_path = directory / "config"
-    config_path.write_text(
-        "Host *\n    BatchMode yes\n    StrictHostKeyChecking yes\n"
-        f"    UserKnownHostsFile {json.dumps(str(known_path))}\n"
-        "    GlobalKnownHostsFile /dev/null\n    IdentitiesOnly yes\n    IdentityAgent none\n"
-        "    UpdateHostKeys no\n    ConnectTimeout 8\n\n" + "\n".join(config), encoding="utf-8",
-    )
-    binary_dir = root / "bin"
-    binary_dir.mkdir(mode=0o700)
-    for command in ("ssh", "scp", "sftp"):
-        wrapper = binary_dir / command
-        wrapper.write_text(f"#!/bin/sh\nexec /usr/bin/{command} -F {shlex.quote(str(config_path))} \"$@\"\n")
-        wrapper.chmod(0o700)
-    for path in (directory, known_path, config_path, binary_dir, *binary_dir.iterdir()):
-        os.chown(path, user.uid, user.gid)
-    known_path.chmod(0o600)
-    config_path.chmod(0o600)
-    return (
-        f"本站 SSH 配置为 {config_path}，固定了本批次主机公钥和执行用户密钥。"
-        f"所有 SSH/scp/sftp 调用显式使用 -F {shlex.quote(str(config_path))}。"
-        "此配置已绕过沙箱内系统 SSH 配置的属主映射问题。"
-    )
-
-
 def _env(user: SysUser, name: str | None) -> dict[str, str]:
     env = {
         "HOME": str(user.home), "USER": user.name, "LOGNAME": user.name,
@@ -247,34 +190,20 @@ def _connect_shared(ctx: Context, user: SysUser, cwd: Path, env: dict) -> AppSer
     return AppServer(proc)
 
 
-def _browser_environment(ctx: Context, user: SysUser, root: Path, env: dict) -> str:
-    python = ctx.settings.dispatch_browser_python
-    chrome = ctx.settings.dispatch_chrome_binary
-    env['HTW_CHROME_BINARY'] = str(chrome)
-    env['CHROME_BIN'] = str(chrome)
-    env['BROWSER_PYTHON'] = str(python)
-    check = (
-        'import os; from playwright.sync_api import sync_playwright; '
-        'p=sync_playwright().start(); '
-        'b=p.chromium.launch(executable_path=os.environ["HTW_CHROME_BINARY"],headless=True,args=["--no-sandbox"]); '
-        'page=b.new_page(); page.set_content("<title>codexctl browser check</title>"); '
-        'assert page.title()=="codexctl browser check"; b.close(); p.stop(); print("ok")'
+def _prepare_workspace(user: SysUser, directory: str, env: dict, source: Path) -> Path:
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import pathlib,shutil,sys\n"
+         "p=pathlib.Path(sys.argv[1]) / '.codexctl-tasks'\n"
+         "p.mkdir(parents=True,exist_ok=True,mode=0o700)\n"
+         "source=pathlib.Path(sys.argv[2])\n"
+         "shutil.copytree(source,p/source.name)\n", directory, str(source)],
+        env=env, user=user.uid, group=user.gid, extra_groups=[],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
     )
-    try:
-        result = subprocess.run(
-            [str(python), '-c', check], cwd=root, env=env, user=user.uid, group=user.gid,
-            extra_groups=[], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=45,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise DeliveryError(f'浏览器启动检查失败，执行用户 {user.name}：{exc}') from exc
     if result.returncode:
-        raise DeliveryError(f'浏览器启动检查失败，执行用户 {user.name}：{result.stderr[-1200:]}')
-    return (
-        f'已以当前用户验证浏览器可启动。采集 Python 使用 {python}，'
-        f'Chromium 使用 {chrome}。环境变量 HTW_CHROME_BINARY/CHROME_BIN/BROWSER_PYTHON 已配置。'
-        f'Playwright launch 显式传 executable_path={str(chrome)!r}；Skill 使用同一 HTW_CHROME_BINARY。'
-        '依赖缺失时在当前用户可写的运行目录建立虚拟环境并安装，沿用已验证的浏览器路径。'
-    )
+        raise DeliveryError(f"无法创建或访问工作目录 {directory}：{result.stderr[-1000:]}")
+    return Path(directory) / ".codexctl-tasks" / source.name
 
 
 def _record(
@@ -327,7 +256,6 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
     thread_id = turn_id = None
     cancelled = False
     cancel_error = ""
-    runtime = None
 
     def check_cancel():
         current = ctx.conn.execute("SELECT status FROM dispatch_tasks WHERE id=?", (task["id"],)).fetchone()
@@ -346,11 +274,20 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
         target = json.loads(task["target_snapshot"])
         credential = None if target.get("deployment_method") == "ssh" else target.get("credential_env")
         env = _env(user, credential)
-        cwd = str(run_root / task["id"])
-        inputs = [{"type": "text", "text": task["prompt"]}, *_stage(run_root, task, user, packages)]
-        ssh_instructions = _stage_ssh(ctx, task, user, Path(cwd))
-        env["PATH"] = f"{cwd}/bin:{env['PATH']}"
-        browser_instructions = _browser_environment(ctx, user, Path(cwd), env)
+        cwd = dispatch_tasks.execution_directory(user, task)
+        skill_inputs = _stage(run_root, task, user, packages)
+        source = run_root / task["id"]
+        files = _prepare_workspace(user, cwd, env, source)
+        for item in skill_inputs:
+            item["path"] = str(files / Path(item["path"]).relative_to(source))
+        handoff = [f"工作目录为 {cwd}。本次交接目录为 {files}。", "文件路径"]
+        handoff.extend(str(path) for path in sorted(files.iterdir()) if path.is_file())
+        handoff.append("Skill 路径")
+        handoff.extend(item["path"] for item in skill_inputs)
+        inputs = [{"type": "text", "text": task["prompt"] + "\n\n" + "\n".join(handoff)}, *skill_inputs]
+        env["BROWSER_PYTHON"] = str(ctx.settings.dispatch_browser_python)
+        env["HTW_CHROME_BINARY"] = str(ctx.settings.dispatch_chrome_binary)
+        env["CHROME_BIN"] = str(ctx.settings.dispatch_chrome_binary)
         # Site bindings or Skill packages may change while files are being staged.
         with db.transaction(ctx.conn):
             current_user, current_label = dispatch_tasks.validate_snapshot(ctx, task)
@@ -359,18 +296,12 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
         check_cancel()
         client = _connect_shared(ctx, user, Path(cwd), env)
         proc = client.proc
-        runtime = dispatch_runtime.DispatchRuntime(ctx, task, user, Path(cwd), env, inputs[1:], ssh_instructions + browser_instructions,
-                                                   check_cancel)
-        client.on_request = runtime.handle
-        client.on_message = lambda message: runtime.sync()
         client.call("initialize", {"clientInfo": {"name": "codexctl_dispatch", "version": "0.1.0"},
                                    "capabilities": {"experimentalApi": True}})
         client.send({"method": "initialized"})
         thread_id = _id(client.call("thread/start", {
             "cwd": cwd, "approvalPolicy": "never", "sandbox": task['sandbox'],
             "historyMode": "legacy",
-            "dynamicTools": dispatch_runtime.TOOLS,
-            "developerInstructions": runtime.instructions,
             "config": {
                 "sandbox_workspace_write.network_access": True,
                 "shell_environment_policy.ignore_default_excludes": True,
@@ -394,17 +325,7 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
         accepted = True
         check_cancel()
         status = client.wait_turn(turn_id, check_cancel)
-        while runtime.running:
-            check_cancel()
-            runtime.sync()
-            time.sleep(0.1)
-        runtime.sync()
-        total = len(list(csv.DictReader(io.StringIO(task['csv']))))
-        children = ctx.conn.execute('SELECT status FROM dispatch_children WHERE task_id=?', (task['id'],)).fetchall()
-        issue = ""
-        if status == "completed" and (len(children) != total or any(row['status'] != 'completed' for row in children)):
-            issue = "批次尚未全部完成，请核对 Codex 回复及子会话状态"
-        _record(ctx, task, "sent", issue, turn_status=status, result_text=client.result_text)
+        _record(ctx, task, "sent", turn_status=status, result_text=client.result_text)
     except TaskCancelled:
         cancelled = True
         if client is not None and thread_id and turn_id:
@@ -420,8 +341,6 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
             status = "unknown" if requested and not isinstance(exc, RequestRejected) else "failed"
             _record(ctx, task, status, message)
     finally:
-        if runtime is not None:
-            runtime.close()
         if client is not None and thread_id:
             with suppress(OSError, ValueError):
                 client.call('thread/unsubscribe', {'threadId': thread_id})

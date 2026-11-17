@@ -44,6 +44,10 @@
       <div class="panel-body dispatch-confirm">
         <p class="hint">可修改提示词、模型和思考程度并保存草稿，确认发送时会保存当前设置。</p>
         <div class="dispatch-form">
+          <label class="dispatch-wide">工作目录
+            <input type="text" name="working_directory" value="{{ execution.working_directory }}" maxlength="4096" placeholder="~/wp_front">
+            <span class="hint">留空使用执行用户家目录下的 wp_front，相对路径也从该用户家目录解析。</span>
+          </label>
           <label>模型 ID
             <input type="text" name="model" value="{{ execution.model }}" maxlength="128" spellcheck="false" placeholder="gpt-6.1-terra">
           </label>
@@ -101,6 +105,7 @@
       <div><dt>SSH 主机与端口</dt><dd>{{ target.server_host }} · {{ target.server_port }}</dd></div>
       {% endif %}
       {% endif %}
+      <div><dt>工作目录</dt><dd>{{ working_directory }}</dd></div>
       <div><dt>执行用户</dt><dd>{{ task.recipient }}</dd></div>
       <div><dt>模型 ID</dt><dd>{{ task.model or '沿用用户默认配置' }}</dd></div>
       <div><dt>思考程度</dt><dd>{{ task.reasoning_effort or '沿用用户默认配置' }}</dd></div>

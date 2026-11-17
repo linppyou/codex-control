@@ -162,10 +162,11 @@ def test_migrates_dispatch_runtime_columns(tmp_path):
     with db.connect(path) as conn:
         conn.execute('ALTER TABLE dispatch_tasks DROP COLUMN sandbox')
         conn.execute('ALTER TABLE dispatch_tasks DROP COLUMN result_text')
+        conn.execute('ALTER TABLE dispatch_tasks DROP COLUMN working_directory')
         conn.execute("""INSERT INTO dispatch_tasks
             (id,owner,recipient,recipient_uid,target_id,target_snapshot,skills,source_url,title,prompt,csv,status,created_at)
             VALUES ('old','alice','alice',1001,'t','{}','[]','https://a.com','old','prompt','csv','queued',1)""")
     for _ in range(2):
         with db.connect(path) as conn:
-            row=conn.execute('SELECT sandbox,result_text FROM dispatch_tasks WHERE id=\'old\'').fetchone()
-            assert tuple(row) == ('workspace-write','')
+            row=conn.execute('SELECT sandbox,result_text,working_directory FROM dispatch_tasks WHERE id=\'old\'').fetchone()
+            assert tuple(row) == ('workspace-write','',None)

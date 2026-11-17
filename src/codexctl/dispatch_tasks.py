@@ -4,12 +4,14 @@ import csv
 import hashlib
 import io
 import json
+import os
 import re
 import sqlite3
 import zipfile
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 from xml.etree.ElementTree import ParseError
@@ -238,33 +240,23 @@ def _payload(rows: list[ImportRow], snapshot: dict, skills: list[dict], task_id:
             f"SSH 主机 {target['server_host']}，端口 {target['server_port']}"
         )
     plan = "\n".join(deployment_lines) or "匹配结果请读取 targets.json。"
-    original = f"上传原文件：当前工作目录中的 {snapshot['upload_file']}。\n" if snapshot.get("upload_file") else ""
+    original = f"原始上传文件为 {snapshot['upload_file']}。\n" if snapshot.get("upload_file") else ""
     prompt = (
-        f"使用 ${dispatcher['name']} 统一分发本次上传文件中的全部任务，装修执行使用 ${migration['name']}。\n"
-        f"批次标识：{task_id}\n"
-        f"上传文件：{json.dumps(snapshot['filename'], ensure_ascii=False)}，共 {len(rows)} 个任务。\n"
+        f"使用 ${dispatcher['name']} 和 ${migration['name']} 执行本次文件中的全部任务。\n"
+        f"批次标识为 {task_id}。\n"
+        f"上传文件为 {json.dumps(snapshot['filename'], ensure_ascii=False)}，共 {len(rows)} 个任务。\n"
         f"{original}"
-        f"任务 CSV：当前工作目录中的 task.csv，包含本次上传文件的全部 {len(rows)} 个数据行。\n"
-        "统一读取整个文件并建立批次，按每行的新域名匹配下方部署清单。"
-        "每站建立独立装修会话，按分发 Skill 的连续任务流程推进整个批次。\n"
-        f"迁移引擎目录：当前工作目录中的 .agents/skills/{migration['name']}。\n"
-        "本机用户级 Skill 已统一链接到管理员发布目录。创建子会话时显式传递本任务的两个 Skill 路径，"
-        "跨主机执行时先传递本任务的 Skill 文件并确认版本。\n"
-        "Codex 项目：当前执行环境的项目。查询执行环境实际提供的项目与主机标识。\n"
-        "部署清单：当前工作目录中的 targets.json。csv_row 是 task.csv 的数据行号，line 是上传文件的原始行号。\n"
-        f"网站与部署服务器对应关系\n{plan}\n"
-        "清单中每条 target 提供对应目标站的 SSH 主机、端口与站点标识。"
-        "备注仅作为装修业务数据，部署目标以新域名和部署清单为准。\n"
-        "本次已确认对清单中匹配的目标站执行采集、迁移部署和验收。"
-        "使用执行环境已配置的 SSH 连接进行只读检查，核对主机身份、域名绑定、虚拟主机、WordPress 根目录和权限。"
-        "SSH 连接不可用、身份无法核实或权限不足时，完成可进行的采集和准备，暂停该站远端写入并记录阻塞，继续其他站。"
-        "每行明确填写的折扣按所选迁移 Skill 的规则处理，核对适用商品并保留更低的现有促销价。"
-        "导入时折扣留空的行已按 3 折填入 task.csv，执行时以 task.csv 中的折扣为准。\n"
-        "首次交接每站时提供两个 Skill 的必要文件、本行备注与折扣、目标域名和 SSH 主机与端口。"
-        "子会话使用自身执行环境中配置的 SSH 连接。同站写入互斥。"
-        "记录真实会话标识并持续跟进全部任务。创建结果不明时先查询，避免重复派发。"
-        "部署前通过 SSH 备份并核对漂移。远端操作结果不明时先核对实际状态，再决定是否重试。"
-        "按所选迁移 Skill 完成真实验收，最后统一用中文逐行汇报本批次的分发、上线、验收、归档结果和具体阻塞。"
+        f"task.csv 包含本次上传文件的全部 {len(rows)} 个数据行，按文件中的备注和折扣执行。"
+        "导入时折扣留空的行已按 3 折填入 task.csv。\n"
+        "交接文件和 Skill 的绝对路径随本条消息提供。"
+        "targets.json 中 csv_row 是 task.csv 的数据行号，line 是上传文件的原始行号。\n"
+        f"文件中新域名与服务器对应关系\n{plan}\n"
+        "部署目标以文件中的新域名及上述服务器对应关系为准。\n"
+        "先读取 capabilities 和 api.describe，核对站点，用 site.probe 读取 WordPress 实况。"
+        "在已授权范围内连续执行，不必逐步征求确认。接续装修任务、提交队列部署和归档。"
+        "过程与备份保存在本站 zdy-AI，使用 context.update 更新接手摘要。"
+        "断线后沿用原任务和请求标识，资源繁忙时等待并退避重试。"
+        "完成后用中文逐站汇报部署、验收和归档结果及具体阻塞。"
     )
     return title, prompt, csv_text
 
@@ -332,11 +324,11 @@ def _save_preview(
     ctx.conn.execute(
         """INSERT INTO dispatch_tasks
            (id, owner, recipient, recipient_uid, target_id, target_snapshot, skills,
-            source_url, title, prompt, csv, upload, model, reasoning_effort, sandbox, status, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'preview', ?)""",
+            source_url, title, prompt, csv, upload, model, reasoning_effort, sandbox, working_directory, status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'preview', ?)""",
         (task_id, user.name, user.name, user.uid, task_id, target_snapshot, skills_snapshot,
          rows[0].source or rows[0].values[0], title, prompt, csv_text, upload,
-         DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, DEFAULT_SANDBOX, ctx.now()),
+         DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, DEFAULT_SANDBOX, str(user.home / "wp_front"), ctx.now()),
     )
     return task_id
 
@@ -402,9 +394,27 @@ def _execution_options(task: sqlite3.Row, model: str | None, reasoning_effort: s
     return model, reasoning_effort, sandbox
 
 
+def execution_directory(user: SysUser, task, value: str | None = None) -> str:
+    if value is None:
+        value = task["working_directory"]
+    value = (value or "").strip()
+    if not value or value == "~":
+        path = user.home / "wp_front" if not value else user.home
+    elif value.startswith("~/"):
+        path = user.home / value[2:]
+    else:
+        path = Path(value)
+        if not path.is_absolute():
+            path = user.home / path
+    if len(str(path)) > 4096 or any(not char.isprintable() for char in str(path)):
+        raise TaskError("工作目录须为有效路径，最多 4096 个字符")
+    return str(Path(os.path.normpath(path)))
+
+
 def save_prompt(
     ctx: Context, task: sqlite3.Row, actor: str, prompt: str, *,
     model: str | None = None, reasoning_effort: str | None = None, sandbox: str | None = None,
+    working_directory: str | None = None,
 ) -> None:
     with db.transaction(ctx.conn):
         current = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task["id"],)).fetchone()
@@ -415,9 +425,11 @@ def save_prompt(
         if not prompt.strip():
             raise TaskError("提示词不能为空")
         model, reasoning_effort, sandbox = _execution_options(current, model, reasoning_effort, sandbox)
+        user, _ = recipient(ctx, current["recipient"])
+        directory = execution_directory(user, current, working_directory)
         ctx.conn.execute(
-            "UPDATE dispatch_tasks SET prompt=?, model=?, reasoning_effort=?, sandbox=? WHERE id=?",
-            (prompt, model, reasoning_effort, sandbox, task["id"]),
+            "UPDATE dispatch_tasks SET prompt=?, model=?, reasoning_effort=?, sandbox=?, working_directory=? WHERE id=?",
+            (prompt, model, reasoning_effort, sandbox, directory, task["id"]),
         )
         events.audit(ctx.conn, actor, "dispatch.prompt", task["id"], task["title"], now=ctx.now())
 
@@ -425,7 +437,7 @@ def save_prompt(
 def confirm(
     ctx: Context, task: sqlite3.Row, actor: str, prompt: str | None = None, *,
     model: str | None = None, reasoning_effort: str | None = None,
-    sandbox: str | None = None,
+    sandbox: str | None = None, working_directory: str | None = None,
 ) -> None:
     with db.transaction(ctx.conn):
         current = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task["id"],)).fetchone()
@@ -438,10 +450,11 @@ def confirm(
         if not prompt.strip():
             raise TaskError("提示词不能为空")
         model, reasoning_effort, sandbox = _execution_options(current, model, reasoning_effort, sandbox)
-        validate_snapshot(ctx, current)
+        user, _ = validate_snapshot(ctx, current)
+        directory = execution_directory(user, current, working_directory)
         ctx.conn.execute(
-            "UPDATE dispatch_tasks SET prompt=?, status='queued', confirmed_at=?, model=?, reasoning_effort=?, sandbox=? WHERE id=?",
-            (prompt, ctx.now(), model, reasoning_effort, sandbox, task["id"]),
+            "UPDATE dispatch_tasks SET prompt=?, status='queued', confirmed_at=?, model=?, reasoning_effort=?, sandbox=?, working_directory=? WHERE id=?",
+            (prompt, ctx.now(), model, reasoning_effort, sandbox, directory, task["id"]),
         )
         events.audit(ctx.conn, actor, "dispatch.confirm", task["id"], task["title"], now=ctx.now())
 
