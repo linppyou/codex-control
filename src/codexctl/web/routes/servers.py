@@ -132,7 +132,7 @@ def register(app) -> None:
 
     @app.get("/servers", response_class=HTMLResponse)
     def servers_page(
-        request: Request, server_id: str = "", date: str = "", state: str = "", q: str = "", page: int = 1,
+        request: Request, q: str = "", page: int = 1,
         admin: tuple[str, str] = Depends(current_user),
     ):
         with lock:
@@ -140,8 +140,8 @@ def register(app) -> None:
             inventories = sites.snapshots(ctx.conn)
         now = ctx.now()
         server_order = {server.id: index for index, server in enumerate(servers)}
-        server_id = server_id if server_id in server_order else ""
-        state = state if state in STATUSES else ""
+        server_ids = list(dict.fromkeys(value for value in request.query_params.getlist("server_id") if value in server_order))
+        states = list(dict.fromkeys(value for value in request.query_params.getlist("state") if value in STATUSES))
         q = q.strip()[:253]
         summary, rows = [], []
         for server in servers:
@@ -151,7 +151,7 @@ def register(app) -> None:
                 "count": len(inv.rows) if inv and inv.synced_at is not None else None,
                 "synced_at": _time(inv.synced_at if inv else None), "error": inv.error if inv else None,
             })
-            if not inv or (server_id and server_id != server.id):
+            if not inv or (server_ids and server.id not in server_ids):
                 continue
             data_stale = bool(inv.error) or (inv.synced_at is not None and now - inv.synced_at > sites.STALE_AFTER)
             for row in inv.rows:
@@ -163,24 +163,25 @@ def register(app) -> None:
                     "origin_status": _state(row["origin"], now), "checked_at": _time(row["public"]["checked_at"]),
                 })
         available_dates = sorted({row["date"] for row in rows}, key=lambda day: (day != "unknown", day), reverse=True)
-        date = date if date in available_dates else ""
+        dates = list(dict.fromkeys(value for value in request.query_params.getlist("date") if value in available_dates))
         filtered = [
             row for row in rows
-            if (not date or row["date"] == date) and (not state or row["status"] == state)
+            if (not dates or row["date"] in dates) and (not states or row["status"] in states)
             and (not q or any(q.casefold() in domain for domain in row["domains"]))
         ]
         filtered.sort(key=lambda row: (row["domain"], row["id"]))
         filtered.sort(key=lambda row: (row["date"] != "unknown", row["date"]), reverse=True)
         filtered.sort(key=lambda row: server_order[row["server"].id])
-        query = {key: val for key, val in {"date": date, "state": state, "q": q}.items() if val}
+        query = {key: val for key, val in {"date": dates, "state": states, "q": q}.items() if val}
 
         def page_url(owner_id: str, number: int = 1) -> str:
             params = {**query, "server_id": owner_id}
             if number > 1:
                 params["page"] = str(number)
-            return "/servers?" + urlencode(params)
+            return "/servers?" + urlencode(params, doseq=True)
 
-        pages = max(1, (len(filtered) + PAGE_SIZE - 1) // PAGE_SIZE) if server_id else 1
+        single_server = len(server_ids) == 1
+        pages = max(1, (len(filtered) + PAGE_SIZE - 1) // PAGE_SIZE) if single_server else 1
         page = max(1, min(page, pages))
         groups = []
         for server, matching_rows in groupby(filtered, key=lambda row: row["server"]):
@@ -191,20 +192,20 @@ def register(app) -> None:
                 (day, list(day_rows), day_totals[day])
                 for day, day_rows in groupby(page_rows, key=lambda row: row["date"])
             ]
-            more = page_url(server.id) if not server_id and len(server_rows) > PAGE_SIZE else None
+            more = page_url(server.id) if not single_server and len(server_rows) > PAGE_SIZE else None
             groups.append((server, days, len(server_rows), more))
         counts = Counter(row["status"] for row in rows)
         last_check = max((row["public"]["checked_at"] for row in rows), default=None)
 
         return render(
             request, "servers.html", admin=admin[0], csrf=admin[1], summary=summary, groups=groups,
-            server_id=server_id, date=date, state=state, q=q, available_dates=available_dates, statuses=STATUSES,
+            server_ids=server_ids, dates=dates, states=states, q=q, available_dates=available_dates, statuses=STATUSES,
             reasons=REASONS, probe_state=_probe_state, total=len(rows), filtered=len(filtered),
             anomalies=sum(counts[key] for key in ("down", "restricted", "redirect", "http_only")),
             unconfirmed=counts["unconfirmed"] + counts["stale"] + counts["pending"],
             last_check=_time(last_check), page=page, pages=pages,
-            previous=page_url(server_id, page - 1) if page > 1 else None,
-            next_page=page_url(server_id, page + 1) if page < pages else None,
+            previous=page_url(server_ids[0], page - 1) if page > 1 else None,
+            next_page=page_url(server_ids[0], page + 1) if page < pages else None,
         )
 
     def editor(request, admin, server=None, fields=None, error=""):

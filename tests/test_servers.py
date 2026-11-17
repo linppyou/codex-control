@@ -8,6 +8,7 @@ from collections import Counter
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlencode
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -402,8 +403,61 @@ def test_overview_groups_filters_and_paginates(ctx, monkeypatch):
     assert "other-site.com" in scoped and "site00.com" not in scoped
     filtered = client.get(f"/servers?state=down&server_id={server.id}&q=dns").text
     assert "dns-error.com" in filtered and "site00.com" not in filtered
+    query = urlencode({"date": ["2026-11-15", "unknown"], "state": ["up", "down"], "q": ".com"}, doseq=True)
+    html_query = query.replace("&", "&amp;")
+    multi = client.get(f"/servers?{query}&server_id={server.id}&server_id={other.id}&page=2").text
+    assert "site00.com" in multi and "other-site.com" in multi
+    assert "site50.com" not in multi and "第 2 /" not in multi
+    assert f'href="/servers?{html_query}&amp;server_id={server.id}">查看该服务器的全部 52 个站点</a>' in multi
+    next_page = client.get(f"/servers?{query}&server_id={server.id}").text
+    assert f'href="/servers?{html_query}&amp;server_id={server.id}&amp;page=2">下一页</a>' in next_page
+    last_page = client.get(f"/servers?{query}&server_id={server.id}&page=2").text
+    assert "site50.com" in last_page and "unknown.com" in last_page and "dns-error.com" not in last_page
     ctx.test_clock.t += 901
     assert "结果已过期" in client.get("/servers?state=stale").text
+
+
+def test_overview_combines_multiple_filter_values(ctx, monkeypatch):
+    client, _ = login_client(ctx)
+    first = create(ctx)
+    second = create(ctx, name="第二台", host="104.255.152.77")
+    third = create(ctx, name="第三台", host="104.255.152.78")
+    old = int(datetime(2026, 11, 11, tzinfo=timezone.utc).timestamp())
+    new = int(datetime(2026, 11, 14, 17, tzinfo=timezone.utc).timestamp())
+    rows = {
+        first.id: [sites.Site("1", old, ("old.example.com",)), sites.Site("2", new, ("new.example.com",))],
+        second.id: [sites.Site("1", None, ("unknown.example.com",)), sites.Site("2", old, ("slow.example.com",))],
+        third.id: [sites.Site("1", old, ("excluded.example.com",))],
+    }
+    monkeypatch.setattr(sites, "collect", lambda owner, key: rows[owner.id])
+    results = {
+        "unknown.example.com": site_probe.Probe("down", reason="dns"),
+        "slow.example.com": site_probe.Probe("down", reason="timeout"),
+    }
+    monkeypatch.setattr(
+        site_probe, "probe",
+        lambda domains, origin: results.get(domains[0], site_probe.Probe("up", 200)),
+    )
+    sites._refresh(ctx.conn, ctx)
+    query = urlencode({
+        "server_id": [first.id, second.id, first.id, "invalid", ""],
+        "date": ["2026-11-11", "unknown", "2026-11-11", "invalid", ""],
+        "state": ["up", "down", "up", "invalid", ""],
+        "q": "example.com",
+    }, doseq=True)
+    page = client.get(f"/servers?{query}")
+    assert page.status_code == 200
+    assert "筛选结果 2 个站点" in page.text
+    assert "old.example.com" in page.text and "unknown.example.com" in page.text
+    assert all(domain not in page.text for domain in ("new.example.com", "slow.example.com", "excluded.example.com"))
+    for name, values in (("server_id", [first.id, second.id]), ("date", ["2026-11-11", "unknown"]), ("state", ["up", "down"])):
+        for value in values:
+            assert f'type="checkbox" name="{name}" value="{value}" checked' in page.text
+    assert page.text.count("已选 2 项") == 3
+    assert 'href="/servers">清除筛选</a>' in page.text
+    unfiltered = client.get("/servers?server_id=invalid&date=invalid&state=invalid").text
+    assert "筛选结果 5 个站点" in unfiltered
+    assert 'href="/servers">清除筛选</a>' not in unfiltered
 
 
 def test_overview_separates_timeouts_from_confirmed_failures(ctx, monkeypatch):
