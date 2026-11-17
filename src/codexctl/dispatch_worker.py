@@ -253,7 +253,12 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
         client.call("thread/name/set", {"threadId": thread_id, "name": task["title"]})
         check_cancel()
         requested = True
-        result = client.call("turn/start", {"threadId": thread_id, "input": inputs})
+        turn_params = {"threadId": thread_id, "input": inputs}
+        if task["model"]:
+            turn_params["model"] = task["model"]
+        if task["reasoning_effort"]:
+            turn_params["effort"] = task["reasoning_effort"]
+        result = client.call("turn/start", turn_params)
         turn_id = _id(result, "turn")
         _record(ctx, task, "sent", turn_id=turn_id, turn_status="inProgress")
         accepted = True

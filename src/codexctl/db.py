@@ -207,6 +207,8 @@ CREATE TABLE IF NOT EXISTS dispatch_tasks (
     prompt TEXT NOT NULL,
     csv TEXT NOT NULL,
     upload BLOB,
+    model TEXT,
+    reasoning_effort TEXT,
     status TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     confirmed_at INTEGER,
@@ -302,6 +304,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     with transaction(conn):
         if "upload" not in {r["name"] for r in conn.execute("PRAGMA table_info(dispatch_tasks)")}:
             conn.execute("ALTER TABLE dispatch_tasks ADD COLUMN upload BLOB")
+        task_columns = {r["name"] for r in conn.execute("PRAGMA table_info(dispatch_tasks)")}
+        for column in ("model", "reasoning_effort"):
+            if column not in task_columns:
+                conn.execute(f"ALTER TABLE dispatch_tasks ADD COLUMN {column} TEXT")
         if "system_uid" not in {r["name"] for r in conn.execute("PRAGMA table_info(web_sessions)")}:
             conn.execute("ALTER TABLE web_sessions ADD COLUMN system_uid INTEGER")
         if "password_configured" not in {r["name"] for r in conn.execute("PRAGMA table_info(admins)")}:

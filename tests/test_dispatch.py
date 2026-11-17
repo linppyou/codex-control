@@ -129,6 +129,59 @@ def test_user_previews_and_confirms_exactly_once(ctx):
     assert dispatch_worker.claim(ctx) is None
 
 
+def test_confirm_saves_execution_options_and_preserves_them_on_retry(ctx):
+    form = task_form(ctx)
+    alice, csrf = session(ctx, create_app(ctx), "alice")
+    assert import_file(alice, csrf, form).status_code == 200
+    task = ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone()
+    url = f"/tasks/{task['id']}"
+    draft = alice.get(url)
+    assert 'name="model"' in draft.text and 'name="reasoning_effort"' in draft.text
+    assert 'value="gpt-6.1-terra"' in draft.text and 'value="medium"' in draft.text
+    values = {"csrf": csrf, "model": " gpt-6.1-sol ", "reasoning_effort": " xhigh "}
+    response = alice.post(url + "/confirm", data=values)
+    assert response.status_code == 409
+    assert 'value=" gpt-6.1-sol "' in response.text
+    assert 'value=" xhigh "' in response.text
+    assert alice.post(url + "/confirm", data=dict(values, confirmed="1")).status_code == 303
+    assert alice.post(url + "/confirm", data={"csrf": csrf, "confirmed": "1"}).status_code == 303
+    saved = ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone()
+    assert (saved["model"], saved["reasoning_effort"]) == ("gpt-6.1-sol", "xhigh")
+    assert saved["status"] == "queued"
+    detail = alice.get(url).text
+    assert "gpt-6.1-sol" in detail and "xhigh" in detail
+    assert 'name="model"' not in detail
+
+
+def test_blank_execution_options_use_task_defaults(ctx):
+    form = task_form(ctx)
+    alice, csrf = session(ctx, create_app(ctx), "alice")
+    import_file(alice, csrf, form)
+    task = ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone()
+    response = alice.post(f"/tasks/{task['id']}/confirm", data={
+        "csrf": csrf, "confirmed": "1", "model": "  ", "reasoning_effort": "  ",
+    })
+    assert response.status_code == 303
+    saved = ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone()
+    assert (saved["model"], saved["reasoning_effort"]) == ("gpt-6.1-terra", "medium")
+
+
+@pytest.mark.parametrize("options", [
+    {"model": "bad\nmodel"}, {"model": "m" * 129},
+    {"reasoning_effort": "high\nlow"}, {"reasoning_effort": "h" * 33},
+])
+def test_confirm_rejects_invalid_execution_options(ctx, options):
+    form = task_form(ctx)
+    alice, csrf = session(ctx, create_app(ctx), "alice")
+    import_file(alice, csrf, form)
+    task = ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone()
+    response = alice.post(f"/tasks/{task['id']}/confirm", data={"csrf": csrf, "confirmed": "1", **options})
+    assert response.status_code == 409
+    saved = ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone()
+    assert saved["status"] == "preview"
+    assert saved["model"] == "gpt-6.1-terra" and saved["reasoning_effort"] == "medium"
+
+
 def test_import_matches_across_servers_and_renders_each_row(ctx):
     form = task_form(ctx)
     first = site_registry.get(ctx.conn, form["server_id"])
@@ -425,7 +478,9 @@ def test_zip_traversal_rejected(ctx):
 
 
 @pytest.mark.parametrize("cancel_running", [False, True])
-def test_worker_attaches_both_packages_and_persists_acceptance(ctx, tmp_path, monkeypatch, cancel_running):
+@pytest.mark.parametrize("execution", [None, {}, {"model": "gpt-6.1-sol"}, {"reasoning_effort": "xhigh"},
+                                        {"model": "gpt-6.1-sol", "reasoning_effort": "high"}])
+def test_worker_attaches_both_packages_and_persists_acceptance(ctx, tmp_path, monkeypatch, cancel_running, execution):
     form = task_form(ctx)
     second = site_registry.create(ctx, "admin", "第二台", "8.8.8.8", "2222", "")
     inventory(ctx, second, ("9", ["second.example.com"]))
@@ -437,7 +492,13 @@ def test_worker_attaches_both_packages_and_persists_acceptance(ctx, tmp_path, mo
     dispatch_tasks.create_previews(ctx, "alice", rows, form["dispatcher"], form["migration"], upload=raw)
     task_id = rows[0].task_id
     row = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()
-    dispatch_tasks.confirm(ctx, row, "alice")
+    dispatch_tasks.confirm(ctx, row, "alice", **(execution or {}))
+    expected = dict(model="gpt-6.1-terra", reasoning_effort="medium")
+    if execution is None:
+        ctx.conn.execute("UPDATE dispatch_tasks SET model=NULL, reasoning_effort=NULL WHERE id=?", (task_id,))
+        expected = {}
+    else:
+        expected.update(execution)
     task = dispatch_worker.claim(ctx)
     run_root = tmp_path / "dispatch"
     run_root.mkdir()
@@ -461,12 +522,18 @@ for line in sys.stdin:
     assert 'fixture-secret' not in line
     if method == 'thread/start':
         assert params['sandbox'] == 'workspace-write'
+        assert params['approvalPolicy'] == 'never'
         assert 'BAOTA_SHOP_API_KEY' not in os.environ
         result = {'thread': {'id': 'codex-thread'}}
     elif method == 'thread/name/set':
         assert params == {'threadId': 'codex-thread', 'name': 'tasks.csv · 2 个任务'}
         result = {}
     elif method == 'turn/start':
+        expected = EXECUTION_OPTIONS
+        assert params.get('model') == expected.get('model')
+        assert params.get('effort') == expected.get('reasoning_effort')
+        assert ('model' in params) == ('model' in expected)
+        assert ('effort' in params) == ('reasoning_effort' in expected)
         prompt, dispatcher, migration = params['input']
         assert prompt['type'] == 'text' and '统一分发' in prompt['text']
         assert Path('task.csv').read_text().splitlines()[0] == '网站,新域名,备注,折扣'
@@ -496,7 +563,7 @@ for line in sys.stdin:
     else:
         result = {}
     print(json.dumps({'id': message['id'], 'result': result}), flush=True)
-""".replace("CANCEL_RUNNING", repr(cancel_running)), encoding="utf-8")
+""".replace("CANCEL_RUNNING", repr(cancel_running)).replace("EXECUTION_OPTIONS", repr(expected)), encoding="utf-8")
     popen = subprocess.Popen
 
     def launch(args, **kwargs):

@@ -20,6 +20,18 @@
     {% if can_confirm %}
     <form class="panel-body dispatch-confirm" method="post" action="/tasks/{{ task.id }}/confirm">
       <input type="hidden" name="csrf" value="{{ csrf }}">
+      <div class="dispatch-form">
+        <label>模型 ID
+          <input type="text" name="model" value="{{ execution.model }}" maxlength="128" spellcheck="false" placeholder="gpt-6.1-terra">
+        </label>
+        <label>思考程度
+          <input type="text" name="reasoning_effort" value="{{ execution.reasoning_effort }}" maxlength="32" spellcheck="false" list="dispatch-efforts" placeholder="medium">
+        </label>
+        <datalist id="dispatch-efforts">
+          {% for effort in ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] %}<option value="{{ effort }}"></option>{% endfor %}
+        </datalist>
+        <p class="hint dispatch-wide">默认使用 gpt-6.1-terra，思考程度为 medium（中等）。可修改为执行环境支持的模型和档位，留空使用上述默认值。</p>
+      </div>
       <label><input type="checkbox" name="confirmed" value="1" required> 已核对提示词、目标站及 Skill，确认发送</label>
       <div class="dispatch-actions">
         <a class="btn" href="/tasks">返回任务</a>
@@ -60,6 +72,8 @@
       {% endif %}
       {% endif %}
       <div><dt>执行用户</dt><dd>{{ task.recipient }}</dd></div>
+      <div><dt>模型 ID</dt><dd>{{ task.model or '沿用用户默认配置' }}</dd></div>
+      <div><dt>思考程度</dt><dd>{{ task.reasoning_effort or '沿用用户默认配置' }}</dd></div>
       {% for skill in skills %}
       <div><dt>{{ kinds[skill.kind] }}</dt><dd>{{ skill.label }}{% if skill.version %} · {{ skill.version }}{% endif %}<br><span class="mono hint">{{ skill.name }}</span></dd></div>
       {% endfor %}

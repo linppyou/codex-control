@@ -74,7 +74,7 @@ def register(app) -> None:
             return task_page(request, who, selections, rows=rows, status=422, err=str(exc))
         return task_page(request, who, selections, rows=rows)
 
-    def task_detail(request, who, task, *, status=200, error=""):
+    def task_detail(request, who, task, *, status=200, error="", execution=None):
         user, csrf = who
         target = json.loads(task["target_snapshot"])
         return render(
@@ -86,6 +86,10 @@ def register(app) -> None:
             batch_complete=dispatch_tasks.batch_complete(target),
             can_cancel=user != "admin" and user in {task["owner"], task["recipient"]} and dispatch_tasks.can_cancel(task),
             time=_time, err=error,
+            execution=execution if execution is not None else {
+                "model": task["model"] or dispatch_tasks.DEFAULT_MODEL,
+                "reasoning_effort": task["reasoning_effort"] or dispatch_tasks.DEFAULT_REASONING_EFFORT,
+            },
         )
 
     @app.get("/tasks/{task_id}", response_class=HTMLResponse)
@@ -97,6 +101,7 @@ def register(app) -> None:
     @app.post("/tasks/{task_id}/confirm")
     def confirm(
         request: Request, task_id: str, confirmed: str = Form(""),
+        model: str = Form(""), reasoning_effort: str = Form(""),
         who: tuple[str, str] = Depends(current_user),
     ):
         error = ""
@@ -108,11 +113,12 @@ def register(app) -> None:
                 error = "请先核对提示词并勾选确认"
             else:
                 try:
-                    dispatch_tasks.confirm(ctx, task, who[0])
+                    dispatch_tasks.confirm(ctx, task, who[0], model=model, reasoning_effort=reasoning_effort)
                 except dispatch_tasks.TaskError as exc:
                     error = str(exc)
         if error:
-            return task_detail(request, who, task, status=409, error=error)
+            return task_detail(request, who, task, status=409, error=error,
+                               execution={"model": model, "reasoning_effort": reasoning_effort})
         return RedirectResponse(f"/tasks/{task_id}", status_code=303)
 
     @app.post("/tasks/{task_id}/cancel")
