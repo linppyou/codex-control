@@ -6,7 +6,9 @@
   toggle.addEventListener("click", function () {
     var visible = password.type === "password";
     password.type = visible ? "text" : "password";
-    toggle.textContent = visible ? "隐藏密码" : "显示密码";
+    var label = visible ? "隐藏密码" : "显示密码";
+    toggle.setAttribute("aria-label", label);
+    toggle.setAttribute("title", label);
     toggle.setAttribute("aria-pressed", String(visible));
   });
   function updateCapsLock(event) {

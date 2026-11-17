@@ -90,6 +90,16 @@ input[type=checkbox] { accent-color: var(--green); width: 15px; height: 15px; ve
 .login label { display: block; margin-bottom: 14px; color: var(--text-2); font-size: 13px; }
 .login input { display: block; width: 100%; padding: 9px 12px; margin-top: 6px; }
 .login .btn { width: 100%; justify-content: center; padding: 9px; font-size: 14px; margin-top: 6px; }
+.login-password-field { margin-bottom: 14px; }
+.login .login-password-field label { margin-bottom: 6px; }
+.login-password-input { position: relative; }
+.login .login-password-input input { margin-top: 0; padding-right: 48px; }
+.password-toggle { position: absolute; top: 0; right: 0; width: 44px; height: 100%; display: grid; place-items: center; border: 0; border-radius: 0 6px 6px 0; background: transparent; color: var(--text-2); cursor: pointer; }
+.password-toggle:hover { color: var(--green); background: var(--green-soft); }
+.password-toggle:focus-visible { outline: 2px solid var(--green); outline-offset: -3px; }
+.password-toggle svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.password-eye-slash { display: none; }
+.password-toggle[aria-pressed="true"] .password-eye-slash { display: block; }
 
 /* 提示 / 徽标 */
 .flash { padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; border: 1px solid transparent; }
