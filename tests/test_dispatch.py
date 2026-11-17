@@ -507,6 +507,7 @@ def test_worker_attaches_both_packages_and_persists_acceptance(ctx, tmp_path, mo
     monkeypatch.setattr(ctx.publisher, "link_skills", lambda *args: None)
 
     monkeypatch.setattr(dispatch_worker, "_stage_ssh", lambda *args: "SSH test instructions")
+    monkeypatch.setattr(dispatch_worker, "_browser_environment", lambda *args: "Browser test instructions")
 
     # A stdio fixture verifies the actual JSON-RPC payload and can complete the turn before its acknowledgement.
     fake = tmp_path / "app-server.py"
@@ -573,10 +574,12 @@ for line in sys.stdin:
         assert kwargs.pop("user") == user.uid
         assert kwargs.pop("group") == user.gid
         assert kwargs.pop("extra_groups") == []
-        assert args[-1] == "app-server"
         return popen([sys.executable, str(fake)], **kwargs)
 
     monkeypatch.setattr(dispatch_worker.subprocess, "Popen", launch)
+    monkeypatch.setattr(dispatch_worker, '_connect_shared', lambda ctx, user, cwd, env: dispatch_worker.AppServer(
+        launch([], cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+               stderr=subprocess.DEVNULL, start_new_session=True, user=user.uid, group=user.gid, extra_groups=[])))
     if cancel_running:
         original_wait = dispatch_worker.AppServer.wait_turn
 
@@ -751,7 +754,7 @@ def test_runtime_creates_real_children_once_and_reuses_skill_inputs(ctx, tmp_pat
             return 'completed'
 
     monkeypatch.setattr(dispatch_worker, 'AppServer', FakeClient)
-    monkeypatch.setattr(dispatch_runtime.subprocess, 'Popen', lambda *args, **kwargs: object())
+    monkeypatch.setattr(dispatch_worker, '_connect_shared', lambda *args: FakeClient(object()))
     monkeypatch.setattr(dispatch_worker, '_stop', lambda proc: None)
     monkeypatch.setattr(dispatch_runtime.os, 'chown', lambda *args: None)
     skills = [{'type': 'skill', 'name': 'migration', 'path': '/tmp/skill/SKILL.md'}]
@@ -803,7 +806,7 @@ def test_runtime_cancels_running_child(ctx, tmp_path, monkeypatch):
     monkeypatch.setattr(dispatch_worker, '_stop', lambda proc: None)
     runtime._wait(child)
     assert child['status'] == 'interrupted'
-    assert calls == ['turn/interrupt']
+    assert calls == ['turn/interrupt', 'thread/unsubscribe']
     runtime.close()
 
 
@@ -821,7 +824,7 @@ def test_task_page_shows_blocked_child_and_result(ctx):
     assert '等待目标站权限' in response.text and '执行受阻' in response.text and 'child1' in response.text
 
 
-@pytest.mark.parametrize('sandbox', ['danger-full-access', 'workspace-write'])
+@pytest.mark.parametrize('sandbox', ['danger-full-access'])
 def test_confirm_persists_sandbox_selection(ctx, sandbox):
     form=task_form(ctx)
     alice,csrf=session(ctx,create_app(ctx),'alice')
@@ -841,3 +844,68 @@ def test_confirm_rejects_unknown_sandbox(ctx):
     response=alice.post(f'/tasks/{row["id"]}/confirm',data={'csrf':csrf,'confirmed':'1','sandbox':'unknown'})
     assert response.status_code==409
     assert ctx.conn.execute('SELECT status FROM dispatch_tasks').fetchone()[0]=='preview'
+
+
+def test_confirm_disallows_sandbox_for_new_tasks(ctx):
+    form = task_form(ctx)
+    alice, csrf = session(ctx, create_app(ctx), 'alice')
+    import_file(alice, csrf, form)
+    row = ctx.conn.execute('SELECT * FROM dispatch_tasks').fetchone()
+    response = alice.post(f'/tasks/{row["id"]}/confirm', data={
+        'csrf': csrf, 'confirmed': '1', 'sandbox': 'workspace-write',
+    })
+    assert response.status_code == 409
+    assert ctx.conn.execute('SELECT status FROM dispatch_tasks').fetchone()[0] == 'preview'
+
+
+def test_shared_connection_uses_user_daemon_socket(ctx, tmp_path, monkeypatch):
+    form = task_form(ctx)
+    user = ctx.lookup_user('alice', 1000)
+    socket = user.home / '.codex/app-server-control/app-server-control.sock'
+    socket.parent.mkdir(parents=True, exist_ok=True)
+    socket.touch()
+    calls = []
+    class Process:
+        pass
+    def launch(args, **kwargs):
+        calls.append((args, kwargs))
+        return Process()
+    monkeypatch.setattr(dispatch_worker.subprocess, 'Popen', launch)
+    client = dispatch_worker._connect_shared(ctx, user, tmp_path, {'HOME': str(user.home)})
+    assert client.proc is not None
+    assert calls[0][0][-1] == str(socket)
+    assert calls[0][0][-2].endswith('dispatch_transport.py')
+    assert calls[0][1]['user'] == user.uid
+
+
+def test_browser_preflight_sets_verified_paths(ctx, tmp_path, monkeypatch):
+    task_form(ctx)
+    user = ctx.lookup_user('alice', 1000)
+    env = {}
+    calls = []
+    def run(args, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(args, 0, 'ok', '')
+    monkeypatch.setattr(dispatch_worker.subprocess, 'run', run)
+    text = dispatch_worker._browser_environment(ctx, user, tmp_path, env)
+    assert env['HTW_CHROME_BINARY'] == str(ctx.settings.dispatch_chrome_binary)
+    assert env['BROWSER_PYTHON'] == str(ctx.settings.dispatch_browser_python)
+    assert calls[0][1]['user'] == user.uid
+    assert 'chromium.launch' in calls[0][0][-1]
+    assert str(ctx.settings.dispatch_chrome_binary) in text
+    monkeypatch.setattr(dispatch_worker.subprocess, 'run', lambda *a, **k: subprocess.CompletedProcess(a, 1, '', 'Permission denied'))
+    with pytest.raises(dispatch_worker.DeliveryError, match='Permission denied'):
+        dispatch_worker._browser_environment(ctx, user, tmp_path, env)
+
+
+def test_shared_events_do_not_complete_another_thread(tmp_path):
+    fake = tmp_path / 'messages.py'
+    fake.write_text('import json\nfor thread in ["unrelated", "owned"]:\n print(json.dumps({"method":"turn/completed","params":{"threadId":thread,"turn":{"id":thread+"-turn","status":"completed"}}}), flush=True)\n')
+    proc = subprocess.Popen([sys.executable, str(fake)], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    client = dispatch_worker.AppServer(proc)
+    client.thread_id = 'owned'
+    client.read(None)
+    assert client.completed is None
+    client.read(None)
+    assert client.completed == ('owned-turn', 'completed')
+    dispatch_worker._stop(proc)

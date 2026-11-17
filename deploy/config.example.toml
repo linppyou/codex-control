@@ -32,3 +32,7 @@ gateway_base_url = "https://codex-control.ppspace.xyz/v1"
 # site_ssh_enabled = true
 # 站点已授权此 CA 公钥时，为用户自动签发 SSH 证书
 # site_ssh_ca_key = "/etc/codexctl/site-access-ca"
+
+# 任务采集的公共浏览器环境，需允许各执行用户读取和执行
+# dispatch_browser_python = "/opt/codexctl/browser-runtime/venv/bin/python"
+# dispatch_chrome_binary = "/opt/codexctl/browser-runtime/chromium/chrome"

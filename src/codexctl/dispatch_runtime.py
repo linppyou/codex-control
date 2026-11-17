@@ -5,13 +5,10 @@ import io
 import json
 import os
 import sqlite3
-import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-
-from . import db
 
 _MAX_CHILDREN = 3
 
@@ -68,6 +65,7 @@ class DispatchRuntime:
             "每行只能有一个会话，最多同时运行三个。每次先检查 list_threads，再派发空闲行。"
             "沿用本批次授权，创建和续跑均继承所选模型、思考程度及两个 Skill。"
             "子会话以结构化结果回报 outcome 为 completed/blocked/failed，摘要为 summary。"
+            "会话与 Codex 桌面端共享服务，人工可实时介入；人工中断或接管后停止自动续发该会话。"
             f"Skill 的 Python 脚本可使用本机解释器 {sys.executable}，支持 Python 3.12 语法及 openpyxl。"
             "必须跟进全部子会话并报告具体阻塞。" + ssh_instructions
         )
@@ -166,6 +164,7 @@ class DispatchRuntime:
                 child['client'].call('thread/name/set', {'threadId': child['threadId'], 'name': title})
             finally:
                 from .dispatch_worker import _stop
+                child['client'].call('thread/unsubscribe', {'threadId': child['threadId']})
                 _stop(child['client'].proc)
                 child['client'] = None
                 child['released'] = True
@@ -174,7 +173,7 @@ class DispatchRuntime:
             self.sync()
             return self._snapshot(child)
         if name == 'send_message_to_thread':
-            if child['status'] in {'running', 'unknown'}:
+            if child['status'] in {'running', 'unknown', 'interrupted'}:
                 raise DeliveryError('会话仍在运行或状态未知，请先核对')
             if sum(c['status'] == 'running' for c in self.children.values()) >= _MAX_CHILDREN:
                 raise DeliveryError('三个子会话正在运行，请等待空闲后继续续跑')
@@ -194,7 +193,7 @@ class DispatchRuntime:
         return value
 
     def create(self, args):
-        from .dispatch_worker import AppServer, DeliveryError, _id, _stop
+        from .dispatch_worker import DeliveryError, _connect_shared, _id, _stop
         row_number = args.get('row')
         rows = list(csv.DictReader(io.StringIO(self.task['csv'])))
         if type(row_number) is not int or not 1 <= row_number <= len(rows):
@@ -226,11 +225,8 @@ class DispatchRuntime:
             cwd.mkdir(parents=True, mode=0o700)
             for path in (cwd.parent, cwd):
                 os.chown(path, self.user.uid, self.user.gid)
-            proc = subprocess.Popen([str(self.ctx.settings.codex_bin), 'app-server'], cwd=cwd, env=self.env,
-                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                    start_new_session=True, user=self.user.uid, group=self.user.gid,
-                                    extra_groups=[], umask=0o077)
-            client = AppServer(proc)
+            client = _connect_shared(self.ctx, self.user, cwd, self.env)
+            proc = client.proc
             client.call('initialize', {'clientInfo': {'name': 'codexctl_site', 'version': '0.1.0'},
                                        'capabilities': {'experimentalApi': True}})
             client.send({'method': 'initialized'})
@@ -249,13 +245,16 @@ class DispatchRuntime:
             )
             thread_options = {
                 'cwd': str(cwd), 'approvalPolicy': 'never', 'sandbox': self.task['sandbox'],
+                'historyMode': 'legacy',
                 'developerInstructions': instructions,
                 'config': {'sandbox_workspace_write.network_access': True,
                            'shell_environment_policy.inherit': 'all',
+                           'shell_environment_policy.set': self.env,
                            'shell_environment_policy.ignore_default_excludes': True},
             }
             started = client.call('thread/start', thread_options)
             thread_id = _id(started, 'thread')
+            client.thread_id = thread_id
             child = dict(row=row_number, threadId=thread_id, turnId=None, title=title, status='starting',
                          result='', error='', revision=1, saved_revision=0, client=client,
                          cancelled=False, future=None, released=False, thread_options=thread_options)
@@ -274,24 +273,19 @@ class DispatchRuntime:
             raise
 
     def _resume(self, child):
-        from .dispatch_worker import AppServer, _stop
+        from .dispatch_worker import _connect_shared, _stop
         if child.get('future') is not None:
             child['future'].result()
         if child.get('released'):
-            proc = subprocess.Popen(
-                [str(self.ctx.settings.codex_bin), 'app-server'],
-                cwd=child['thread_options']['cwd'], env=self.env,
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                start_new_session=True, user=self.user.uid, group=self.user.gid,
-                extra_groups=[], umask=0o077,
-            )
-            client = AppServer(proc)
+            client = _connect_shared(self.ctx, self.user, Path(child['thread_options']['cwd']), self.env)
+            proc = client.proc
             try:
                 client.call('initialize', {'clientInfo': {'name': 'codexctl_site', 'version': '0.1.0'},
                                            'capabilities': {'experimentalApi': True}})
                 client.send({'method': 'initialized'})
-                client.call('thread/resume', {**child['thread_options'], 'threadId': child['threadId'],
-                                               'excludeTurns': True})
+                resume_options = {key: value for key, value in child['thread_options'].items() if key != 'historyMode'}
+                client.call('thread/resume', {**resume_options, 'threadId': child['threadId'], 'excludeTurns': True})
+                client.thread_id = child['threadId']
             except (OSError, ValueError):
                 _stop(proc)
                 raise
@@ -354,6 +348,10 @@ class DispatchRuntime:
             child.update(status='unknown', error=str(exc))
         finally:
             from .dispatch_worker import _stop
+            try:
+                child['client'].call('thread/unsubscribe', {'threadId': child['threadId']})
+            except (OSError, ValueError):
+                pass
             _stop(child['client'].proc)
             child['client'] = None
             child['released'] = True

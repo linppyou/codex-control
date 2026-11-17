@@ -12,6 +12,7 @@ import selectors
 import signal
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -49,6 +50,7 @@ class AppServer:
         self.result_text = ""
         self.on_request = None
         self.on_message = None
+        self.thread_id = None
 
     def send(self, message: dict) -> None:
         self.proc.stdin.write(json.dumps(message, ensure_ascii=False).encode() + b"\n")
@@ -82,6 +84,10 @@ class AppServer:
                 raise ValueError
         except ValueError as exc:
             raise DeliveryError("Codex 返回了无法识别的回执") from exc
+        params = message.get('params', {})
+        belongs = not self.thread_id or not params.get('threadId') or params['threadId'] == self.thread_id
+        if not belongs and 'method' in message:
+            return message
         if message.get("method") == "turn/completed":
             params = message.get("params")
             turn = params.get("turn") if isinstance(params, dict) else None
@@ -222,6 +228,55 @@ def _env(user: SysUser, name: str | None) -> dict[str, str]:
     return env
 
 
+def _connect_shared(ctx: Context, user: SysUser, cwd: Path, env: dict) -> AppServer:
+    socket_path = user.home / '.codex' / 'app-server-control' / 'app-server-control.sock'
+    if not socket_path.exists():
+        started = subprocess.run(
+            [str(ctx.settings.codex_bin), 'app-server', 'daemon', 'start'],
+            cwd=cwd, env=env, user=user.uid, group=user.gid, extra_groups=[],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=45,
+        )
+        if started.returncode or not socket_path.exists():
+            raise DeliveryError('无法启动执行用户的共享 Codex App Server')
+    proc = subprocess.Popen(
+        [sys.executable, str(Path(__file__).with_name('dispatch_transport.py')), str(socket_path)],
+        cwd=cwd, env=env, user=user.uid, group=user.gid, extra_groups=[],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        start_new_session=True, umask=0o077,
+    )
+    return AppServer(proc)
+
+
+def _browser_environment(ctx: Context, user: SysUser, root: Path, env: dict) -> str:
+    python = ctx.settings.dispatch_browser_python
+    chrome = ctx.settings.dispatch_chrome_binary
+    env['HTW_CHROME_BINARY'] = str(chrome)
+    env['CHROME_BIN'] = str(chrome)
+    env['BROWSER_PYTHON'] = str(python)
+    check = (
+        'import os; from playwright.sync_api import sync_playwright; '
+        'p=sync_playwright().start(); '
+        'b=p.chromium.launch(executable_path=os.environ["HTW_CHROME_BINARY"],headless=True,args=["--no-sandbox"]); '
+        'page=b.new_page(); page.set_content("<title>codexctl browser check</title>"); '
+        'assert page.title()=="codexctl browser check"; b.close(); p.stop(); print("ok")'
+    )
+    try:
+        result = subprocess.run(
+            [str(python), '-c', check], cwd=root, env=env, user=user.uid, group=user.gid,
+            extra_groups=[], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=45,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise DeliveryError(f'浏览器启动检查失败，执行用户 {user.name}：{exc}') from exc
+    if result.returncode:
+        raise DeliveryError(f'浏览器启动检查失败，执行用户 {user.name}：{result.stderr[-1200:]}')
+    return (
+        f'已以当前用户验证浏览器可启动。采集 Python 使用 {python}，'
+        f'Chromium 使用 {chrome}。环境变量 HTW_CHROME_BINARY/CHROME_BIN/BROWSER_PYTHON 已配置。'
+        f'Playwright launch 显式传 executable_path={str(chrome)!r}；Skill 使用同一 HTW_CHROME_BINARY。'
+        '依赖缺失时在当前用户可写的运行目录建立虚拟环境并安装，沿用已验证的浏览器路径。'
+    )
+
+
 def _record(
     ctx: Context, task: sqlite3.Row, status: str, error: str = "", **fields,
 ) -> None:
@@ -295,19 +350,16 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
         inputs = [{"type": "text", "text": task["prompt"]}, *_stage(run_root, task, user, packages)]
         ssh_instructions = _stage_ssh(ctx, task, user, Path(cwd))
         env["PATH"] = f"{cwd}/bin:{env['PATH']}"
+        browser_instructions = _browser_environment(ctx, user, Path(cwd), env)
         # Site bindings or Skill packages may change while files are being staged.
         with db.transaction(ctx.conn):
             current_user, current_label = dispatch_tasks.validate_snapshot(ctx, task)
         if (current_user, current_label) != (user, label):
             raise DeliveryError("执行用户或 Codex 账号绑定已变更，请重新预览")
         check_cancel()
-        proc = subprocess.Popen(
-            [str(ctx.settings.codex_bin), "app-server"], cwd=cwd, env=env, stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True,
-            user=user.uid, group=user.gid, extra_groups=[], umask=0o077,
-        )
-        client = AppServer(proc)
-        runtime = dispatch_runtime.DispatchRuntime(ctx, task, user, Path(cwd), env, inputs[1:], ssh_instructions,
+        client = _connect_shared(ctx, user, Path(cwd), env)
+        proc = client.proc
+        runtime = dispatch_runtime.DispatchRuntime(ctx, task, user, Path(cwd), env, inputs[1:], ssh_instructions + browser_instructions,
                                                    check_cancel)
         client.on_request = runtime.handle
         client.on_message = lambda message: runtime.sync()
@@ -316,14 +368,17 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
         client.send({"method": "initialized"})
         thread_id = _id(client.call("thread/start", {
             "cwd": cwd, "approvalPolicy": "never", "sandbox": task['sandbox'],
+            "historyMode": "legacy",
             "dynamicTools": dispatch_runtime.TOOLS,
             "developerInstructions": runtime.instructions,
             "config": {
                 "sandbox_workspace_write.network_access": True,
                 "shell_environment_policy.ignore_default_excludes": True,
                 "shell_environment_policy.inherit": "all",
+                "shell_environment_policy.set": env,
             },
         }), "thread")
+        client.thread_id = thread_id
         _record(ctx, task, "sending", thread_id=thread_id, account_label=label)
         client.call("thread/name/set", {"threadId": thread_id, "name": task["title"]})
         check_cancel()
@@ -367,6 +422,9 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
     finally:
         if runtime is not None:
             runtime.close()
+        if client is not None and thread_id:
+            with suppress(OSError, ValueError):
+                client.call('thread/unsubscribe', {'threadId': thread_id})
         if proc is not None:
             _stop(proc)
         with db.transaction(ctx.conn):

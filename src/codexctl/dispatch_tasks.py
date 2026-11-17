@@ -399,8 +399,8 @@ def confirm(
             raise TaskError("请由导入任务的成员确认发送")
         model = model.strip() or DEFAULT_MODEL
         reasoning_effort = reasoning_effort.strip() or DEFAULT_REASONING_EFFORT
-        if sandbox not in {"workspace-write", "danger-full-access"}:
-            raise TaskError("请选择有效的沙箱模式")
+        if sandbox != DEFAULT_SANDBOX:
+            raise TaskError("任务统一使用不受 Codex 沙箱限制的执行模式")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}", model):
             raise TaskError("模型 ID 最多 128 个字符，请使用字母、数字或 . _ : / + -")
         if not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", reasoning_effort):

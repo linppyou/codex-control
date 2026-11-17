@@ -51,12 +51,8 @@
         <datalist id="dispatch-efforts">
           {% for effort in ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] %}<option value="{{ effort }}"></option>{% endfor %}
         </datalist>
-        <label>执行权限
-          <select name="sandbox">
-            <option value="danger-full-access"{% if execution.sandbox == 'danger-full-access' %} selected{% endif %}>不使用沙箱（默认）</option>
-            <option value="workspace-write"{% if execution.sandbox == 'workspace-write' %} selected{% endif %}>工作区写入沙箱</option>
-          </select>
-        </label>
+        <input type="hidden" name="sandbox" value="danger-full-access">
+        <p class="hint dispatch-wide">执行权限为不使用沙箱，批准策略为 never。运行中可通过同一用户的 Codex 会话介入。</p>
         <p class="hint dispatch-wide">默认使用 gpt-6.1-terra，思考程度为 medium（中等）。可修改为执行环境支持的模型和档位，留空使用上述默认值。</p>
       </div>
       <label><input type="checkbox" name="confirmed" value="1" required> 已核对提示词、目标站及 Skill，确认发送</label>

@@ -298,7 +298,7 @@ curl -fsS -H "Authorization: Bearer ${CODEXCTL_API_KEY}" https://codex-control.p
 
 ### 任务子会话与 SSH 执行
 
-任务默认使用 `gpt-6.1-terra`、`medium` 和 `danger-full-access`（不使用 Codex 沙箱），以任务接收人的 Linux 用户身份执行。确认页可改为 `workspace-write`。批准策略为 `never`，子会话继承本批次的模型、思考程度、执行权限和两个 Skill。
+任务默认使用 `gpt-6.1-terra`、`medium` 和 `danger-full-access`（不使用 Codex 沙箱），以任务接收人的 Linux 用户身份执行。任务确认页统一使用此执行权限。批准策略为 `never`，子会话继承本批次的模型、思考程度、执行权限和两个 Skill。
 
 Worker 通过 App Server 的动态工具提供项目查询、独立会话创建、等待、读取、续跑、重命名和取消。每个 CSV 数据行仅绑定一个真实子会话，最多同时运行三个。会话标识与结果保存在数据库，Worker 中断后标记为待核对，避免重复创建。取消批次时同步中断子会话。
 
@@ -306,4 +306,6 @@ SSH 部署任务要求执行用户已有站点私钥，目标服务器已登记�
 
 任务详情展示总控回复、每站真实会话 ID、执行结果及阻塞。Codex 轮次结束后，若仍有未创建或未完成的子任务，页面显示批次未完成提示。
 
-子会话轮次结束后 Worker 关闭对应 App Server 并释放写入锁，桌面端可恢复该会话。自动续跑时重新启动 App Server 并恢复原 threadId。运行中的会话由 Worker 持有写入权，桌面端可查看进度，批次结束后主会话也会释放。
+Worker 与 Codex 桌面端连接同一用户的共享 App Server。运行中可在桌面端恢复同一会话、补充指令或中断，避免独立进程竞争会话写入权。数据库仍使用原 threadId 跟踪。人工中断后停止自动续发该会话；结束后 Worker 取消订阅并关闭自己的连接，保留共享服务和其他客户端。
+
+任务派发前使用 `dispatch_browser_python` 和 `dispatch_chrome_binary` 以接收人的系统身份实际启动 Chromium。默认路径为 `/opt/codexctl/browser-runtime/venv/bin/python` 和 `/opt/codexctl/browser-runtime/chromium/chrome`。公共目录需可被执行用户读取及进入；浏览器缓存、配置和采集产物放在用户可写目录。Worker 将验证过的路径通过 `BROWSER_PYTHON`、`HTW_CHROME_BINARY`、`CHROME_BIN` 及会话级环境配置传给主子会话。缺失或无法启动时返回具体错误。依赖中需要 `websockets>=15,<16`；该客户端通过用户 `.codex/app-server-control/app-server-control.sock` 连接共享服务，首次使用时尝试启动用户的 App Server daemon。
