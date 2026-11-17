@@ -27,6 +27,8 @@ gateway_base_url = "https://codex-control.ppspace.xyz/v1"
 
 # 为面板和 CLI 新建的 Linux 用户生成独立站点 SSH 密钥
 # site_ssh_enabled = true
+# 共享部署密钥，接入服务器时自动授权，新用户获得同一密钥的受限权限副本
+# site_ssh_shared = true
 # 站点已授权此 CA 公钥时，为用户自动签发 SSH 证书
 # site_ssh_ca_key = "/etc/codexctl/site-access-ca"
 

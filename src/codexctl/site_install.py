@@ -49,10 +49,14 @@ def main():
         json.loads(result.stdout)
         authorized = ssh / "authorized_keys"
         lines = authorized.read_text().splitlines() if authorized.exists() else []
-        public_key = SETTINGS["authorized_key"].split()[2]
-        # Match the key blob so retries replace only this enrollment's authorization.
-        lines = [line for line in lines if public_key not in line.split()]
-        lines.append(SETTINGS["authorized_key"])
+        keys = [SETTINGS["authorized_key"]]
+        if SETTINGS.get("access_key"):
+            keys.append(SETTINGS["access_key"])
+        for authorization in keys:
+            public_key = next(part for part in authorization.split() if part.startswith("AAAA"))
+            # Match key blobs so retries preserve unrelated authorizations.
+            lines = [line for line in lines if public_key not in line.split()]
+            lines.append(authorization)
         atomic_write(authorized, ("\n".join(lines) + "\n").encode(), 0o600)
     request = urllib.request.Request(
         SETTINGS["callback"], data=urlencode({"host_key": host_key}).encode(),

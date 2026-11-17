@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import fcntl
 import os
 import secrets
 import stat
@@ -127,6 +128,9 @@ def provision(settings: Settings, user: SysUser) -> str:
     if user.uid < max(1, settings.min_uid) or user.name in settings.hidden_users or not valid_name(user.name):
         raise ValueError(f"该用户不能开通站点 SSH：{user.name}")
 
+    if settings.site_ssh_shared:
+        return _provision_shared(settings, user)
+
     ca = _load_ca(settings.site_ssh_ca_key) if settings.site_ssh_ca_key is not None else None
     base = settings.state_dir / "site-access"
     _check_directory(settings.state_dir)
@@ -140,6 +144,92 @@ def provision(settings: Settings, user: SysUser) -> str:
     if ca is not None:
         _ensure_certificate(target, user, public_line, ca)
     return public_line
+
+
+def shared_key(settings: Settings) -> Path:
+    if os.geteuid() != 0:
+        raise ValueError("开通站点 SSH 需要 root 权限")
+    _check_directory(settings.state_dir)
+    base = settings.state_dir / "site-access"
+    base.mkdir(mode=0o711, exist_ok=True)
+    _check_directory(base)
+    base.chmod(0o711)
+    target = base / "shared"
+    root = SysUser("root", 0, 0, Path("/root"))
+    with (base / ".shared.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not _is_provisioned(target, root):
+            _create_key(base, target, root)
+        target.chmod(0o700)
+    return target / KEY_NAME
+
+
+def shared_authorization(settings: Settings) -> str:
+    key = shared_key(settings)
+    return key.with_suffix(".pub").read_text(encoding="ascii").strip()
+
+
+def _provision_shared(settings: Settings, user: SysUser) -> str:
+    key = shared_key(settings)
+    target = key.parent.parent / f"{user.name}-{user.uid}"
+    with (key.parent.parent / ".shared.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        target.mkdir(mode=0o711, exist_ok=True)
+        _check_directory(target)
+        target.chmod(0o711)
+        for source, name, owner, mode in (
+            (key, KEY_NAME, user.uid, 0o400),
+            (key.with_suffix(".pub"), PUBLIC_NAME, 0, 0o444),
+        ):
+            with NamedTemporaryFile(dir=target, delete=False) as staged:
+                temporary = Path(staged.name)
+                try:
+                    staged.write(source.read_bytes())
+                    staged.flush()
+                    os.fchown(staged.fileno(), owner, user.gid if owner else 0)
+                    os.fchmod(staged.fileno(), mode)
+                    staged.close()
+                    temporary.replace(target / name)
+                finally:
+                    temporary.unlink(missing_ok=True)
+        (target / CERT_NAME).unlink(missing_ok=True)
+    return key.with_suffix(".pub").read_text(encoding="ascii").strip()
+
+
+def sync_client_config(ctx) -> None:
+    """Refresh system SSH destinations after a shared-access server change."""
+    if not (ctx.settings.site_ssh_enabled and ctx.settings.site_ssh_shared and ctx.settings.manages_local_codex):
+        return
+    from . import site_registry
+
+    directory = Path("/etc/ssh/ssh_config.d")
+    directory.mkdir(mode=0o755, parents=True, exist_ok=True)
+    known_hosts = ctx.settings.state_dir / "site-access" / "known_hosts"
+    shared_key(ctx.settings)
+    config, hosts = [], []
+    for server in site_registry.list_servers(ctx.conn):
+        if not server.host_key:
+            continue
+        host = server.host if server.port == 22 else f"[{server.host}]:{server.port}"
+        hosts.append(f"{host} {server.host_key}\n")
+        config.append(
+            f"Match originalhost {server.host},wp-{server.host.replace('.', '-').replace(':', '-')} localuser *,!root\n"
+            f"    HostName {server.host}\n    Port {server.port}\n    User root\n"
+            f'    IdentityFile "{ctx.settings.state_dir}/site-access/%u-%i/{KEY_NAME}"\n'
+            f'    UserKnownHostsFile "{known_hosts}"\n'
+            "    IdentitiesOnly yes\n    StrictHostKeyChecking yes\n    UpdateHostKeys no\n\n"
+        )
+    for path, content in ((known_hosts, "".join(hosts)), (directory / "10-codexctl-shared-sites.conf", "".join(config) + "Host *\n")):
+        with NamedTemporaryFile(dir=path.parent, delete=False) as staged:
+            temporary = Path(staged.name)
+            try:
+                staged.write(content.encode("utf-8"))
+                staged.flush()
+                os.fchmod(staged.fileno(), 0o644)
+                staged.close()
+                temporary.replace(path)
+            finally:
+                temporary.unlink(missing_ok=True)
 
 
 def _create_key(base: Path, target: Path, user: SysUser) -> None:

@@ -42,6 +42,7 @@ class Settings:
     web_socket: str = "/run/codexctl/web.sock"
     web_socket_group: str = "www"
     site_ssh_enabled: bool = False
+    site_ssh_shared: bool = False
     site_ssh_ca_key: Path | None = None
     web_system_users: tuple[str, ...] = ()
     hidden_users: tuple[str, ...] = ()

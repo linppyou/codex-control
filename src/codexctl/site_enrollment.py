@@ -8,7 +8,7 @@ import shlex
 from dataclasses import asdict, replace
 from pathlib import Path
 
-from . import db, events, site_probe, site_registry, sites
+from . import db, events, site_access, site_probe, site_registry, sites
 from .context import Context
 
 TTL = 1800
@@ -66,7 +66,7 @@ def command(ctx: Context, server: site_registry.Server, base_url: str) -> str | 
     )
 
 
-def installer(server: site_registry.Server, token: str, base_url: str) -> str:
+def installer(server: site_registry.Server, token: str, base_url: str, *, access_key: str | None = None) -> str:
     collector = Path(__file__).with_name("collect_sites.py")
     if not collector.is_file():
         collector = Path(__file__).resolve().parents[2] / "deploy" / "collect-sites.py"
@@ -76,6 +76,7 @@ def installer(server: site_registry.Server, token: str, base_url: str) -> str:
         "server_id": server.id,
         "token": token,
         "callback": base_url + "/site-enrollment/complete",
+        "access_key": access_key,
     }
     template = Path(__file__).with_name("site_install.py").read_text()
     return template.replace("SETTINGS = {}", "SETTINGS = " + repr(settings), 1)
@@ -111,3 +112,4 @@ def complete(ctx: Context, server: site_registry.Server, token: str, verified: l
         ctx.conn.execute("DELETE FROM site_enrollments WHERE server_id=?", (server.id,))
         events.audit(ctx.conn, "site-enrollment", "site.enrolled", server.id,
                      json.dumps({"sites": len(verified)}), now=ctx.now())
+    site_access.sync_client_config(ctx)
