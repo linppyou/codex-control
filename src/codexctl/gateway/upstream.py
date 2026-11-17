@@ -5,10 +5,15 @@ import base64
 import hashlib
 import json
 import re
+import time
+import threading
+import uuid
+from collections import OrderedDict
 from dataclasses import replace
 from typing import AsyncIterator
 
 import httpx
+import zstandard
 from starlette.concurrency import run_in_threadpool
 
 import codexctl.accounts.refresher as refresher
@@ -19,6 +24,7 @@ import codexctl.gateway.storage as storage
 from codexctl.accounts.authfile import AuthBundle, AuthFileError
 from codexctl.context import Context
 from codexctl.gateway.storage import GatewayError, Key
+from codexctl.gateway.websocket import WebSocketPool
 from codexctl.vault import Vault, VaultError
 
 BASE = "https://chatgpt.com/backend-api/codex"
@@ -37,7 +43,7 @@ SESSION_FIELDS = {
 }
 
 
-def adapt(payload: dict, key: Key) -> tuple[dict, bool]:
+def adapt(payload: dict, key: Key, *, allow_previous: bool = False) -> tuple[dict, bool]:
     model = payload.get("model")
     if not isinstance(model, str) or not storage.MODEL_ID.fullmatch(model):
         raise GatewayError(400, "invalid_model", "A valid explicit model ID is required.")
@@ -50,7 +56,10 @@ def adapt(payload: dict, key: Key) -> tuple[dict, bool]:
         raise GatewayError(400, "unsupported_service_tier", "Unsupported service tier.")
     if tier == "priority" and not (key.allow_fast and key.models[model]):
         raise GatewayError(403, "service_tier_not_allowed", "Fast is unavailable for this model or API Key.")
-    if payload.get("previous_response_id") is not None or payload.get("conversation") is not None or payload.get("background"):
+    previous = payload.get("previous_response_id")
+    if (previous is not None and (not allow_previous or not isinstance(previous, str) or not previous
+                                 or len(previous) > 256)
+            or payload.get("conversation") is not None or payload.get("background")):
         raise GatewayError(400, "unsupported_state", "Supply conversation items inline. Stored and background responses are unavailable.")
     for name in UNSUPPORTED_OUTPUT_LIMIT_FIELDS:
         if payload.get(name) is not None:
@@ -60,8 +69,10 @@ def adapt(payload: dict, key: Key) -> tuple[dict, bool]:
     output_limit = data.get("max_output_tokens")
     if output_limit is not None and (type(output_limit) is not int or output_limit <= 0):
         raise GatewayError(400, "invalid_output_limit", "max_output_tokens must be a positive integer.")
-    for field in (*UNSUPPORTED_OUTPUT_LIMIT_FIELDS, "metadata", "user", "previous_response_id", "conversation", "background"):
+    for field in (*UNSUPPORTED_OUTPUT_LIMIT_FIELDS, "metadata", "user", "conversation", "background"):
         data.pop(field, None)
+    if previous is None:
+        data.pop("previous_response_id", None)
     if tier == "priority":
         data["service_tier"] = tier
     else:
@@ -134,6 +145,10 @@ def scope_session(key: Key, payload: dict, incoming: httpx.Headers, vault: Vault
             pass
     if isinstance(payload.get("prompt_cache_key"), str):
         payload["prompt_cache_key"] = scoped(payload["prompt_cache_key"])
+    elif "prompt_cache_key" not in payload and (session_id or thread_id):
+        payload["prompt_cache_key"] = scoped(session_id or thread_id)
+    if not session_id and isinstance(payload.get("prompt_cache_key"), str):
+        headers["session-id"] = payload["prompt_cache_key"]
     return headers
 
 
@@ -186,21 +201,32 @@ class Gateway:
         self.client: httpx.AsyncClient | None = None
         self.catalog_tasks: dict[tuple[int, str], asyncio.Task] = {}
         self.refresh_tasks: dict[int, asyncio.Task[bool]] = {}
+        self.credential_cache: OrderedDict[int, tuple[int, AuthBundle]] = OrderedDict()
+        self.credential_lock = threading.Lock()
+        self.websockets = WebSocketPool(ctx.settings)
 
     async def start(self):
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(300, connect=self.ctx.settings.http_timeout, write=60),
-            limits=httpx.Limits(max_connections=None, max_keepalive_connections=20, keepalive_expiry=30),
+            limits=httpx.Limits(max_connections=None,
+                               max_keepalive_connections=self.ctx.settings.gateway_max_keepalive_connections,
+                               keepalive_expiry=self.ctx.settings.gateway_keepalive_expiry),
+            http2=self.ctx.settings.gateway_http2,
             follow_redirects=False, transport=self.transport, trust_env=False,
         )
+        if self.ctx.settings.gateway_transport != "http":
+            self.websockets.start()
 
     async def close(self):
         for task in self.catalog_tasks.values():
             task.cancel()
         await asyncio.gather(*self.catalog_tasks.values(), return_exceptions=True)
         await asyncio.gather(*self.refresh_tasks.values(), return_exceptions=True)
+        await self.websockets.close()
         if self.client:
             await self.client.aclose()
+        with self.credential_lock:
+            self.credential_cache.clear()
 
     def _read_credentials(self, account_pk: int) -> tuple[account_repo.Account, int, AuthBundle]:
         with db.connection(self.ctx.settings.db_path) as conn:
@@ -209,9 +235,23 @@ class Gateway:
             acc = account_repo.get_account_by_pk(conn, account_pk)
             version = account_repo.secret_version(conn, account_pk)
             if acc is None or acc.status != "active" or version is None:
+                with self.credential_lock:
+                    self.credential_cache.pop(account_pk, None)
                 raise storage.unavailable()
             try:
-                return acc, version, accounts.load_bundle(ctx, acc)
+                with self.credential_lock:
+                    cached = self.credential_cache.get(account_pk)
+                    if cached and cached[0] == version:
+                        self.credential_cache.move_to_end(account_pk)
+                        return acc, version, cached[1]
+                bundle = accounts.load_bundle(ctx, acc)
+                with self.credential_lock:
+                    if self.ctx.settings.gateway_credential_cache_size:
+                        self.credential_cache[account_pk] = (version, bundle)
+                        self.credential_cache.move_to_end(account_pk)
+                        while len(self.credential_cache) > self.ctx.settings.gateway_credential_cache_size:
+                            self.credential_cache.popitem(last=False)
+                return acc, version, bundle
             except (AuthFileError, VaultError, LookupError):
                 raise storage.unavailable() from None
 
@@ -245,11 +285,14 @@ class Gateway:
         return acc.account_id, bundle.access_token, version
 
     async def send(self, account_pk: int, path: str, *, payload: dict | None = None, version: str | None = None,
-                   headers: dict | None = None) -> httpx.Response:
+                   headers: dict | None = None, metrics: dict | None = None) -> httpx.Response:
         assert self.client is not None
         rejected_version = None
         for attempt in range(2):
+            started = time.monotonic()
             account_id, access_token, observed = await self._credentials(account_pk, rejected_version)
+            if metrics is not None:
+                metrics["credentials_ms"] = metrics.get("credentials_ms", 0) + round((time.monotonic() - started) * 1000, 2)
             upstream_headers = {
                 "authorization": f"Bearer {access_token}",
                 "chatgpt-account-id": account_id,
@@ -258,6 +301,32 @@ class Gateway:
                 "accept": "text/event-stream" if path == "/responses" else "application/json",
                 **(headers or {}),
             }
+            if payload is not None and self.ctx.settings.gateway_transport != "http" and self.transport is None:
+                session = upstream_headers.get("session-id") or upstream_headers.get("thread-id") or uuid.uuid4().hex
+                ws_metrics = metrics if metrics is not None else {}
+                try:
+                    response = await self.websockets.response(
+                        BASE.replace("https:", "wss:") + path, (account_pk, observed, session),
+                        upstream_headers, payload, ws_metrics,
+                    )
+                except GatewayError as exc:
+                    if self.ctx.settings.gateway_transport != "auto" or payload.get("previous_response_id"):
+                        raise
+                    ws_metrics["ws_fallback_error"] = exc.code
+                    response = None
+                if response is None:
+                    pass
+                elif response.status_code == 401 and not attempt:
+                    await response.aclose()
+                    rejected_version = observed
+                    continue
+                elif (self.ctx.settings.gateway_transport == "websocket" or payload.get("previous_response_id")
+                      or response.status_code not in (400, 403, 404, 405, 426, 501)):
+                    return response
+                else:
+                    await response.aclose()
+                    if metrics is not None:
+                        metrics["ws_fallback_status"] = response.status_code
             try:
                 # A standalone Request avoids sharing upstream cookies across bound accounts.
                 request = httpx.Request(
@@ -266,8 +335,36 @@ class Gateway:
                 )
             except (ValueError, RecursionError):
                 raise GatewayError(400, "invalid_request", "The request body cannot be encoded as JSON.") from None
+            if metrics is not None:
+                metrics["request_bytes"] = len(request.content)
+            if (payload is not None and self.ctx.settings.gateway_request_compression
+                    and len(request.content) >= self.ctx.settings.gateway_compression_min_bytes):
+                compressed = await asyncio.to_thread(zstandard.ZstdCompressor(level=1).compress, request.content)
+                if len(compressed) < len(request.content):
+                    request.headers["content-encoding"] = "zstd"
+                    request.headers["content-length"] = str(len(compressed))
+                    request = httpx.Request(request.method, request.url, headers=request.headers, content=compressed)
+            if metrics is not None:
+                metrics["wire_bytes"] = len(request.content)
+                trace_started = {}
+
+                async def trace(name, info):
+                    operation, _, state = name.rpartition(".")
+                    if state == "started":
+                        trace_started[operation] = time.monotonic()
+                    elif state in ("complete", "failed") and operation in trace_started:
+                        if operation.endswith(("connect_tcp", "start_tls")):
+                            field = operation.rsplit(".", 1)[-1] + "_ms"
+                            metrics[field] = metrics.get(field, 0) + round((time.monotonic() - trace_started.pop(operation)) * 1000, 2)
+
+                request.extensions["trace"] = trace
             try:
+                started = time.monotonic()
                 response = await self.client.send(request, stream=True)
+                if metrics is not None:
+                    metrics["upstream_headers_ms"] = round((time.monotonic() - started) * 1000, 2)
+                    metrics["upstream_protocol"] = response.http_version
+                    metrics["auth_retries"] = attempt
             except httpx.TimeoutException:
                 raise GatewayError(504, "upstream_timeout", "The Codex upstream timed out.") from None
             except (httpx.HTTPError, UnicodeError):
@@ -415,16 +512,17 @@ class Gateway:
 class Events:
     """Inspect bounded SSE records without altering the stream sent to the client."""
 
-    def __init__(self):
+    def __init__(self, max_event: int = MAX_EVENT):
         self.line = bytearray()
         self.data = bytearray()
         self.discard_line = False
         self.discard_event = False
+        self.max_event = max_event
 
     def feed(self, chunk: bytes):
         lines = chunk.split(b"\n")
         for index, piece in enumerate(lines):
-            if len(self.line) + len(piece) > MAX_EVENT:
+            if len(self.line) + len(piece) > self.max_event:
                 self.line.clear()
                 self.data.clear()
                 self.discard_line = True
@@ -440,7 +538,7 @@ class Events:
             self.line.clear()
             if line.startswith(b"data:") and not self.discard_event:
                 value = line[5:].lstrip(b" ")
-                if len(self.data) + len(value) + 1 > MAX_EVENT:
+                if len(self.data) + len(value) + 1 > self.max_event:
                     self.data.clear()
                     self.discard_event = True
                 else:
@@ -457,7 +555,7 @@ class Events:
                     yield event
 
 
-async def sse(response: httpx.Response) -> AsyncIterator[tuple[bytes, list[dict]]]:
-    parser = Events()
+async def sse(response: httpx.Response, *, max_event: int = MAX_EVENT) -> AsyncIterator[tuple[bytes, list[dict]]]:
+    parser = Events(max_event)
     async for chunk in response.aiter_bytes():
         yield chunk, list(parser.feed(chunk))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tomllib
+import math
 from dataclasses import dataclass, fields
 from pathlib import Path
 
@@ -18,6 +19,15 @@ class Settings:
     gateway_enabled: bool = False
     gateway_client_version: str = "0.167.0"
     gateway_base_url: str = "https://codex-control.ppspace.xyz/v1"
+    gateway_http2: bool = True
+    gateway_max_keepalive_connections: int = 128
+    gateway_keepalive_expiry: float = 90.0
+    gateway_transport: str = "http"
+    gateway_request_compression: bool = False
+    gateway_compression_min_bytes: int = 65536
+    gateway_ws_idle_seconds: float = 90.0
+    gateway_ws_max_idle_connections: int = 64
+    gateway_credential_cache_size: int = 128
     state_dir: Path = Path("/var/lib/codexctl")
     key_file: Path = Path("/etc/codexctl/master.key")
     codex_bin: Path = Path("/opt/codex/bin/codex")
@@ -59,6 +69,22 @@ class Settings:
     def __post_init__(self) -> None:
         if self.deployment_mode not in ("managed", "gateway"):
             raise ValueError("deployment_mode 必须为 managed 或 gateway")
+        if self.gateway_transport not in ("http", "auto", "websocket"):
+            raise ValueError("gateway_transport 必须为 http、auto 或 websocket")
+        for name in ("gateway_http2", "gateway_request_compression"):
+            if type(getattr(self, name)) is not bool:
+                raise ValueError(f"{name} 必须为布尔值")
+        for name in ("gateway_max_keepalive_connections", "gateway_ws_max_idle_connections",
+                     "gateway_credential_cache_size"):
+            value = getattr(self, name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{name} 必须为非负整数")
+        if type(self.gateway_compression_min_bytes) is not int or self.gateway_compression_min_bytes < 1:
+            raise ValueError("gateway_compression_min_bytes 必须为正整数")
+        for name in ("gateway_keepalive_expiry", "gateway_ws_idle_seconds"):
+            value = getattr(self, name)
+            if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} 必须为有限正数")
 
     @property
     def manages_local_codex(self) -> bool:

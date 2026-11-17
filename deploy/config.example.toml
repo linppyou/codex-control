@@ -24,6 +24,16 @@ deployment_mode = "managed" # 纯网关主机使用 "gateway"
 gateway_enabled = false
 gateway_client_version = "0.167.0"
 gateway_base_url = "https://codex-control.ppspace.xyz/v1"
+# 上游连接优化。HTTP/2 先保持开启，WebSocket 需要完成真实兼容性验收后再切为 auto。
+# gateway_http2 = true
+# gateway_max_keepalive_connections = 128
+# gateway_keepalive_expiry = 90.0
+# gateway_transport = "http" # http、auto 或 websocket
+# gateway_request_compression = false
+# gateway_compression_min_bytes = 65536
+# gateway_credential_cache_size = 128
+# gateway_ws_idle_seconds = 90.0
+# gateway_ws_max_idle_connections = 64
 
 # 为面板和 CLI 新建的 Linux 用户生成独立站点 SSH 密钥
 # site_ssh_enabled = true

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import logging
 import time
 import uuid
 
 import anyio
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
@@ -81,10 +82,11 @@ class _Stream(StreamingResponse):
 
 
 class Exchange:
-    def __init__(self, gateway: Gateway, usage: Usage):
+    def __init__(self, gateway: Gateway, usage: Usage, *, started: float | None = None, metrics: dict | None = None):
         self.gateway = gateway
         self.usage = usage
-        self.started = time.monotonic()
+        self.started = time.monotonic() if started is None else started
+        self.metrics = {} if metrics is None else metrics
         self.response: httpx.Response | None = None
         self.saved = False
         self.upstream_exhausted = False
@@ -96,6 +98,9 @@ class Exchange:
         result = None
         for event in events:
             typ = event.get("type")
+            if typ == "response.output_text.delta" and event.get("delta"):
+                self.metrics.setdefault("first_text_ms", self.elapsed())
+                self.metrics["last_text_ms"] = self.elapsed()
             if isinstance(typ, str) and typ in FIRST_OUTPUT_EVENTS and self.usage.first_output_ms is None:
                 self.usage.first_output_ms = self.elapsed()
             if self.usage.status != "incomplete" or not isinstance(typ, str) or typ not in upstream.TERMINALS:
@@ -112,6 +117,7 @@ class Exchange:
     async def stream(self):
         try:
             async for chunk, events in upstream.sse(self.response):
+                self.metrics.setdefault("first_byte_ms", self.elapsed())
                 self.events(events)
                 yield chunk
             self.upstream_exhausted = True
@@ -125,6 +131,7 @@ class Exchange:
 
     async def json_result(self) -> dict:
         async for _, events in upstream.sse(self.response):
+            self.metrics.setdefault("first_byte_ms", self.elapsed())
             result = self.events(events)
             if result is not None:
                 return result
@@ -151,6 +158,11 @@ class Exchange:
                     await run_in_threadpool(save)
                 except Exception:
                     log.exception("Could not store gateway usage for %s", self.usage.request_id)
+                log.info("gateway_metrics %s", json.dumps({
+                    "request_id": self.usage.request_id, "account_pk": self.usage.key.account_pk,
+                    "model": self.usage.model, "status": self.usage.status,
+                    "total_ms": self.usage.elapsed_ms, **self.metrics,
+                }, separators=(",", ":")))
 
 
 def _native_catalog(catalog: dict, key: Key) -> dict:
@@ -255,19 +267,122 @@ def create_api(gateway: Gateway) -> FastAPI:
         await authenticate(request)
         raise GatewayError(400, "legacy_compaction_unsupported", "Use a current Codex release with Responses compaction.")
 
+    @app.websocket("/responses")
+    async def websocket_responses(socket: WebSocket):
+        if ctx.settings.gateway_transport == "http":
+            await socket.close(code=1008)
+            return
+        try:
+            await with_models(socket)
+        except GatewayError:
+            await socket.close(code=1008)
+            return
+        await socket.accept()
+        incoming = httpx.Headers(socket.headers.items())
+        if "session-id" not in incoming and "session_id" not in incoming:
+            incoming["session-id"] = uuid.uuid4().hex
+        send_lock = asyncio.Lock()
+        active: asyncio.Task | None = None
+
+        async def send_event(event: dict):
+            async with send_lock:
+                await socket.send_json(event)
+
+        async def send_error(error: GatewayError):
+            await send_event({"type": "error", "status": error.status,
+                              "error": {"code": error.code, "message": str(error)}})
+
+        async def turn(message: dict):
+            exchange = None
+            started = time.monotonic()
+            try:
+                key = await with_models(socket)
+                authenticated = time.monotonic()
+                payload = {name: value for name, value in message.items() if name != "type"}
+                if payload.get("stream_id") is not None:
+                    raise GatewayError(400, "unsupported_stream_id", "Use a separate connection for each parallel conversation.")
+                payload, _ = upstream.adapt(payload, key, allow_previous=True)
+                headers = upstream.scope_session(key, payload, incoming, ctx.vault, streaming=True)
+                metrics = {"downstream_protocol": "websocket",
+                           "auth_ms": round((authenticated - started) * 1000, 2)}
+                exchange = Exchange(gateway, Usage(uuid.uuid4().hex, key, payload["model"], ctx.now(),
+                                                  payload.get("service_tier")), started=started, metrics=metrics)
+                response = await gateway.send(key.account_pk, "/responses", payload=payload, headers=headers, metrics=metrics)
+                exchange.response = response
+                if not 200 <= response.status_code < 300:
+                    raise upstream.upstream_status(response)
+                async for _, events in upstream.sse(response, max_event=upstream.MAX_BODY):
+                    metrics.setdefault("first_byte_ms", exchange.elapsed())
+                    exchange.events(events)
+                    for event in events:
+                        await send_event(event)
+                exchange.upstream_exhausted = True
+            except GatewayError as exc:
+                if exchange:
+                    exchange.usage.status = exc.code
+                await send_error(exc)
+            except httpx.HTTPError:
+                if exchange:
+                    exchange.usage.status = "stream_interrupted"
+                await send_error(GatewayError(502, "stream_interrupted", "The upstream stream was interrupted."))
+            except asyncio.CancelledError:
+                if exchange and exchange.usage.status == "incomplete":
+                    exchange.usage.status = "cancelled"
+                raise
+            except (WebSocketDisconnect, OSError, RuntimeError):
+                if exchange and exchange.usage.status == "incomplete":
+                    exchange.usage.status = "cancelled"
+            finally:
+                if exchange:
+                    await exchange.finish()
+
+        try:
+            while True:
+                raw = await socket.receive_text()
+                if len(raw.encode()) > upstream.MAX_BODY:
+                    await send_error(GatewayError(413, "request_too_large", "The request body exceeds 16 MiB."))
+                    continue
+                try:
+                    message = json.loads(raw)
+                except (ValueError, RecursionError):
+                    message = None
+                if not isinstance(message, dict):
+                    await send_error(GatewayError(400, "invalid_request", "Send a JSON object."))
+                elif message.get("type") == "response.cancel":
+                    if active and not active.done():
+                        active.cancel()
+                        await asyncio.gather(active, return_exceptions=True)
+                elif message.get("type") != "response.create":
+                    await send_error(GatewayError(400, "invalid_request", "Expected response.create or response.cancel."))
+                elif active and not active.done():
+                    await send_error(GatewayError(409, "session_busy", "Wait for the active response to finish."))
+                else:
+                    active = asyncio.create_task(turn(message))
+        except (WebSocketDisconnect, OSError, RuntimeError):
+            pass
+        finally:
+            if active:
+                if not active.done():
+                    active.cancel()
+                await asyncio.gather(active, return_exceptions=True)
+
     @app.post("/responses")
     async def responses(request: Request):
+        started = time.monotonic()
         key = await with_models(request)
+        authenticated = time.monotonic()
         headers = response_headers(request)
         try:
             payload = await _payload(request)
         except ClientDisconnect:
             return Response(status_code=499, headers=headers)
-        payload, streaming = upstream.adapt(payload, key)
+        payload, streaming = upstream.adapt(payload, key, allow_previous=ctx.settings.gateway_transport != "http")
         forwarded = upstream.scope_session(key, payload, httpx.Headers(request.headers.items()), ctx.vault,
                                            streaming=streaming)
+        metrics = {"auth_ms": round((authenticated - started) * 1000, 2),
+                   "request_prepare_ms": round((time.monotonic() - authenticated) * 1000, 2)}
         exchange = Exchange(gateway, Usage(request.state.gateway_request_id, key, payload["model"], ctx.now(),
-                                           payload.get("service_tier")))
+                                           payload.get("service_tier")), started=started, metrics=metrics)
         transferred = False
         try:
             result = None
@@ -281,7 +396,8 @@ def create_api(gateway: Gateway) -> FastAPI:
 
                 task_group.start_soon(watch_disconnect)
                 try:
-                    response = await gateway.send(key.account_pk, "/responses", payload=payload, headers=forwarded)
+                    response = await gateway.send(key.account_pk, "/responses", payload=payload,
+                                                  headers=forwarded, metrics=metrics)
                     exchange.response = response
                     if not 200 <= response.status_code < 300:
                         result = upstream.upstream_status(response)

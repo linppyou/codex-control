@@ -22,7 +22,7 @@ from codexctl.web.dependencies import current_admin, current_user
 from codexctl.web.responses import _redirect
 
 
-def _profile(base: str, model: str, max_context: int | None = None) -> str:
+def _profile(base: str, model: str, max_context: int | None = None, *, websockets: bool = False) -> str:
     url = json.dumps(base.rstrip("/"), ensure_ascii=False)
     catalog = json.dumps(base.rstrip("/") + "/codex/models", ensure_ascii=False)
     context = f"\n# model_context_window = {max_context}" if type(max_context) is int and max_context > 0 else ""
@@ -36,7 +36,7 @@ model_catalog_url = {catalog}
 wire_api = "responses"
 env_key = "CODEXCTL_API_KEY"
 requires_openai_auth = false
-supports_websockets = false
+supports_websockets = {str(websockets).lower()}
 
 [model_providers.codexctl.capabilities]
 remote_compaction = "v2"'''
@@ -127,7 +127,8 @@ def register(app, gateway: Gateway):
         model = info.get("slug") or min(enabled, default="")
         base = ctx.settings.gateway_base_url
         return render(request, "api_key_config.html", admin=admin[0], csrf=admin[1], token=token,
-                      profile=_profile(base, model, info.get("max_context_window")) if model else None,
+                      profile=_profile(base, model, info.get("max_context_window"),
+                                       websockets=ctx.settings.gateway_transport != "http") if model else None,
                       base=base, model=model, context_window=info.get("context_window"),
                       max_context=info.get("max_context_window"), username=name, account=account,
                       flash=False)
