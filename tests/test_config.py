@@ -29,6 +29,12 @@ def test_unknown_key_rejected(tmp_path):
         load_settings(cfg)
 
 
+def test_removed_wp_key_remains_compatible(tmp_path):
+    cfg = tmp_path / "c.toml"
+    cfg.write_text('wp_ssh_key = "/etc/codexctl/wp-center.key"\n')
+    assert load_settings(cfg) == Settings()
+
+
 def test_quota_poll_seconds_default():
     assert Settings().quota_poll_seconds == 600
 

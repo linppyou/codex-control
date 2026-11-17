@@ -7,7 +7,7 @@ from pathlib import Path
 from .sysusers import valid_name
 
 _PATH_KEYS = {
-    "state_dir", "key_file", "codex_bin", "codex_wrapper", "codex_requirements", "wp_ssh_key", "site_ssh_ca_key",
+    "state_dir", "key_file", "codex_bin", "codex_wrapper", "codex_requirements", "site_ssh_ca_key",
 }
 
 
@@ -38,7 +38,6 @@ class Settings:
     web_cookie_secure: bool = True
     web_socket: str = "/run/codexctl/web.sock"
     web_socket_group: str = "www"
-    wp_ssh_key: Path = Path("/etc/codexctl/wp-center.key")
     site_ssh_enabled: bool = False
     site_ssh_ca_key: Path | None = None
     web_system_users: tuple[str, ...] = ()
@@ -78,6 +77,8 @@ def load_settings(path: Path | None) -> Settings:
     if path is None or not path.exists():
         return Settings()
     data = tomllib.loads(path.read_text(encoding="utf-8"))
+    # Accept existing deployments after removal of the built-in WP center.
+    data.pop("wp_ssh_key", None)
     known = {f.name for f in fields(Settings)}
     kwargs = {}
     for key, value in data.items():

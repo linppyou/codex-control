@@ -25,9 +25,6 @@ gateway_enabled = false
 gateway_client_version = "0.167.0"
 gateway_base_url = "https://codex-control.ppspace.xyz/v1"
 
-# WP 建站中心的专用 SSH 私钥，目标服务器只允许执行建站桥接器
-# wp_ssh_key = "/etc/codexctl/wp-center.key"
-
 # 为面板和 CLI 新建的 Linux 用户生成独立站点 SSH 密钥
 # site_ssh_enabled = true
 # 站点已授权此 CA 公钥时，为用户自动签发 SSH 证书
