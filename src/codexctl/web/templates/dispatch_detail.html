@@ -37,32 +37,39 @@
 <div class="dispatch-layout dispatch-detail">
   <section class="panel flush" aria-labelledby="dispatch-prompt-title">
     <div class="panel-head"><h2 id="dispatch-prompt-title">发送给 Codex 的提示词</h2></div>
-    <pre class="dispatch-prompt">{{ task.prompt }}</pre>
     {% if can_confirm %}
-    <form class="panel-body dispatch-confirm" method="post" action="/tasks/{{ task.id }}/confirm">
+    <form method="post" action="/tasks/{{ task.id }}/confirm">
       <input type="hidden" name="csrf" value="{{ csrf }}">
-      <div class="dispatch-form">
-        <label>模型 ID
-          <input type="text" name="model" value="{{ execution.model }}" maxlength="128" spellcheck="false" placeholder="gpt-6.1-terra">
-        </label>
-        <label>思考程度
-          <input type="text" name="reasoning_effort" value="{{ execution.reasoning_effort }}" maxlength="32" spellcheck="false" list="dispatch-efforts" placeholder="medium">
-        </label>
-        <datalist id="dispatch-efforts">
-          {% for effort in ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] %}<option value="{{ effort }}"></option>{% endfor %}
-        </datalist>
-        <input type="hidden" name="sandbox" value="danger-full-access">
-        <p class="hint dispatch-wide">执行权限为不使用沙箱，批准策略为 never。运行中可通过同一用户的 Codex 会话介入。</p>
-        <p class="hint dispatch-wide">默认使用 gpt-6.1-terra，思考程度为 medium（中等）。可修改为执行环境支持的模型和档位，留空使用上述默认值。</p>
-      </div>
-      <label><input type="checkbox" name="confirmed" value="1" required> 已核对提示词、目标站及 Skill，确认发送</label>
-      <div class="dispatch-actions">
-        <a class="btn" href="/tasks">返回任务</a>
-        <button class="btn primary" type="submit">确认并发送</button>
+      <textarea class="dispatch-prompt dispatch-prompt-editor" name="prompt" rows="24" aria-labelledby="dispatch-prompt-title" required>{{ task.prompt }}</textarea>
+      <div class="panel-body dispatch-confirm">
+        <p class="hint">可直接修改提示词并保存草稿，确认发送时会保存并发送当前内容。</p>
+        <div class="dispatch-form">
+          <label>模型 ID
+            <input type="text" name="model" value="{{ execution.model }}" maxlength="128" spellcheck="false" placeholder="gpt-6.1-terra">
+          </label>
+          <label>思考程度
+            <input type="text" name="reasoning_effort" value="{{ execution.reasoning_effort }}" maxlength="32" spellcheck="false" list="dispatch-efforts" placeholder="medium">
+          </label>
+          <datalist id="dispatch-efforts">
+            {% for effort in ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] %}<option value="{{ effort }}"></option>{% endfor %}
+          </datalist>
+          <input type="hidden" name="sandbox" value="danger-full-access">
+          <p class="hint dispatch-wide">执行权限为不使用沙箱，批准策略为 never。运行中可通过同一用户的 Codex 会话介入。</p>
+          <p class="hint dispatch-wide">默认使用 gpt-6.1-terra，思考程度为 medium（中等）。可修改为执行环境支持的模型和档位，留空使用上述默认值。</p>
+        </div>
+        <label><input type="checkbox" name="confirmed" value="1" required> 已核对提示词、目标站及 Skill，确认发送</label>
+        <div class="dispatch-actions">
+          <a class="btn" href="/tasks">返回任务</a>
+          <button class="btn" type="submit" formaction="/tasks/{{ task.id }}/prompt" formnovalidate>保存草稿</button>
+          <button class="btn primary" type="submit">确认并发送</button>
+        </div>
       </div>
     </form>
-    {% elif task.status == 'failed' %}
+    {% else %}
+    <pre class="dispatch-prompt">{{ task.prompt }}</pre>
+    {% if task.status == 'failed' %}
     <div class="panel-body"><a class="btn" href="/tasks">返回任务</a></div>
+    {% endif %}
     {% endif %}
   </section>
 

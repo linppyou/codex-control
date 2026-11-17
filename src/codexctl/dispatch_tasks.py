@@ -386,8 +386,21 @@ def _validate_legacy_target(conn: sqlite3.Connection, target_id: str, snapshot: 
         raise TaskError("目标站服务器或部署配置已变更，请重新导入 CSV")
 
 
+def save_prompt(ctx: Context, task: sqlite3.Row, actor: str, prompt: str) -> None:
+    with db.transaction(ctx.conn):
+        current = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task["id"],)).fetchone()
+        if current is None or actor == "admin" or current["owner"] != actor:
+            raise TaskError("请由导入任务的成员修改提示词")
+        if current["status"] != "preview":
+            raise TaskError("仅待人工确认的任务可以修改提示词")
+        if not prompt.strip():
+            raise TaskError("提示词不能为空")
+        ctx.conn.execute("UPDATE dispatch_tasks SET prompt=? WHERE id=?", (prompt, task["id"]))
+        events.audit(ctx.conn, actor, "dispatch.prompt", task["id"], task["title"], now=ctx.now())
+
+
 def confirm(
-    ctx: Context, task: sqlite3.Row, actor: str, *,
+    ctx: Context, task: sqlite3.Row, actor: str, prompt: str | None = None, *,
     model: str = DEFAULT_MODEL, reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     sandbox: str = DEFAULT_SANDBOX,
 ) -> None:
@@ -397,6 +410,10 @@ def confirm(
             return
         if actor == "admin" or current["owner"] != actor:
             raise TaskError("请由导入任务的成员确认发送")
+        if prompt is None:
+            prompt = current["prompt"]
+        if not prompt.strip():
+            raise TaskError("提示词不能为空")
         model = model.strip() or DEFAULT_MODEL
         reasoning_effort = reasoning_effort.strip() or DEFAULT_REASONING_EFFORT
         if sandbox != DEFAULT_SANDBOX:
@@ -407,8 +424,8 @@ def confirm(
             raise TaskError("思考程度须为最多 32 个字符的小写英文标识")
         validate_snapshot(ctx, current)
         ctx.conn.execute(
-            "UPDATE dispatch_tasks SET status='queued', confirmed_at=?, model=?, reasoning_effort=?, sandbox=? WHERE id=?",
-            (ctx.now(), model, reasoning_effort, sandbox, task["id"]),
+            "UPDATE dispatch_tasks SET prompt=?, status='queued', confirmed_at=?, model=?, reasoning_effort=?, sandbox=? WHERE id=?",
+            (prompt, ctx.now(), model, reasoning_effort, sandbox, task["id"]),
         )
         events.audit(ctx.conn, actor, "dispatch.confirm", task["id"], task["title"], now=ctx.now())
 

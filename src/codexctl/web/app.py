@@ -143,7 +143,7 @@ def csrf_guard(request: Request, csrf: str = Form("")) -> None:
         return  # These endpoints authenticate using a short-lived enrollment bearer token.
     username, _ = session_csrf(request, csrf)
     user_task_post = request.method == "POST" and (
-        path == "/tasks/import" or re.fullmatch(r"/tasks/[0-9a-f]{32}/(?:confirm|cancel)", path)
+        path == "/tasks/import" or re.fullmatch(r"/tasks/[0-9a-f]{32}/(?:confirm|cancel|prompt)", path)
     )
     if path != "/logout" and username != "admin" and not user_task_post:
         raise HTTPException(status_code=403, detail="仅管理员可以修改")
