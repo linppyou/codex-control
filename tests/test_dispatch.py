@@ -764,12 +764,17 @@ def test_runtime_creates_real_children_once_and_reuses_skill_inputs(ctx, tmp_pat
         result = runtime._dispatch('wait_threads', {'targets': [{'threadId': 'child-1'}], 'timeoutMs': 1000})
         assert result['threads'][0]['status'] == 'completed'
         assert len([call for call in calls if call[0] == 'thread/start']) == 1
+        assert runtime.children['child-1']['released'] is True
+        assert runtime.children['child-1']['client'] is None
         turn = next(params for method, params in calls if method == 'turn/start')
         assert turn['model'] == 'gpt-6.1-terra' and turn['effort'] == 'medium'
         assert turn['input'][1:] == skills
         assert 'outputSchema' in turn
         stored = ctx.conn.execute('SELECT * FROM dispatch_children').fetchone()
         assert stored['status'] == 'completed' and stored['thread_id'] == 'child-1'
+        runtime._dispatch('send_message_to_thread', {'threadId': 'child-1', 'prompt': 'Check again'})
+        runtime._dispatch('wait_threads', {'targets': [{'threadId': 'child-1'}], 'timeoutMs': 1000})
+        assert any(method == 'thread/resume' for method, _ in calls)
         denied = runtime.handle({'tool': 'read_thread', 'arguments': {'threadId': 'unrelated'}})
         assert denied['success'] is False
         wrong_row = runtime.handle({'tool': 'create_thread', 'arguments': dict(options, row=2)})
@@ -787,6 +792,7 @@ def test_runtime_cancels_running_child(ctx, tmp_path, monkeypatch):
     runtime = dispatch_runtime.DispatchRuntime(ctx, task, ctx.lookup_user('alice', 1000), tmp_path, {}, [], '', lambda: None)
     calls = []
     class Client:
+        proc = object()
         def call(self, method, params):
             calls.append(method)
             return {}
@@ -794,6 +800,7 @@ def test_runtime_cancels_running_child(ctx, tmp_path, monkeypatch):
             check()
     child = dict(row=1, threadId='child-1', turnId='turn-1', title='child', status='running',
                  result='', error='', revision=1, saved_revision=0, cancelled=True, future=None, client=Client())
+    monkeypatch.setattr(dispatch_worker, '_stop', lambda proc: None)
     runtime._wait(child)
     assert child['status'] == 'interrupted'
     assert calls == ['turn/interrupt']

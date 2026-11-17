@@ -161,7 +161,14 @@ class DispatchRuntime:
             title = self._text(args, 'title', 256)
             if child['status'] == 'running':
                 raise DeliveryError('运行中的会话已在创建时设置标题，结束后可再次修改')
-            child['client'].call('thread/name/set', {'threadId': child['threadId'], 'name': title})
+            self._resume(child)
+            try:
+                child['client'].call('thread/name/set', {'threadId': child['threadId'], 'name': title})
+            finally:
+                from .dispatch_worker import _stop
+                _stop(child['client'].proc)
+                child['client'] = None
+                child['released'] = True
             child['title'] = title
             child['revision'] += 1
             self.sync()
@@ -240,17 +247,18 @@ class DispatchRuntime:
                 "你是本行已经创建的独立执行会话，直接执行本行任务，无需再次分发。"
                 "仅操作本行目标站。同站写入互斥。" + self.ssh_instructions
             )
-            started = client.call('thread/start', {
+            thread_options = {
                 'cwd': str(cwd), 'approvalPolicy': 'never', 'sandbox': self.task['sandbox'],
                 'developerInstructions': instructions,
                 'config': {'sandbox_workspace_write.network_access': True,
                            'shell_environment_policy.inherit': 'all',
                            'shell_environment_policy.ignore_default_excludes': True},
-            })
+            }
+            started = client.call('thread/start', thread_options)
             thread_id = _id(started, 'thread')
             child = dict(row=row_number, threadId=thread_id, turnId=None, title=title, status='starting',
                          result='', error='', revision=1, saved_revision=0, client=client,
-                         cancelled=False, future=None)
+                         cancelled=False, future=None, released=False, thread_options=thread_options)
             self.children[thread_id] = child
             self.sync()
             client.call('thread/name/set', {'threadId': thread_id, 'name': title})
@@ -265,10 +273,34 @@ class DispatchRuntime:
                 child.update(status='unknown', error=str(exc))
             raise
 
-    def _start_turn(self, child, prompt):
-        from .dispatch_worker import _id
+    def _resume(self, child):
+        from .dispatch_worker import AppServer, _stop
         if child.get('future') is not None:
             child['future'].result()
+        if child.get('released'):
+            proc = subprocess.Popen(
+                [str(self.ctx.settings.codex_bin), 'app-server'],
+                cwd=child['thread_options']['cwd'], env=self.env,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                start_new_session=True, user=self.user.uid, group=self.user.gid,
+                extra_groups=[], umask=0o077,
+            )
+            client = AppServer(proc)
+            try:
+                client.call('initialize', {'clientInfo': {'name': 'codexctl_site', 'version': '0.1.0'},
+                                           'capabilities': {'experimentalApi': True}})
+                client.send({'method': 'initialized'})
+                client.call('thread/resume', {**child['thread_options'], 'threadId': child['threadId'],
+                                               'excludeTurns': True})
+            except (OSError, ValueError):
+                _stop(proc)
+                raise
+            child['client'] = client
+            child['released'] = False
+
+    def _start_turn(self, child, prompt):
+        from .dispatch_worker import _id
+        self._resume(child)
         child['client'].completed = None
         child['client'].result_text = ''
         child.update(status='sending', result='', error='', cancelled=False)
@@ -321,6 +353,10 @@ class DispatchRuntime:
         except (OSError, ValueError) as exc:
             child.update(status='unknown', error=str(exc))
         finally:
+            from .dispatch_worker import _stop
+            _stop(child['client'].proc)
+            child['client'] = None
+            child['released'] = True
             child['revision'] += 1
 
     def close(self):
@@ -330,4 +366,5 @@ class DispatchRuntime:
         self.pool.shutdown(wait=True)
         self.sync()
         for child in self.children.values():
-            _stop(child['client'].proc)
+            if child['client'] is not None:
+                _stop(child['client'].proc)
