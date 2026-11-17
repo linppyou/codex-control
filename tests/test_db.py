@@ -155,3 +155,17 @@ def test_seeds_model_prices_once_and_keeps_edits(tmp_path):
 
     conn = db.connect(path)
     assert conn.execute("SELECT COUNT(*) FROM model_prices").fetchone()[0] == 0
+
+
+def test_migrates_dispatch_runtime_columns(tmp_path):
+    path = tmp_path / 'old-runtime.db'
+    with db.connect(path) as conn:
+        conn.execute('ALTER TABLE dispatch_tasks DROP COLUMN sandbox')
+        conn.execute('ALTER TABLE dispatch_tasks DROP COLUMN result_text')
+        conn.execute("""INSERT INTO dispatch_tasks
+            (id,owner,recipient,recipient_uid,target_id,target_snapshot,skills,source_url,title,prompt,csv,status,created_at)
+            VALUES ('old','alice','alice',1001,'t','{}','[]','https://a.com','old','prompt','csv','queued',1)""")
+    for _ in range(2):
+        with db.connect(path) as conn:
+            row=conn.execute('SELECT sandbox,result_text FROM dispatch_tasks WHERE id=\'old\'').fetchone()
+            assert tuple(row) == ('workspace-write','')

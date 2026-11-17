@@ -11,6 +11,27 @@
 </header>
 
 {% if task.error %}<p class="flash bad" role="alert">{{ task.error }}</p>{% endif %}
+{% if task.result_text %}
+<section class="panel flush">
+  <div class="panel-head"><h2>Codex 执行回复</h2></div>
+  <pre class="dispatch-prompt">{{ task.result_text }}</pre>
+</section>
+{% endif %}
+{% if children %}
+<section class="panel flush">
+  <div class="panel-head"><h2>站点子会话</h2></div>
+  <ul class="dispatch-list">
+    {% for child in children %}
+    <li>
+      <strong>第 {{ child.row_number }} 行 · {{ child.title }}</strong>
+      <div>{{ {'starting':'正在创建','sending':'正在发送','running':'正在处理','completed':'已完成','blocked':'执行受阻','failed':'执行失败','unknown':'待核对','interrupted':'已中断'}.get(child.status, child.status) }} · <span class="mono">{{ child.thread_id or '尚无会话 ID' }}</span></div>
+      {% if child.error %}<p class="flash bad">{{ child.error }}</p>{% endif %}
+      {% if child.result_text %}<pre class="dispatch-prompt">{{ child.result_text }}</pre>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
 {% if not batch_complete %}<p class="flash bad" role="alert">此批次含未匹配或无效站点，请修正文件并重新上传。</p>{% endif %}
 
 <div class="dispatch-layout dispatch-detail">
@@ -30,6 +51,12 @@
         <datalist id="dispatch-efforts">
           {% for effort in ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] %}<option value="{{ effort }}"></option>{% endfor %}
         </datalist>
+        <label>执行权限
+          <select name="sandbox">
+            <option value="danger-full-access"{% if execution.sandbox == 'danger-full-access' %} selected{% endif %}>不使用沙箱（默认）</option>
+            <option value="workspace-write"{% if execution.sandbox == 'workspace-write' %} selected{% endif %}>工作区写入沙箱</option>
+          </select>
+        </label>
         <p class="hint dispatch-wide">默认使用 gpt-6.1-terra，思考程度为 medium（中等）。可修改为执行环境支持的模型和档位，留空使用上述默认值。</p>
       </div>
       <label><input type="checkbox" name="confirmed" value="1" required> 已核对提示词、目标站及 Skill，确认发送</label>
@@ -74,6 +101,7 @@
       <div><dt>执行用户</dt><dd>{{ task.recipient }}</dd></div>
       <div><dt>模型 ID</dt><dd>{{ task.model or '沿用用户默认配置' }}</dd></div>
       <div><dt>思考程度</dt><dd>{{ task.reasoning_effort or '沿用用户默认配置' }}</dd></div>
+      <div><dt>执行权限</dt><dd>{{ '不使用沙箱' if task.sandbox == 'danger-full-access' else '工作区写入沙箱' }}</dd></div>
       {% for skill in skills %}
       <div><dt>{{ kinds[skill.kind] }}</dt><dd>{{ skill.label }}{% if skill.version %} · {{ skill.version }}{% endif %}<br><span class="mono hint">{{ skill.name }}</span></dd></div>
       {% endfor %}

@@ -295,3 +295,13 @@ curl -fsS -H "Authorization: Bearer ${CODEXCTL_API_KEY}" https://codex-control.p
 6. 成员可在任务列表或详情点击「取消任务」。待确认和排队任务立即取消，执行中的任务先显示「正在取消」，Worker 请求中断当前 Codex 轮次并停止本机任务进程后显示「已取消」。已完成的操作保留，结果未知的原会话需要按页面提示核对。
 
 管理员发布的 Skill 在 Worker 启动及发送任务前同步到各普通用户的 `~/.agents/skills` 和 `~/.codex/skills`。旧发布版本保留供已有会话继续读取，跨主机子会话仍需传递任务 Skill 文件。
+
+### 任务子会话与 SSH 执行
+
+任务默认使用 `gpt-6.1-terra`、`medium` 和 `danger-full-access`（不使用 Codex 沙箱），以任务接收人的 Linux 用户身份执行。确认页可改为 `workspace-write`。批准策略为 `never`，子会话继承本批次的模型、思考程度、执行权限和两个 Skill。
+
+Worker 通过 App Server 的动态工具提供项目查询、独立会话创建、等待、读取、续跑、重命名和取消。每个 CSV 数据行仅绑定一个真实子会话，最多同时运行三个。会话标识与结果保存在数据库，Worker 中断后标记为待核对，避免重复创建。取消批次时同步中断子会话。
+
+SSH 部署任务要求执行用户已有站点私钥，目标服务器已登记主机公钥。Worker 在任务目录生成 `.ssh/config` 和 `known_hosts`，通过任务目录中的 ssh/scp/sftp 包装脚本使用该配置。这样在 `workspace-write` 模式下也可避开系统 SSH 配置的属主映射错误。每站子会话收到本行明确的 SSH 地址、端口和目标站身份。
+
+任务详情展示总控回复、每站真实会话 ID、执行结果及阻塞。Codex 轮次结束后，若仍有未创建或未完成的子任务，页面显示批次未完成提示。

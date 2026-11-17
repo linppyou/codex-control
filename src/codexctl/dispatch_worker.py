@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import csv
 import fcntl
 import hashlib
+import io
 import json
 import logging
 import os
+import shlex
 import selectors
 import signal
 import sqlite3
@@ -16,7 +19,7 @@ from contextlib import suppress
 from dataclasses import replace
 from pathlib import Path
 
-from . import db, dispatch_skills, dispatch_tasks, events
+from . import db, dispatch_runtime, dispatch_skills, dispatch_tasks, events, site_access, site_registry
 from .context import Context
 from .publisher import PublishError
 from .sysusers import SysUser
@@ -43,6 +46,9 @@ class AppServer:
         self.buffer = bytearray()
         self.next_id = 1
         self.completed: tuple[str, str] | None = None
+        self.result_text = ""
+        self.on_request = None
+        self.on_message = None
 
     def send(self, message: dict) -> None:
         self.proc.stdin.write(json.dumps(message, ensure_ascii=False).encode() + b"\n")
@@ -82,9 +88,19 @@ class AppServer:
             if not isinstance(turn, dict):
                 raise DeliveryError("Codex 的轮次结束回执无效")
             self.completed = (turn.get("id"), turn.get("status"))
+        elif message.get("method") == "item/agentMessage/delta":
+            self.result_text = (self.result_text + message.get("params", {}).get("delta", ""))[-65536:]
+        elif message.get("method") == "item/completed":
+            item = message.get("params", {}).get("item", {})
+            if item.get("type") == "agentMessage":
+                self.result_text = item.get("text", "")[-65536:]
         elif "method" in message and "id" in message:
-            # The panel has no handler for agent-initiated approval or input requests.
-            self.send({"id": message["id"], "error": {"code": -32601, "message": "Unsupported request"}})
+            if message["method"] == "item/tool/call" and self.on_request is not None:
+                self.send({"id": message["id"], "result": self.on_request(message.get("params", {}))})
+            else:
+                self.send({"id": message["id"], "error": {"code": -32601, "message": "Unsupported request"}})
+        if self.on_message is not None:
+            self.on_message(message)
         return message
 
     def call(self, method: str, params: dict) -> dict:
@@ -97,7 +113,9 @@ class AppServer:
             if message.get("id") != request_id or "method" in message:
                 continue
             if "error" in message:
-                raise RequestRejected(f"Codex 拒绝了 {method} 请求")
+                error = message['error']
+                detail = error.get('message', '') if isinstance(error, dict) else ''
+                raise RequestRejected(f"Codex 拒绝了 {method} 请求：{detail[:500]}")
             result = message.get("result")
             if isinstance(result, dict):
                 return result
@@ -142,6 +160,53 @@ def _stage(run_root: Path, task: sqlite3.Row, user: SysUser, packages: list[byte
         os.chown(work, user.uid, user.gid)
         work.rename(task_root)
     return inputs
+
+
+def _stage_ssh(ctx: Context, task: sqlite3.Row, user: SysUser, root: Path) -> str:
+    snapshot = json.loads(task["target_snapshot"])
+    if snapshot.get("deployment_method") != "ssh":
+        return ""
+    targets = snapshot.get("targets", [snapshot])
+    key = ctx.settings.state_dir / "site-access" / f"{user.name}-{user.uid}" / site_access.KEY_NAME
+    if not key.is_file():
+        raise DeliveryError(f"执行用户 {user.name} 尚未配置站点 SSH 私钥")
+    config, known_hosts = [], []
+    for server_id in dict.fromkeys(target["server_id"] for target in targets):
+        server = site_registry.get(ctx.conn, server_id)
+        if server is None or not server.host_key:
+            raise DeliveryError("目标服务器尚未登记 SSH 主机公钥")
+        host = server.host if server.port == 22 else f"[{server.host}]:{server.port}"
+        known_hosts.append(f"{host} {server.host_key}\n")
+        config.append(
+            f"Host {server.host}\n    HostName {server.host}\n    Port {server.port}\n"
+            f"    User root\n    IdentityFile {json.dumps(str(key))}\n"
+        )
+    directory = root / ".ssh"
+    directory.mkdir(mode=0o700)
+    known_path = directory / "known_hosts"
+    known_path.write_text("".join(known_hosts), encoding="ascii")
+    config_path = directory / "config"
+    config_path.write_text(
+        "Host *\n    BatchMode yes\n    StrictHostKeyChecking yes\n"
+        f"    UserKnownHostsFile {json.dumps(str(known_path))}\n"
+        "    GlobalKnownHostsFile /dev/null\n    IdentitiesOnly yes\n    IdentityAgent none\n"
+        "    UpdateHostKeys no\n    ConnectTimeout 8\n\n" + "\n".join(config), encoding="utf-8",
+    )
+    binary_dir = root / "bin"
+    binary_dir.mkdir(mode=0o700)
+    for command in ("ssh", "scp", "sftp"):
+        wrapper = binary_dir / command
+        wrapper.write_text(f"#!/bin/sh\nexec /usr/bin/{command} -F {shlex.quote(str(config_path))} \"$@\"\n")
+        wrapper.chmod(0o700)
+    for path in (directory, known_path, config_path, binary_dir, *binary_dir.iterdir()):
+        os.chown(path, user.uid, user.gid)
+    known_path.chmod(0o600)
+    config_path.chmod(0o600)
+    return (
+        f"本站 SSH 配置为 {config_path}，固定了本批次主机公钥和执行用户密钥。"
+        f"所有 SSH/scp/sftp 调用显式使用 -F {shlex.quote(str(config_path))}。"
+        "此配置已绕过沙箱内系统 SSH 配置的属主映射问题。"
+    )
 
 
 def _env(user: SysUser, name: str | None) -> dict[str, str]:
@@ -207,6 +272,7 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
     thread_id = turn_id = None
     cancelled = False
     cancel_error = ""
+    runtime = None
 
     def check_cancel():
         current = ctx.conn.execute("SELECT status FROM dispatch_tasks WHERE id=?", (task["id"],)).fetchone()
@@ -227,6 +293,8 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
         env = _env(user, credential)
         cwd = str(run_root / task["id"])
         inputs = [{"type": "text", "text": task["prompt"]}, *_stage(run_root, task, user, packages)]
+        ssh_instructions = _stage_ssh(ctx, task, user, Path(cwd))
+        env["PATH"] = f"{cwd}/bin:{env['PATH']}"
         # Site bindings or Skill packages may change while files are being staged.
         with db.transaction(ctx.conn):
             current_user, current_label = dispatch_tasks.validate_snapshot(ctx, task)
@@ -239,10 +307,17 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
             user=user.uid, group=user.gid, extra_groups=[], umask=0o077,
         )
         client = AppServer(proc)
-        client.call("initialize", {"clientInfo": {"name": "codexctl_dispatch", "version": "0.1.0"}})
+        runtime = dispatch_runtime.DispatchRuntime(ctx, task, user, Path(cwd), env, inputs[1:], ssh_instructions,
+                                                   check_cancel)
+        client.on_request = runtime.handle
+        client.on_message = lambda message: runtime.sync()
+        client.call("initialize", {"clientInfo": {"name": "codexctl_dispatch", "version": "0.1.0"},
+                                   "capabilities": {"experimentalApi": True}})
         client.send({"method": "initialized"})
         thread_id = _id(client.call("thread/start", {
-            "cwd": cwd, "approvalPolicy": "never", "sandbox": "workspace-write",
+            "cwd": cwd, "approvalPolicy": "never", "sandbox": task['sandbox'],
+            "dynamicTools": dispatch_runtime.TOOLS,
+            "developerInstructions": runtime.instructions,
             "config": {
                 "sandbox_workspace_write.network_access": True,
                 "shell_environment_policy.ignore_default_excludes": True,
@@ -263,7 +338,18 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
         _record(ctx, task, "sent", turn_id=turn_id, turn_status="inProgress")
         accepted = True
         check_cancel()
-        _record(ctx, task, "sent", turn_status=client.wait_turn(turn_id, check_cancel))
+        status = client.wait_turn(turn_id, check_cancel)
+        while runtime.running:
+            check_cancel()
+            runtime.sync()
+            time.sleep(0.1)
+        runtime.sync()
+        total = len(list(csv.DictReader(io.StringIO(task['csv']))))
+        children = ctx.conn.execute('SELECT status FROM dispatch_children WHERE task_id=?', (task['id'],)).fetchall()
+        issue = ""
+        if status == "completed" and (len(children) != total or any(row['status'] != 'completed' for row in children)):
+            issue = "批次尚未全部完成，请核对 Codex 回复及子会话状态"
+        _record(ctx, task, "sent", issue, turn_status=status, result_text=client.result_text)
     except TaskCancelled:
         cancelled = True
         if client is not None and thread_id and turn_id:
@@ -279,6 +365,8 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
             status = "unknown" if requested and not isinstance(exc, RequestRejected) else "failed"
             _record(ctx, task, status, message)
     finally:
+        if runtime is not None:
+            runtime.close()
         if proc is not None:
             _stop(proc)
         with db.transaction(ctx.conn):
@@ -336,6 +424,10 @@ def run(ctx: Context) -> None:
         ctx.conn.execute(
             "UPDATE dispatch_tasks SET turn_status='unknown', error=? WHERE status='sent' AND turn_status='inProgress'",
             ("Worker 中断，请在 Codex 查看原会话",),
+        )
+        ctx.conn.execute(
+            "UPDATE dispatch_children SET status='unknown', error=? WHERE status IN ('starting','sending','running')",
+            ("Worker 中断，请核对原子会话后续跑",),
         )
         ctx.conn.execute(
             "UPDATE dispatch_tasks SET status='cancelled', turn_status='unknown', error=? WHERE status='cancelling'",

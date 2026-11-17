@@ -77,9 +77,14 @@ def register(app) -> None:
     def task_detail(request, who, task, *, status=200, error="", execution=None):
         user, csrf = who
         target = json.loads(task["target_snapshot"])
+        with lock:
+            children = ctx.conn.execute(
+                "SELECT * FROM dispatch_children WHERE task_id=? ORDER BY row_number", (task["id"],),
+            ).fetchall()
         return render(
             request, "dispatch_detail.html", status=status, admin=user, csrf=csrf, task=task,
             target=target, batch_rows=target.get("rows", []), skills=json.loads(task["skills"]),
+            children=children,
             status_map=STATUS, turn_status=TURN_STATUS, kinds=dispatch_skills.KINDS,
             can_confirm=task["status"] == "preview" and user == task["owner"] and user != "admin"
                         and dispatch_tasks.batch_complete(target),
@@ -89,6 +94,7 @@ def register(app) -> None:
             execution=execution if execution is not None else {
                 "model": task["model"] or dispatch_tasks.DEFAULT_MODEL,
                 "reasoning_effort": task["reasoning_effort"] or dispatch_tasks.DEFAULT_REASONING_EFFORT,
+                "sandbox": dispatch_tasks.DEFAULT_SANDBOX,
             },
         )
 
@@ -102,6 +108,7 @@ def register(app) -> None:
     def confirm(
         request: Request, task_id: str, confirmed: str = Form(""),
         model: str = Form(""), reasoning_effort: str = Form(""),
+        sandbox: str = Form(dispatch_tasks.DEFAULT_SANDBOX),
         who: tuple[str, str] = Depends(current_user),
     ):
         error = ""
@@ -113,12 +120,12 @@ def register(app) -> None:
                 error = "请先核对提示词并勾选确认"
             else:
                 try:
-                    dispatch_tasks.confirm(ctx, task, who[0], model=model, reasoning_effort=reasoning_effort)
+                    dispatch_tasks.confirm(ctx, task, who[0], model=model, reasoning_effort=reasoning_effort, sandbox=sandbox)
                 except dispatch_tasks.TaskError as exc:
                     error = str(exc)
         if error:
             return task_detail(request, who, task, status=409, error=error,
-                               execution={"model": model, "reasoning_effort": reasoning_effort})
+                               execution={"model": model, "reasoning_effort": reasoning_effort, "sandbox": sandbox})
         return RedirectResponse(f"/tasks/{task_id}", status_code=303)
 
     @app.post("/tasks/{task_id}/cancel")
