@@ -204,6 +204,20 @@ Web 面板启动时，如不存在 `admin` 登录账号，会以密码 `root@roo
 
 已有站点服务器也需用第 2 步更新采集脚本。脚本从宝塔记录的站点根目录读取 WordPress 的静态数据库配置，通过服务器上的 MySQL 或 MariaDB 客户端只读查询本机数据库。「产品」统计已发布的 WooCommerce 产品，另行显示状态为 `importing` 的记录数。「菜单」统计含站点新增菜单项的经典导航菜单和含导航链接的已发布区块菜单。经典菜单查询按菜单标识和菜单项 ID 排除两种共享模板的预置项。旧采集器、缺少 WordPress 配置和查询失败会显示「导入情况待确认」。SSH 同步失败或超过巡检有效期时，面板会标明保留的上次数据。
 
+### Linux 用户 SSH 登录站点
+
+在托管模式中启用 `site_ssh_enabled = true` 后，通过面板或 `codexctl user add` 创建的普通 Linux 用户会自动获得独立的 Ed25519 密钥。以 root 运行 `codexctl user site-ssh <用户名>` 可为已有用户开通站点 SSH 并显示其公钥。
+
+如需由总控自动签发 SSH 证书，以 root 运行 `ssh-keygen -t ed25519 -N '' -C codexctl-site-access-ca -f /etc/codexctl/site-access-ca`。在总控的配置中设置 `site_ssh_ca_key = "/etc/codexctl/site-access-ca"`。在需要信任该 CA 的站点，把下面的授权追加到 `/root/.ssh/authorized_keys`，使用实际的总控出站 IP 和完整 CA 公钥。
+
+```text
+restrict,pty,from="<总控出站 IP>",cert-authority,principals="codexctl-site-root" <CA 公钥>
+```
+
+CA 私钥留在总控，仅 root 可读。证书的 Key ID 包含用户名和 UID。未启用 CA 的部署可逐台添加用户公钥并使用 `restrict,pty,from="<总控出站 IP>"` 限定来源。站点可通过 sshd 的 `RevokedKeys` 吊销证书或公钥。已有逐用户授权时，撤销访问还需移除对应用户公钥行。
+
+在总控的 SSH 客户端配置中为这些站点设置 `User root`、登记端口，以及 `IdentityFile /var/lib/codexctl/site-access/%u-%i/id_ed25519`。如设置了 `state_dir`，该路径使用对应的状态目录。把登记的主机公钥写入 SSH 已知主机文件，并设置 `StrictHostKeyChecking yes`。各用户从总控运行 `ssh <站点 IP 或别名>` 即可使用其独立密钥。
+
 ## WP 建站中心
 
 总控使用「服务器」里登记的 SSH 地址和已固定的主机公钥。每台目标服务器需要已安装宝塔 WP 建站中心（`ai_center`），并已配置可用的 PHP 和数据库环境。
