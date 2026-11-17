@@ -13,6 +13,12 @@
       {% if c.status_text %}<span class="badge {{ c.status }}">{{ c.status_text }}</span>{% endif %}
     </span>
   </div>
+  <div class="account-users">
+    <span class="muted">当前分配用户 · {{ c.users|length }} 人</span>
+    <div class="account-user-links">
+      {% for username in c.users %}<a class="tag" href="/users/{{ username|urlencode }}">{{ username }}</a>{% else %}<span class="muted">暂无分配用户</span>{% endfor %}
+    </div>
+  </div>
   {% if c.has_quota %}
   <div class="remain-row"><span class="remain-label">本周剩余</span><span class="remain-pct {{ c.tone }}">{{ c.remaining }}%</span></div>
   <progress class="remain-bar {{ c.tone }}" max="100" value="{{ c.remaining }}">{{ c.remaining }}%</progress>

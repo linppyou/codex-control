@@ -207,6 +207,9 @@ input[type=checkbox] { accent-color: var(--green); width: 15px; height: 15px; ve
 @media (max-width: 640px) { .card-grid { grid-template-columns: minmax(0, 1fr); } }
 .acard { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 24px; display: flex; flex-direction: column; gap: 10px; }
 .acard-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.account-users { display: grid; gap: 6px; font-size: 12px; }
+.account-user-links { display: flex; flex-wrap: wrap; gap: 6px; }
+.account-user-links a { text-decoration: none; overflow-wrap: anywhere; }
 .acard-email { font-size: 17px; font-weight: 700; overflow-wrap: anywhere; }
 .acard-badges { display: inline-flex; gap: 6px; align-items: center; }
 .remain-row { display: flex; justify-content: space-between; align-items: baseline; margin-top: 6px; }

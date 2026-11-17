@@ -206,11 +206,16 @@ def _card(acc, history: list[dict], latest, now: int, settings) -> dict:
 
 def _account_rows(ctx) -> list[dict]:
     now = ctx.now()
+    users_by_account: dict[int, list[str]] = {}
+    for assignment in repo.all_active(ctx.conn):
+        users_by_account.setdefault(assignment.account_pk, []).append(assignment.username)
     rows = []
     for acc in repo.list_accounts(ctx.conn):
         latest = repo.latest_quota(ctx.conn, acc.id, api_fresh_since=now - 2 * ctx.settings.quota_poll_seconds)
         history = repo.quota_history(ctx.conn, acc.id, now - 7 * 86400)
-        rows.append(_card(acc, history, latest, now, ctx.settings))
+        card = _card(acc, history, latest, now, ctx.settings)
+        card["users"] = users_by_account.get(acc.id, [])
+        rows.append(card)
     return rows
 
 

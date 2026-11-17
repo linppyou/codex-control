@@ -46,6 +46,31 @@ def test_dashboard_title_contains_only_title_text(c):
     assert page.count('src="/static/chart-inspector.js"') == 1
 
 
+def test_dashboard_account_users_follow_current_assignments(c, ctx):
+    from codexctl.web.views import _account_rows
+
+    first = add_acc(ctx, label="first", account_id="first-account")
+    second = add_acc(ctx, label="second", account_id="second-account")
+    repo.start_assignment(ctx.conn, "zoe", first.id, ctx.now())
+    repo.start_assignment(ctx.conn, "alice", first.id, ctx.now())
+    repo.start_assignment(ctx.conn, "former", first.id, ctx.now())
+    repo.end_assignment(ctx.conn, "former", ctx.now())
+    cards = {card["label"]: card for card in _account_rows(ctx)}
+    assert cards["first"]["users"] == ["alice", "zoe"]
+    assert cards["second"]["users"] == []
+    page = c.get("/").text
+    assert "当前分配用户 · 2 人" in page
+    assert 'href="/users/alice">alice</a>' in page
+    assert 'href="/users/zoe">zoe</a>' in page
+    assert "暂无分配用户" in page
+    assert not cards["first"]["has_quota"]
+    repo.end_assignment(ctx.conn, "alice", ctx.now())
+    repo.start_assignment(ctx.conn, "alice", second.id, ctx.now())
+    cards = {card["label"]: card for card in _account_rows(ctx)}
+    assert cards["first"]["users"] == ["zoe"]
+    assert cards["second"]["users"] == ["alice"]
+
+
 def test_price_fields_have_names_and_mobile_layout(c):
     response = c.get("/pricing")
     assert response.status_code == 200
