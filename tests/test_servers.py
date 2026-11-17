@@ -299,7 +299,8 @@ def login_client(ctx, user="admin"):
 
 
 def test_admin_server_crud_and_csrf(ctx):
-    client, csrf = login_client(ctx)
+    username = "admin"
+    client, csrf = login_client(ctx, username)
     fields = {"name": "刘子涵", "host": "104.255.153.35", "port": "22", "host_key": host_key()}
     assert client.get("/servers/new").status_code == 200
     assert client.post("/servers", data=fields).status_code == 403
@@ -308,6 +309,11 @@ def test_admin_server_crud_and_csrf(ctx):
     detail_path = response.headers["location"]
     detail = client.get(detail_path).text
     assert "刘子涵" in detail and "codexctl-site-inventory" in detail and "SHA256:" in detail
+    assert client.get(detail_path + "/edit").status_code == 200
+    for operation in ("edit", "delete", "enrollment"):
+        assert client.post(detail_path + "/" + operation, data=fields).status_code == 403
+        assert client.post(detail_path + "/" + operation, data={**fields, "csrf": "wrong"}).status_code == 403
+    assert client.post(detail_path + "/enrollment", data={"csrf": csrf}).status_code == 303
     row = ctx.conn.execute("SELECT private_key FROM site_servers").fetchone()
     assert b"PRIVATE KEY" not in row["private_key"]
     assert "PRIVATE KEY" not in detail
@@ -321,19 +327,39 @@ def test_admin_server_crud_and_csrf(ctx):
     assert [r[0] for r in ctx.conn.execute("SELECT action FROM audit_log WHERE action LIKE 'server.%'")] == [
         "server.create", "server.update", "server.delete",
     ]
+    assert {r[0] for r in ctx.conn.execute("SELECT actor FROM audit_log WHERE action LIKE 'server.%'")} == {
+        f"web:{username}",
+    }
 
 
-def test_server_pages_require_admin(ctx):
+def test_server_pages_require_login(ctx):
     ctx.test_users.add("reader")
     reader, csrf = login_client(ctx, "reader")
     landing = reader.get("/", follow_redirects=True)
-    assert landing.status_code == 200 and 'href="/servers"' not in landing.text
-    for path in ("/servers", "/servers/new", "/servers/x", "/servers/x/edit"):
+    assert landing.status_code == 200 and 'href="/servers"' in landing.text
+    server = create(ctx)
+    for path in ("/servers", f"/servers/{server.id}", f"/servers?server_id={server.id}&q=example"):
+        page = reader.get(path)
+        assert page.status_code == 200
+        assert 'href="/servers/new"' not in page.text
+        assert f'href="/servers/{server.id}/edit"' not in page.text
+        assert f'action="/servers/{server.id}/delete"' not in page.text
+        assert f'action="/servers/{server.id}/enrollment"' not in page.text
+        assert 'enrollment-command' not in page.text
+        assert '采集授权公钥' not in page.text
+    for path in ("/servers/new", f"/servers/{server.id}/edit"):
         assert reader.get(path).status_code == 403
-    for path in ("/servers", "/servers/x/edit", "/servers/x/delete"):
+    for path in ("/servers", f"/servers/{server.id}/edit", f"/servers/{server.id}/delete", f"/servers/{server.id}/enrollment"):
         assert reader.post(path, data={"csrf": csrf}).status_code == 403
+    assert site_registry.get(ctx.conn, server.id) == server
+    for path in ("/", "/accounts", "/users", "/usage", "/audit"):
+        assert reader.get(path).status_code in (303, 403)
+    assert reader.post("/accounts/x/disable", data={"csrf": csrf}).status_code == 403
     anon = TestClient(create_app(ctx), follow_redirects=False)
-    assert anon.get("/servers").headers["location"] == "/login"
+    for path in ("/servers", "/servers/new", f"/servers/{server.id}", f"/servers/{server.id}/edit"):
+        assert anon.get(path).headers["location"] == "/login"
+    for path in ("/servers", f"/servers/{server.id}/edit", f"/servers/{server.id}/delete", f"/servers/{server.id}/enrollment"):
+        assert anon.post(path, data={"csrf": csrf}).status_code == 403
 
 
 def test_overview_groups_filters_and_paginates(ctx, monkeypatch):

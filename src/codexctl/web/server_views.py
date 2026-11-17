@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
 from .. import site_access, site_enrollment, site_probe, site_registry, site_ssh, sites
 from ..vault import VaultError
-from .app import current_admin
+from .app import current_admin, current_user
 
 PAGE_SIZE = 50
 STATUSES = {
@@ -36,12 +36,6 @@ REASONS = {
     "challenge": "访问触发验证",
     "probe_error": "探测程序异常",
 }
-
-
-def _admin_only(admin: tuple[str, str] = Depends(current_admin)) -> tuple[str, str]:
-    if admin[0] != "admin":
-        raise HTTPException(403, "仅管理员可查看服务器")
-    return admin
 
 
 def _time(ts: int | None) -> str:
@@ -134,7 +128,7 @@ def register(app) -> None:
     @app.get("/servers", response_class=HTMLResponse)
     def servers_page(
         request: Request, server_id: str = "", date: str = "", state: str = "", q: str = "", page: int = 1,
-        admin: tuple[str, str] = Depends(_admin_only),
+        admin: tuple[str, str] = Depends(current_user),
     ):
         with lock:
             servers = site_registry.list_servers(ctx.conn)
@@ -219,13 +213,13 @@ def register(app) -> None:
         )
 
     @app.get("/servers/new", response_class=HTMLResponse)
-    def new_server(request: Request, admin: tuple[str, str] = Depends(_admin_only)):
+    def new_server(request: Request, admin: tuple[str, str] = Depends(current_admin)):
         return editor(request, admin)
 
     @app.post("/servers")
     def add_server(
         request: Request, name: str = Form(""), host: str = Form(""), port: str = Form(""),
-        host_key: str = Form(""), admin: tuple[str, str] = Depends(_admin_only),
+        host_key: str = Form(""), admin: tuple[str, str] = Depends(current_admin),
     ):
         try:
             with lock:
@@ -236,11 +230,11 @@ def register(app) -> None:
         return RedirectResponse(f"/servers/{server.id}", status_code=303)
 
     @app.get("/servers/{server_id}", response_class=HTMLResponse)
-    def server_details(request: Request, server_id: str, admin: tuple[str, str] = Depends(_admin_only)):
+    def server_details(request: Request, server_id: str, admin: tuple[str, str] = Depends(current_user)):
         with lock:
             server = require_server(server_id)
             inv = sites.snapshots(ctx.conn).get(server_id)
-            command = site_enrollment.command(ctx, server, base_url(request))
+            command = site_enrollment.command(ctx, server, base_url(request)) if admin[0] == "admin" else None
         return render(
             request, "server_detail.html", admin=admin[0], csrf=admin[1], server=server,
             sync=_server_state(server, inv, ctx.now()), synced_at=_time(inv.synced_at if inv else None),
@@ -249,13 +243,13 @@ def register(app) -> None:
         )
 
     @app.post("/servers/{server_id}/enrollment")
-    def renew_enrollment(server_id: str, admin: tuple[str, str] = Depends(_admin_only)):
+    def renew_enrollment(server_id: str, admin: tuple[str, str] = Depends(current_admin)):
         with lock:
             site_enrollment.issue(ctx, require_server(server_id))
         return RedirectResponse(f"/servers/{server_id}", status_code=303)
 
     @app.get("/servers/{server_id}/edit", response_class=HTMLResponse)
-    def edit_server(request: Request, server_id: str, admin: tuple[str, str] = Depends(_admin_only)):
+    def edit_server(request: Request, server_id: str, admin: tuple[str, str] = Depends(current_admin)):
         with lock:
             server = require_server(server_id)
         return editor(request, admin, server)
@@ -263,7 +257,7 @@ def register(app) -> None:
     @app.post("/servers/{server_id}/edit")
     def save_server(
         request: Request, server_id: str, name: str = Form(""), host: str = Form(""), port: str = Form(""),
-        host_key: str = Form(""), admin: tuple[str, str] = Depends(_admin_only),
+        host_key: str = Form(""), admin: tuple[str, str] = Depends(current_admin),
     ):
         with lock:
             server = require_server(server_id)
@@ -274,7 +268,7 @@ def register(app) -> None:
         return RedirectResponse(f"/servers/{server.id}", status_code=303)
 
     @app.post("/servers/{server_id}/delete")
-    def remove_server(server_id: str, admin: tuple[str, str] = Depends(_admin_only)):
+    def remove_server(server_id: str, admin: tuple[str, str] = Depends(current_admin)):
         with lock:
             server = require_server(server_id)
             site_registry.delete(ctx, f"web:{admin[0]}", server)

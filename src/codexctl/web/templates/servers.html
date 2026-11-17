@@ -12,7 +12,7 @@
 {% block content %}
 <div class="page-head">
   <h1>服务器</h1>
-  <a class="btn primary" href="/servers/new">添加服务器</a>
+  {% if is_admin %}<a class="btn primary" href="/servers/new">添加服务器</a>{% endif %}
 </div>
 
 {% if summary %}
