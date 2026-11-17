@@ -533,3 +533,29 @@ progress.bad::-moz-progress-bar { background: var(--red); }
 .price-search input { min-width: 0; max-width: 100%; padding: 6px 10px; border: 1px solid #cbd2d9; border-radius: 6px; font: inherit; }
 .price-search [role=status] { color: var(--muted); font-size: 12px; }
 .price-table tr[hidden] { display: none; }
+
+/* Personal usage overview. */
+.member-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.member-metrics > .current-account-card { grid-column: 1 / -1; }
+.current-account-card { gap: 12px; }
+.current-account-card .remain-pct { font-size: 32px; }
+.current-account-card .quota-message { margin: 3px 0; font-size: 18px; font-weight: 600; }
+.quota-sync { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.account-link-state { border-top: 1px solid var(--line-soft); padding-top: 10px; }
+.daily-usage-line { fill: none; stroke: var(--green); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.daily-usage-point { fill: var(--green); stroke: #fff; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+@media (max-width: 700px) {
+  .member-metrics { grid-template-columns: minmax(0, 1fr); }
+  .member-metrics .acard { padding: 18px; }
+  .member-usage-panel .daily-chart { min-width: 0; width: 100%; }
+  .member-usage-panel .daily-label { font-size: 17px; }
+}
+
+.quota-secondary { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; font-size: 13px; padding-top: 8px; border-top: 1px solid var(--line-soft); }
+
+.daily-date-range { display: none; }
+@media (max-width: 700px) {
+  .member-usage-panel .daily-chart { height: 180px; }
+  .member-usage-panel .daily-label { display: none; }
+  .daily-date-range { display: flex; justify-content: space-between; gap: 10px; color: var(--muted); font: 12px/1.5 var(--mono); }
+}

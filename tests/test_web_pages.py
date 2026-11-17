@@ -980,3 +980,46 @@ def test_audit_pagination_filters_and_date_validation(c, ctx, monkeypatch):
     assert c.get("/audit?start=2026-13-01").status_code == 422
     assert c.get("/audit?end=9999-12-31").status_code == 422
     assert c.get("/audit?start=2026-11-18&end=2026-11-17").status_code == 422
+
+
+def test_current_account_quota_is_bound_to_member_and_handles_stale_samples(ctx):
+    from codexctl.web.views import _current_account_quota
+
+    account = add_acc(ctx, label="member-account")
+    other = add_acc(ctx, label="other-account", account_id="other-account")
+    now = ctx.now()
+    repo.insert_quota_sample(ctx.conn, other.id, now, "primary", 99, 300, now + 200, "api")
+    assert _current_account_quota(ctx, None) is None
+    assert _current_account_quota(ctx, account)["has_quota"] is False
+    repo.insert_quota_sample(ctx.conn, account.id, now, "primary", 27, 300, now + 200, "api")
+    repo.insert_quota_sample(ctx.conn, account.id, now, "secondary", 45, 10080, now + 10000, "api")
+    quota = _current_account_quota(ctx, account)
+    assert quota["remaining"] == 73 and quota["name"] == "5小时"
+    assert len(quota["windows"]) == 2 and quota["windows"][1]["remaining"] == 55
+    assert not quota["stale"] and not quota["expired"]
+    ctx.test_clock.t = now + 201
+    quota = _current_account_quota(ctx, account)
+    assert quota["remaining"] is None and quota["used"] is None
+    assert quota["expired"] and quota["stale"] and "待更新" in quota["reset"]
+    assert quota["windows"][1]["remaining"] == 55
+
+
+def test_member_quota_context_and_daily_line_points(c, ctx, monkeypatch):
+    ctx.test_users.add("alice")
+    account = add_acc(ctx)
+    repo.start_assignment(ctx.conn, "alice", account.id, ctx.now())
+    repo.insert_quota_sample(ctx.conn, account.id, ctx.now(), "primary", 40, 300, ctx.now() + 3600, "api")
+    delta = {field: 0 for field in repo.USAGE_FIELDS}
+    delta.update(input_tokens=100, total_tokens=100)
+    repo.insert_usage(ctx.conn, "alice", account.id, ctx.now(), delta, "line-session", "model")
+    captured = {}
+    render = c.app.state.templates.TemplateResponse
+    def capture(request, name, context, **kwargs):
+        captured.update(context)
+        return render(request, name, context, **kwargs)
+    monkeypatch.setattr(c.app.state.templates, "TemplateResponse", capture)
+    assert c.get("/users/alice").status_code == 200
+    assert captured["current_account_quota"]["remaining"] == 60
+    assert captured["daily_line_path"].startswith("M ")
+    assert captured["daily_line_path"].count("L ") == 6
+    assert all("center_x" in day for day in captured["daily"])

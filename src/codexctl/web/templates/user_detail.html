@@ -1,5 +1,36 @@
 {% extends "base.html" %}
 {% block title %}{{ username }} 用户详情 - codexctl{% endblock %}
+{% macro account_card() %}
+<section class="acard current-account-card" aria-labelledby="current-account-title">
+  <div class="acard-head">
+    <span class="muted" id="current-account-title">当前账号</span>
+    <span class="badge {{ 'active' if account else 'disabled' }}">{{ '已分配' if account else '未分配' }}</span>
+  </div>
+  <div class="acard-title">{% if account %}{{ account.name }}{% if account.display_name %} <span class="muted mono">({{ account.label }})</span>{% endif %}{% else %}<span class="muted">尚未分配账号</span>{% endif %}</div>
+  {% set quota = current_account_quota|default(none) %}
+  {% if quota %}
+    {% if quota.has_quota and not quota.expired %}
+    <div class="remain-row"><span class="remain-label">{{ quota.name }}剩余额度</span><strong class="remain-pct {{ quota.tone }}">{{ quota.remaining }}%</strong></div>
+    <progress class="remain-bar {{ quota.tone }}" max="100" value="{{ quota.remaining }}" aria-label="{{ quota.name }}剩余额度 {{ quota.remaining }}%">{{ quota.remaining }}%</progress>
+    <div class="meta-row"><span>已用 {{ quota.used }}%</span><span>{{ quota.reset }}</span></div>
+    {% elif quota.expired %}
+    <p class="quota-message">已重置（待更新）</p>
+    {% else %}
+    <p class="quota-message muted">暂无额度数据</p>
+    {% endif %}
+    {% for window in quota.other_windows|default([]) %}
+    <div class="quota-secondary"><span>{{ window.name }}剩余</span>{% if window.expired %}<span class="muted">已重置（待更新）</span>{% elif window.has_quota %}<strong class="{{ window.tone }}">{{ window.remaining }}%</strong><span class="hint">{{ window.reset }}</span>{% if window.stale %}<span class="badge warn">上次数据</span>{% endif %}{% else %}<span class="muted">暂无额度数据</span>{% endif %}</div>
+    {% endfor %}
+    {% if quota.status_text %}<span class="hint">{{ quota.status_text }}</span>{% endif %}
+    {% if quota.sampled_at %}<div class="quota-sync hint">更新于 {{ quota.sampled_at }} · 北京时间{% if quota.stale %}<span class="badge warn">上次数据</span>{% endif %}</div>{% endif %}
+  {% elif account %}
+    <p class="quota-message muted">暂无额度数据</p>
+  {% else %}
+    <p class="hint">分配账号后可查看可用额度。</p>
+  {% endif %}
+  {% if managed %}<div class="meta-row mono account-link-state"><span>链接状态 {{ {'symlink': '已链接', 'no_codex_dir': '未初始化', 'missing': '缺少链接', 'regular': '普通文件', 'wrong_target': '链接目标异常'}.get(link.kind, link.kind) if link else '未知' }}</span>{% if stale %}<span class="bad">{{ stale|length }} 个旧进程</span>{% endif %}</div>{% endif %}
+</section>
+{% endmacro %}
 {% macro cost_cell(n, cost, unpriced=0) -%}
 <td class="num{% if not n %} muted{% endif %}" title="{{ '{:,}'.format(n) }} tokens{% if cost is not none %} · 估算 {{ cost|usd }}{% endif %}{% if unpriced %} · {{ unpriced }} 个模型未定价{% endif %}">{{ n|tokens }}{% if n %}<div class="cost{% if cost is none %} muted{% endif %}">{% if cost is not none %}{{ cost|usd }}{% if unpriced %}*{% endif %}{% else %}未定价{% endif %}</div>{% endif %}</td>
 {%- endmacro %}
@@ -7,7 +38,7 @@
 <div class="page-head">
   <div>
     {% if is_admin %}<div class="crumb"><a href="/users">用户</a> / {{ username }}</div>{% endif %}
-    <h1>{{ username }} <span class="muted">用户详情</span></h1>
+    <h1>{% if is_admin %}{{ username }} <span class="muted">用户详情</span>{% else %}我的数据{% endif %}</h1>{% if not is_admin %}<div class="sub">{{ username }} · 用量按北京时间统计</div>{% endif %}
   </div>
   <div class="toolbar">
     {% if is_admin and managed %}
@@ -27,27 +58,11 @@
   </div>
 </div>
 
-{% if show_api_key %}{% include "user_api_key.html" %}{% endif %}
+{% if not managed %}{{ account_card() }}{% endif %}
 
 {% if managed %}
-<div class="user-grid">
-  <div class="acard">
-    <div class="acard-head">
-      <span class="muted">当前账号</span>
-      {% if account %}
-      <span class="badge active">已分配</span>
-      {% else %}
-      <span class="badge disabled">未分配</span>
-      {% endif %}
-    </div>
-    <div class="acard-title">
-      {% if account %}{{ account.name }}{% if account.display_name %} <span class="muted mono">({{ account.label }})</span>{% endif %}{% else %}<span class="muted">-</span>{% endif %}
-    </div>
-    <div class="meta-row mono">
-      <span>链接：{{ link.kind if link else "未知" }}</span>
-      {% if stale %}<span class="bad">{{ stale|length }} 个旧进程</span>{% endif %}
-    </div>
-  </div>
+<div class="user-grid member-metrics">
+  {{ account_card() }}
 
   <div class="acard">
     <div class="acard-head"><span class="muted">今天用量</span></div>
@@ -89,7 +104,7 @@
   </div>
 </div>
 
-<div class="panel flush">
+<div class="panel flush member-usage-panel">
   <div class="panel-head">
     <div><h2><span class="section-mark"></span>每日用量</h2><div class="hint">按北京时间统计 · 近 {{ days }} 天</div></div>
     <form method="get" class="daily-range">
@@ -105,17 +120,19 @@
   <div class="daily-chart-wrap">
     <div class="daily-chart-scale"><span>Tokens</span><strong>{{ daily_max|tokens }}</strong></div>
     <div class="chart-inspector" data-chart-inspector aria-live="polite"><span class="chart-inspector-placeholder">将鼠标移到图表上，或使用左右方向键查看每天的数据</span></div>
-    <svg class="daily-chart interactive-chart" data-chart-kind="daily" tabindex="0" viewBox="0 0 960 195" role="group" aria-label="近 {{ days }} 天每日 Token 用量柱状图，详细数据见下方每日明细">
+    <svg class="daily-chart interactive-chart" data-chart-kind="daily" tabindex="0" viewBox="0 0 960 195" preserveAspectRatio="none" role="group" aria-label="近 {{ days }} 天每日 Token 用量折线图，详细数据见下方每日明细">
       <line class="daily-grid" x1="45" y1="15" x2="945" y2="15"/>
       <line class="daily-grid" x1="45" y1="90" x2="945" y2="90"/>
       <line class="daily-grid" x1="45" y1="165" x2="945" y2="165"/>
+      <path class="daily-usage-line" d="{{ daily_line_path }}"/>
       {% for d in daily %}
-      <rect class="daily-bar" x="{{ d.x }}" y="{{ d.y }}" width="{{ d.width }}" height="{{ d.height }}"><title>{{ d.day }}：{{ '{:,}'.format(d.total) }} tokens · 输入 {{ '{:,}'.format(d.input) }} · 缓存 {{ '{:,}'.format(d.cached) }} · 输出 {{ '{:,}'.format(d.output) }} · {{ d.turns }} 次交互</title></rect>
+      <circle class="daily-usage-point" cx="{{ d.center_x }}" cy="{{ d.y }}" r="{{ 3.5 if days == 7 else 2 }}"><title>{{ d.day }}：{{ '{:,}'.format(d.total) }} tokens · 输入 {{ '{:,}'.format(d.input) }} · 缓存 {{ '{:,}'.format(d.cached) }} · 输出 {{ '{:,}'.format(d.output) }} · {{ d.turns }} 次交互</title></circle>
       <rect class="chart-hit" x="{{ d.x }}" y="10" width="{{ 900 / days }}" height="155" tabindex="-1" data-day="{{ d.day }}" data-total="{{ d.total }}" data-total-short="{{ d.total|tokens }}" data-input="{{ d.input }}" data-input-short="{{ d.input|tokens }}" data-cached="{{ d.cached }}" data-cached-short="{{ d.cached|tokens }}" data-output="{{ d.output }}" data-output-short="{{ d.output|tokens }}" data-turns="{{ d.turns }}" aria-label="{{ d.day }}，查看用量明细"/>
       {% if d.show_label %}<text class="daily-label" x="{{ d.x }}" y="185"{% if loop.last %} text-anchor="end"{% endif %}>{{ d.label }}</text>{% endif %}
       {% endfor %}
     </svg>
-    <p class="hint">柱高为每日总 Tokens；缓存包含在输入中。悬停可查看明细。</p>
+    <div class="daily-date-range"><span>{{ daily[0].day }}</span><span>{{ daily[-1].day }}</span></div>
+    <p class="hint">折线表示每日总 Tokens，缓存包含在输入中。点击图表或用左右方向键查看每日明细。</p>
   </div>
   <details class="daily-details">
     <summary>查看每日明细</summary>
@@ -224,5 +241,6 @@
 
 <script src="/static/chart-inspector.js" defer></script>
 {% endif %}
+{% if show_api_key %}{% include "user_api_key.html" %}{% endif %}
 {% if is_admin %}<script src="/static/confirm.js"></script>{% endif %}
 {% endblock %}

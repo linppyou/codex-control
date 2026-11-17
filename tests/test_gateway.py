@@ -594,3 +594,23 @@ def test_installed_codex_loads_generated_sidecar_profile(tmp_path):
     result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=20)
     assert result.returncode != 0
     assert "missing-fixture-provider" in result.stderr
+
+
+def test_gateway_member_receives_bound_account_quota(setup, monkeypatch):
+    ctx, accounts, _ = setup
+    account = accounts[0]
+    webauth.create_admin(ctx.conn, account.label, "test gateway password", now=ctx.now())
+    repo.insert_quota_sample(ctx.conn, account.id, ctx.now(), "primary", 36, 300, ctx.now() + 3600, "api")
+    with client_for(ctx, lambda request: httpx.Response(200, json=MODELS)) as client:
+        captured = {}
+        render = client.app.state.templates.TemplateResponse
+        def capture(request, name, context, **kwargs):
+            captured.update(context)
+            return render(request, name, context, **kwargs)
+        monkeypatch.setattr(client.app.state.templates, "TemplateResponse", capture)
+        login(client, account.label)
+        assert client.get(f"/users/{account.label}").status_code == 200
+        assert captured["current_account_quota"]["remaining"] == 64
+        assert captured["account"].id == account.id
+        assert client.get(f"/users/{accounts[1].label}").status_code == 403
+        assert client.get(f"/accounts/{account.label}/quota").status_code == 403

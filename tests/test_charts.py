@@ -31,3 +31,33 @@ def test_fmt_tokens_units():
              999_500: "1M", 12_340_000: "12.3M", 5_678_900_000: "5.68B", 2 * 10**12: "2T"}
     for n, want in cases.items():
         assert fmt_tokens(n) == want, n
+
+
+def test_daily_comparison_geometry_and_values():
+    from codexctl.web.charts import comparison_series
+
+    daily = [
+        {"day": "2026-11-15", "values": [0]},
+        {"day": "2026-11-16", "values": [50]},
+        {"day": "2026-11-17", "values": [100]},
+    ]
+    series = comparison_series(daily, ["每日用量"], 100)[0]
+    assert series["path"] == "M70.0,175.0 L495.0,105.0 L920.0,35.0"
+    assert [day["x"] for day in daily] == [70.0, 495.0, 920.0]
+    assert [(point["value"], point["day"]) for point in series["points"]] == [
+        (0, "2026-11-15"), (50, "2026-11-16"), (100, "2026-11-17"),
+    ]
+
+
+def test_daily_comparison_empty_single_and_zero_values():
+    from codexctl.web.charts import comparison_series
+
+    empty = comparison_series([], ["每日用量"], 0)[0]
+    assert empty["path"] == "" and empty["points"] == []
+    single = comparison_series([{"day": "2026-11-17", "values": [0]}], ["每日用量"], 0)[0]
+    assert single["path"] == "M70.0,175.0"
+    assert single["points"] == [{"x": 70.0, "y": 175.0, "value": 0, "day": "2026-11-17"}]
+    zero = comparison_series([
+        {"day": "2026-11-16", "values": [0]}, {"day": "2026-11-17", "values": [0]},
+    ], ["每日用量"], 0)[0]
+    assert zero["path"] == "M70.0,175.0 L920.0,175.0"

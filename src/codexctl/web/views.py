@@ -16,7 +16,7 @@ from urllib.parse import urlencode
 from fastapi import Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from .. import accounts, assignments, db, events, pricing, procs, quota, refresher, repo, useradmin, webauth
+from .. import accounts, assignments, db, events, pricing, procs, quota, refresher, repo, sites, useradmin, webauth
 from ..authfile import AuthFileError
 from ..codexinstall import CodexInstallError
 from ..devicelogin import DeviceLoginError
@@ -91,6 +91,30 @@ def _quota_view(q, now: int) -> dict:
             percent = max(0, min(100, round(pct)))
     return {"name": window_name(q["window_minutes"]), "minutes": q["window_minutes"], "percent": percent, "reset": reset,
             "source": clean_text(q["source"])}
+
+
+def _current_account_quota(ctx, account) -> dict | None:
+    if account is None:
+        return None
+    now = ctx.now()
+    rows = repo.latest_quota(ctx.conn, account.id, api_fresh_since=now - 2 * ctx.settings.quota_poll_seconds)
+    windows = []
+    for row in rows:
+        view = _quota_view(row, now)
+        expired = row["resets_at"] is not None and row["resets_at"] <= now
+        remaining = 100 - view["percent"] if view["percent"] is not None and not expired else None
+        windows.append(dict(
+            view, win=row["win"], has_quota=remaining is not None, remaining=remaining,
+            used=view["percent"] if not expired else None,
+            tone=_tone(remaining) if remaining is not None else "warn",
+            expired=expired, stale=expired or now - row["ts"] > 2 * ctx.settings.quota_poll_seconds,
+            sampled_at=datetime.fromtimestamp(row["ts"], sites.BEIJING).strftime("%m-%d %H:%M"),
+        ))
+    selected = next((window for row, window in zip(rows, windows) if row["win"] == "primary"),
+                    windows[0] if windows else dict(has_quota=False, remaining=None, used=None, name="",
+                                                   reset="", tone="warn", stale=False, expired=False,
+                                                   sampled_at="", source=""))
+    return dict(selected, windows=windows, other_windows=[window for window in windows if window is not selected], status_text={"needs_relogin": "需重新登录", "disabled": "已停用"}.get(account.status, ""))
 
 
 def _week_window(h: dict) -> dict | None:
@@ -536,7 +560,7 @@ def register(app) -> None:
             usage = {
                 u["raw"]: u
                 for u in group_users(
-                    repo.usage_by_user_model_windows(ctx.conn, now - 86400, now - 7 * 86400), {}, book
+                    repo.usage_by_user_model_windows(ctx.conn, *usage_windows()), {}, book
                 )
             }
             accounts_by_id = {a.id: a for a in repo.list_accounts(ctx.conn)}
@@ -860,16 +884,18 @@ def register(app) -> None:
                 if key is None and not login and active is None:
                     raise HTTPException(404)
                 account = repo.get_account_by_pk(ctx.conn, active.account_pk) if active else None
+                current_account_quota = _current_account_quota(ctx, account)
             return render(request, "user_detail.html", admin=admin[0], csrf=admin[1], username=clean_name,
-                          account=account, api_key=key, show_api_key=True, show_web_login=True, web_login=login)
+                          account=account, current_account_quota=current_account_quota,
+                          api_key=key, show_api_key=True, show_web_login=True, web_login=login)
         today, week = usage_windows()
         days = days if days in (7, 30, 90) else 7
         page = max(1, page)
         model, account_filter = model[:200], account_filter[:200]
-        local_today = datetime.fromtimestamp(ctx.now()).date()
+        local_today = datetime.fromtimestamp(ctx.now(), sites.BEIJING).date()
         start_day = local_today - timedelta(days=days - 1)
-        start_ts = int(time.mktime(start_day.timetuple()))
-        end_ts = int(time.mktime((local_today + timedelta(days=1)).timetuple()))
+        start_ts = int(datetime.combine(start_day, datetime.min.time(), sites.BEIJING).timestamp())
+        end_ts = int(datetime.combine(local_today + timedelta(days=1), datetime.min.time(), sites.BEIJING).timestamp())
         with lock:
             if is_admin:
                 devlogins.sweep()
@@ -888,6 +914,7 @@ def register(app) -> None:
 
             active = repo.active_assignment(ctx.conn, clean_name)
             account = repo.get_account_by_pk(ctx.conn, active.account_pk) if active else None
+            current_account_quota = _current_account_quota(ctx, account)
             link = ctx.publisher.read_link(user) if user else None
             stale = procs.stale_procs(
                 procs.list_codex_procs(user.uid, ctx.settings.codex_bin.parent, home=user.home),
@@ -945,6 +972,9 @@ def register(app) -> None:
                 d["height"] = round(max(0, d["total"]) / (daily_max or 1) * 150, 2)
                 d["y"] = round(165 - d["height"], 2)
                 d["show_label"] = i == 0 or i == days - 1 or (days <= 7 or (days <= 30 and i % 5 == 0) or (days > 30 and i % 15 == 0))
+                d["center_x"] = round(d["x"] + d["width"] / 2, 2)
+            daily_line_path = " ".join(f"{'M' if i == 0 else 'L'} {point['center_x']} {point['y']}"
+                                       for i, point in enumerate(daily))
             filter_models, filter_accounts = repo.user_session_filters(ctx.conn, clean_name)
             filtered_sessions = repo.user_session_count(ctx.conn, clean_name, model, account_filter)
             pages = max(1, math.ceil(filtered_sessions / 20))
@@ -1010,17 +1040,16 @@ def register(app) -> None:
             username=clean_name, user=user, account=account, link=link, stale=stale,
             api_key=key, show_api_key=show_api_key,
             summary=summary, models=models, sessions=sessions, total_sessions=total_sessions,
-            daily=daily, daily_max=daily_max, days=days, page=page, pages=pages,
+            daily=daily, daily_max=daily_max, daily_line_path=daily_line_path,
+            current_account_quota=current_account_quota, days=days, page=page, pages=pages,
             filtered_sessions=filtered_sessions, filter_models=filter_models, filter_accounts=filter_accounts,
             selected_model=model, selected_account=account_filter, page_url=page_url,
         )
 
     def usage_windows() -> tuple[int, int]:
-        """返回 (今天零点, 7 天前) 的时间戳；今天按服务器本地时区计算。"""
-        now = ctx.now()
-        t = time.localtime(now)
-        today = int(time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 0, 0, 0, 0, 0, -1)))
-        return today, now - 7 * 86400
+        """Return Beijing midnight and the start of the last seven calendar days."""
+        midnight = datetime.fromtimestamp(ctx.now(), sites.BEIJING).replace(hour=0, minute=0, second=0, microsecond=0)
+        return int(midnight.timestamp()), int((midnight - timedelta(days=6)).timestamp())
 
     def usage_user_rows() -> tuple[list[sqlite3.Row], pricing.PriceBook]:
         today, week = usage_windows()
@@ -1059,10 +1088,10 @@ def register(app) -> None:
     def user_comparison(days: int) -> dict:
         """Build the per-user daily chart for the dashboard; caller holds the lock."""
         days = days if days in (7, 30, 90) else 7
-        local_today = datetime.fromtimestamp(ctx.now()).date()
+        local_today = datetime.fromtimestamp(ctx.now(), sites.BEIJING).date()
         start_day = local_today - timedelta(days=days - 1)
-        start_ts = int(time.mktime(start_day.timetuple()))
-        end_ts = int(time.mktime((local_today + timedelta(days=1)).timetuple()))
+        start_ts = int(datetime.combine(start_day, datetime.min.time(), sites.BEIJING).timestamp())
+        end_ts = int(datetime.combine(local_today + timedelta(days=1), datetime.min.time(), sites.BEIJING).timestamp())
         book = pricing.PriceBook(repo.list_prices(ctx.conn))
         daily_rows = repo.usage_daily_by_user_model(ctx.conn, start_ts, end_ts)
         comparison = {}
@@ -1272,22 +1301,63 @@ def register(app) -> None:
         return _redirect("/pricing", msg=f"已删除 {old.name}")
 
     @app.get("/audit", response_class=HTMLResponse)
-    def audit_page(request: Request, admin: tuple[str, str] = Depends(current_admin)):
+    def audit_page(
+        request: Request, audit_page: int = 1, alert_page: int = 1,
+        actor: str = "", action: str = "", q: str = "", start: str = "", end: str = "", level: str = "",
+        admin: tuple[str, str] = Depends(current_admin),
+    ):
+        filters = {key: value.strip()[:200] for key, value in
+                   dict(actor=actor, action=action, q=q, start=start, end=end, level=level).items()}
+        boundaries = {}
+        for key in ("start", "end"):
+            if filters[key]:
+                try:
+                    day = datetime.strptime(filters[key], "%Y-%m-%d").replace(tzinfo=sites.BEIJING)
+                    boundaries[key] = int((day + timedelta(days=int(key == "end"))).timestamp())
+                except (ValueError, OverflowError, OSError):
+                    raise HTTPException(422, "请输入有效的 YYYY-MM-DD 日期") from None
+        if "start" in boundaries and "end" in boundaries and boundaries["start"] >= boundaries["end"]:
+            raise HTTPException(422, "结束日期不得早于开始日期")
+
+        def query(table: str, page: int, page_key: str):
+            conditions, values = [], []
+            if "start" in boundaries:
+                conditions.append("ts >= ?")
+                values.append(boundaries["start"])
+            if "end" in boundaries:
+                conditions.append("ts < ?")
+                values.append(boundaries["end"])
+            exact = ("actor", "action") if table == "audit_log" else ("level",)
+            for key in exact:
+                if filters[key]:
+                    conditions.append(f"{key} = ?")
+                    values.append(filters[key])
+            if filters["q"]:
+                text = "actor || ' ' || action || ' ' || target || ' ' || COALESCE(detail, '')" if table == "audit_log" else "kind || ' ' || target || ' ' || COALESCE(message, '')"
+                conditions.append(f"instr(lower({text}), lower(?)) > 0")
+                values.append(filters["q"])
+            where = " WHERE " + " AND ".join(conditions) if conditions else ""
+            total = ctx.conn.execute(f"SELECT COUNT(*) FROM {table}{where}", values).fetchone()[0]
+            pages = max(1, math.ceil(total / 50))
+            page = min(max(1, page), pages)
+            rows = ctx.conn.execute(f"SELECT * FROM {table}{where} ORDER BY ts DESC, id DESC LIMIT 50 OFFSET ?",
+                                    [*values, (page - 1) * 50]).fetchall()
+            params = dict(filters, audit_page=max(1, audit_page), alert_page=max(1, alert_page))
+            def url(number: int):
+                return "/audit?" + urlencode(dict(params, **{page_key: number})) + ("#audit-records" if page_key == "audit_page" else "#alert-records")
+            return rows, dict(page=page, pages=pages, total=total,
+                              previous=url(page - 1) if page > 1 else "", next=url(page + 1) if page < pages else "")
+
         with lock:
             devlogins.sweep()
-            audit_rows = [
-                {
-                    "ts": fmt_ts(r["ts"]), "actor": clean_text(r["actor"]), "action": clean_text(r["action"]),
-                    "target": clean_text(r["target"]), "detail": clean_text(r["detail"], 200),
-                }
-                for r in repo.recent_audit(ctx.conn, 200)
-            ]
-            alert_rows = [
-                {
-                    "ts": fmt_ts(r["ts"]), "level": clean_text(r["level"], 16), "kind": clean_text(r["kind"]),
-                    "target": clean_text(r["target"]), "message": clean_text(r["message"], 300),
-                    "resolved": fmt_ts(r["resolved_at"]) if r["resolved_at"] else "",
-                }
-                for r in repo.recent_alerts(ctx.conn, 100)
-            ]
-        return render(request, "audit.html", admin=admin[0], csrf=admin[1], audit=audit_rows, alerts=alert_rows)
+            audit, audit_pagination = query("audit_log", audit_page, "audit_page")
+            alerts, alert_pagination = query("alerts", alert_page, "alert_page")
+            def audit_time(timestamp):
+                return datetime.fromtimestamp(timestamp, sites.BEIJING).strftime("%m-%d %H:%M")
+            audit_rows = [{"ts": audit_time(r["ts"]), "actor": clean_text(r["actor"]), "action": clean_text(r["action"]),
+                           "target": clean_text(r["target"]), "detail": clean_text(r["detail"], 200)} for r in audit]
+            alert_rows = [{"ts": audit_time(r["ts"]), "level": clean_text(r["level"], 16), "kind": clean_text(r["kind"]),
+                           "target": clean_text(r["target"]), "message": clean_text(r["message"], 300),
+                           "resolved": audit_time(r["resolved_at"]) if r["resolved_at"] else ""} for r in alerts]
+        return render(request, "audit.html", admin=admin[0], csrf=admin[1], audit=audit_rows, alerts=alert_rows,
+                      filters=filters, audit_pagination=audit_pagination, alert_pagination=alert_pagination)

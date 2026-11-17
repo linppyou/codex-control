@@ -65,3 +65,41 @@ def test_mobile_account_records_label_actions(c, ctx):
     assert 'data-label="最近错误"' in page
     assert 'data-label="操作"' in page
     assert '>正常</span>' in page
+
+
+def test_member_page_shows_remaining_quota_and_line_chart(c, ctx):
+    from codexctl import webauth
+    from codexctl.web.app import SESSION_COOKIE
+    from fastapi.testclient import TestClient
+
+    account = add_acc(ctx)
+    ctx.test_users.add("alice")
+    repo.start_assignment(ctx.conn, "alice", account.id, ctx.now())
+    repo.insert_quota_sample(ctx.conn, account.id, ctx.now(), "primary", 32, 10080, ctx.now() + 3600, "api")
+    token, _ = webauth.create_session(ctx.conn, "alice", now=ctx.now())
+    member = TestClient(c.app)
+    member.cookies.set(SESSION_COOKIE, token)
+    response = member.get("/users/alice")
+    assert response.status_code == 200
+    assert '<h1>我的数据</h1>' in response.text
+    assert '剩余额度 68%' in response.text
+    assert 'value="68"' in response.text
+    assert '用量折线图' in response.text
+    assert 'class="daily-usage-line"' in response.text
+    assert 'class="daily-bar"' not in response.text
+    assert response.text.count('class="chart-hit"') == 7
+    assert 'src="/static/chart-inspector.js"' in response.text
+    assert '/users/alice/fix' not in response.text
+    assert response.text.index('current-account-card') < response.text.index('每日用量')
+
+
+def test_account_quota_expired_and_missing_states(c, ctx):
+    account = add_acc(ctx)
+    ctx.test_users.add("alice")
+    repo.start_assignment(ctx.conn, "alice", account.id, ctx.now())
+    assert "暂无额度数据" in c.get("/users/alice").text
+    repo.insert_quota_sample(ctx.conn, account.id, ctx.now() - 3600, "primary", 25, 10080, ctx.now() - 60, "api")
+    response = c.get("/users/alice")
+    assert "已重置（待更新）" in response.text
+    assert '剩余额度 75%' not in response.text
+    assert '/users/alice/fix' in response.text

@@ -78,6 +78,7 @@
     }
     hits.forEach(function (hit, index) {
       hit.addEventListener('pointerenter', function () { show(index); });
+      hit.addEventListener('click', function () { show(index); });
       hit.addEventListener('focus', function () { show(index); });
     });
     chart.addEventListener('focus', function (event) {
