@@ -139,6 +139,8 @@ def csrf_guard(request: Request, csrf: str = Form("")) -> None:
         raise HTTPException(status_code=404)
     if request.method in ("GET", "HEAD", "OPTIONS") or request.url.path == "/login":
         return
+    if request.method == "POST" and path in ("/site-enrollment/install", "/site-enrollment/complete"):
+        return  # These endpoints authenticate using a short-lived enrollment bearer token.
     username, _ = session_csrf(request, csrf)
     user_task_post = request.method == "POST" and (
         path == "/tasks/import" or re.fullmatch(r"/tasks/[0-9a-f]{32}/(?:confirm|cancel)", path)

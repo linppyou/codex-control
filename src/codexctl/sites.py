@@ -180,13 +180,15 @@ def _probe_by_server(targets: dict[ProbeTarget, str], clock, per_server: int) ->
     return results
 
 
-def _refresh(conn: sqlite3.Connection, ctx: Context) -> None:
+def _refresh(conn: sqlite3.Connection, ctx: Context, server_id: str | None = None) -> None:
     previous = snapshots(conn)
     clock = ctx.now
     inventories = {}
     with ThreadPoolExecutor(max_workers=6) as pool:
         requests = {}
         for server in site_registry.list_servers(conn):
+            if server_id is not None and server.id != server_id:
+                continue
             try:
                 key = site_registry.private_key(conn, ctx.vault, server) if server.host_key else b""
             except VaultError:
@@ -209,6 +211,12 @@ def _refresh(conn: sqlite3.Connection, ctx: Context) -> None:
             inventories[server] = (current, attempted, synced, error)
 
     counts = Counter(alias for current, *_ in inventories.values() for site in current for alias in _aliases(site))
+    if server_id is not None:
+        counts.update(
+            alias
+            for owner_id, cached in previous.items() if owner_id != server_id
+            for row in cached.rows for alias in {host.removeprefix("www.") for host in row["domains"]}
+        )
     duplicate = {alias for alias, count in counts.items() if count > 1}
     targets: dict[ProbeTarget, str] = {}
     for server, (current, *_) in inventories.items():
@@ -248,7 +256,7 @@ def _refresh(conn: sqlite3.Connection, ctx: Context) -> None:
         log.info("服务器 %s 已巡检 %d 条站点记录", server.id, len(rows))
 
 
-def refresh(ctx: Context) -> None:
+def refresh(ctx: Context, server_id: str | None = None) -> None:
     # The site job uses its own connection so network I/O never holds the web or daemon DB locks.
     with closing(db.connect(ctx.settings.db_path)) as conn:
-        _refresh(conn, ctx)
+        _refresh(conn, ctx, server_id)

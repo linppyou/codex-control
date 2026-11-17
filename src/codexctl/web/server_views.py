@@ -5,10 +5,11 @@ from datetime import datetime
 from itertools import groupby
 from urllib.parse import urlencode
 
-from fastapi import Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import BackgroundTasks, Depends, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
-from .. import site_probe, site_registry, sites
+from .. import site_enrollment, site_probe, site_registry, sites
+from ..vault import VaultError
 from .app import current_admin
 
 PAGE_SIZE = 50
@@ -74,6 +75,47 @@ def register(app) -> None:
     ctx = app.state.ctx
     lock = app.state.lock
     render = app.state.render
+
+    def base_url(request: Request) -> str:
+        scheme = request.url.scheme
+        if request.client is None or request.client.host in {"127.0.0.1", "::1"}:
+            forwarded = request.headers.get("x-forwarded-proto")
+            if forwarded in {"http", "https"}:
+                scheme = forwarded
+        return str(request.base_url.replace(scheme=scheme)).rstrip("/")
+
+    def authenticated_server(token: str):
+        if not token or len(token) > 128:
+            raise HTTPException(403, "接入命令已失效，请在服务器详情页重新生成")
+        try:
+            return site_enrollment.authenticate(ctx, token)
+        except site_registry.ServerError as exc:
+            raise HTTPException(403, str(exc)) from exc
+
+    @app.post("/site-enrollment/install", response_class=PlainTextResponse)
+    def enrollment_install(request: Request, token: str = Form("")):
+        with lock:
+            server = authenticated_server(token)
+            script = site_enrollment.installer(server, token, base_url(request))
+        return PlainTextResponse(script)
+
+    @app.post("/site-enrollment/complete")
+    def enrollment_complete(request: Request, background: BackgroundTasks, host_key: str = Form("", max_length=512)):
+        token = request.headers.get("authorization", "").removeprefix("Bearer ")
+        try:
+            with lock:
+                server = authenticated_server(token)
+                candidate = site_enrollment.candidate(server, host_key)
+                key = site_registry.private_key(ctx.conn, ctx.vault, server)
+            if key is None:
+                raise site_registry.ServerError("服务器配置已变更，请重新生成接入命令")
+            inventory = sites.collect(candidate, key)
+            with lock:
+                site_enrollment.complete(ctx, candidate, token, inventory)
+        except (site_registry.ServerError, sites.InventoryError, VaultError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        background.add_task(sites.refresh, ctx, server.id)
+        return {"sites": len(inventory)}
 
     def require_server(server_id: str):
         server = site_registry.get(ctx.conn, server_id)
@@ -180,6 +222,7 @@ def register(app) -> None:
         try:
             with lock:
                 server = site_registry.create(ctx, f"web:{admin[0]}", name, host, port, host_key)
+                site_enrollment.issue(ctx, server)
         except site_registry.ServerError as exc:
             return editor(request, admin, fields=dict(name=name, host=host, port=port, host_key=host_key), error=str(exc))
         return RedirectResponse(f"/servers/{server.id}", status_code=303)
@@ -189,11 +232,19 @@ def register(app) -> None:
         with lock:
             server = require_server(server_id)
             inv = sites.snapshots(ctx.conn).get(server_id)
+            command = site_enrollment.command(ctx, server, base_url(request))
         return render(
             request, "server_detail.html", admin=admin[0], csrf=admin[1], server=server,
             sync=_server_state(server, inv, ctx.now()), synced_at=_time(inv.synced_at if inv else None),
             sync_error=inv.error if inv else None, count=len(inv.rows) if inv and inv.synced_at is not None else None,
+            enrollment_command=command,
         )
+
+    @app.post("/servers/{server_id}/enrollment")
+    def renew_enrollment(server_id: str, admin: tuple[str, str] = Depends(_admin_only)):
+        with lock:
+            site_enrollment.issue(ctx, require_server(server_id))
+        return RedirectResponse(f"/servers/{server_id}", status_code=303)
 
     @app.get("/servers/{server_id}/edit", response_class=HTMLResponse)
     def edit_server(request: Request, server_id: str, admin: tuple[str, str] = Depends(_admin_only)):
