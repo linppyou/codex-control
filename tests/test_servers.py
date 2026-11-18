@@ -337,16 +337,42 @@ def test_admin_server_crud_and_csrf(ctx):
     }
 
 
-def test_wp_center_embed_uses_codexctl_proxy_and_csrf():
-    page = '<head></head>window.AI_CENTER_RUNTIME={version:"2.1.0",transport:"panel"};panelForm(\'/plugin?action=a&name=ai_center&s=x\') headers[\'x-http-token\']=csrf location.origin'
-    embedded = wp_center.embed(page, "/servers/abc/wp-center/proxy", "csrf-token", "https://codex.example", "刘子涵", "104.255.153.35")
-    assert "/servers/abc/wp-center/proxy/plugin?action=a&name=ai_center&s=x" in embedded
-    assert "headers['X-CSRFToken']=csrf" in embedded
-    assert 'window.AI_CENTER_RUNTIME={codexctl_proxy_upload:true,version:"2.1.0",transport:"panel"}' in embedded
-    assert "!window.AI_CENTER_RUNTIME?.codexctl_proxy_upload" in embedded
-    assert "window.vite_public_request_token=\"csrf-token\"" in embedded
-    assert '"https://codex.example"' in embedded
-    assert "刘子涵" in embedded and "104.255.153.35" in embedded
+def test_wp_center_isolates_remote_page_and_checks_proxy_permissions(ctx, monkeypatch):
+    server = create(ctx)
+    ctx.settings = replace(ctx.settings, site_ssh_enabled=True, site_ssh_shared=True)
+    admin, csrf = login_client(ctx)
+    reader, reader_csrf = login_client(ctx, "reader")
+    path = f"/servers/{server.id}/wp-center"
+    page = """<head></head><script>
+    window.AI_CENTER_RUNTIME={version:"2.1.0",transport:"panel"};
+    function upload(){if(window.AI_CENTER_RUNTIME?.transport==='panel') return nativeUpload()}
+    </script>"""
+    monkeypatch.setattr("codexctl.sites.access.shared_key", lambda settings: Path("/unused"))
+    monkeypatch.setattr(wp_center, "installed_workspace", lambda *args: ("2.1.0", page))
+    monkeypatch.setattr(wp_center, "theme_assets", lambda *args: ({}, {}))
+
+    def start_upload(target, key, action, payload):
+        assert (target.id, action, payload) == (server.id, "start_resource_upload", {"name": "test.csv"})
+        return {"chunk_size": 1024 * 1024}
+
+    monkeypatch.setattr(wp_center, "plugin", start_upload)
+    shell = admin.get(path)
+    assert shell.status_code == 200 and 'sandbox="allow-scripts allow-downloads"' in shell.text
+    assert csrf in shell.text and "unsafe-inline" not in shell.headers["content-security-policy"]
+    document = admin.get(path + "/document")
+    assert document.status_code == 200 and csrf not in document.text
+    assert "sandbox allow-scripts allow-downloads" in document.headers["content-security-policy"]
+    assert "allow-same-origin" not in document.headers["content-security-policy"]
+    assert "codexctl_proxy_upload:true" in document.text
+    assert "!window.AI_CENTER_RUNTIME?.codexctl_proxy_upload" in document.text
+    assert reader.get(path).status_code == reader.get(path + "/document").status_code == 403
+    proxy = path + "/proxy/plugin?s=start_resource_upload"
+    data = {"payload": '{"name":"test.csv"}'}
+    assert reader.post(proxy, data=data, headers={"X-CSRFToken": reader_csrf}).status_code == 403
+    assert admin.post(proxy, data=data).status_code == 403
+    assert admin.post(proxy, data=data, headers={"X-CSRFToken": csrf}).json() == {
+        "status": True, "data": {"chunk_size": wp_center.PROXY_UPLOAD_CHUNK_SIZE},
+    }
 
 
 def test_server_pages_require_login(ctx):

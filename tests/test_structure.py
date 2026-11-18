@@ -67,6 +67,8 @@ GET /servers
 GET /servers/new
 GET /servers/{server_id}
 GET /servers/{server_id}/edit
+GET /servers/{server_id}/wp-center
+GET /servers/{server_id}/wp-center/document
 GET /skills
 GET /skills/{skill_id}/download
 GET /tasks
@@ -100,6 +102,7 @@ POST /servers
 POST /servers/{server_id}/delete
 POST /servers/{server_id}/edit
 POST /servers/{server_id}/enrollment
+POST /servers/{server_id}/wp-center/proxy/{endpoint}
 POST /site-enrollment/complete
 POST /site-enrollment/install
 POST /skills/save

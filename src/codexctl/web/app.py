@@ -76,14 +76,15 @@ class SecurityHeadersMiddleware:
                 headers = [(k, v) for k, v in message.get("headers", []) if k.decode().lower() not in _HEADER_NAMES]
                 security_headers = SECURITY_HEADERS
                 path = scope.get("path", "")
-                if path.startswith("/servers/") and path.endswith("/wp-center"):
+                if path.startswith("/servers/") and path.endswith("/wp-center/document"):
+                    # The target server supplies executable HTML and is outside the panel's trust boundary.
                     security_headers = {
-                        **SECURITY_HEADERS,
+                        **{k: v for k, v in SECURITY_HEADERS.items() if k != "X-Frame-Options"},
                         "Content-Security-Policy": (
-                            "default-src 'self'; script-src 'self' 'unsafe-inline'; "
-                            "style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; "
-                            "font-src 'self' data: https:; connect-src 'self'; form-action 'self'; "
-                            "frame-ancestors 'none'"
+                            "sandbox allow-scripts allow-downloads; default-src 'none'; "
+                            "script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                            "img-src data: blob: https:; font-src data:; "
+                            "base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
                         ),
                     }
                 headers += [(k.lower().encode(), v.encode()) for k, v in security_headers.items()]

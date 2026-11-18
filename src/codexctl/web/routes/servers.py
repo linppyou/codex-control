@@ -161,7 +161,7 @@ def register(app) -> None:
                 "server": server, "status": _server_state(server, inv, now),
                 "count": len(inv.rows) if inv and inv.synced_at is not None else None,
                 "synced_at": _time(inv.synced_at if inv else None), "error": inv.error if inv else None,
-                "wp_center_ready": wp_center_ready(server),
+                "wp_center_ready": admin[0] == "admin" and wp_center_ready(server),
             })
             if not inv or (server_ids and server.id not in server_ids):
                 continue
@@ -255,7 +255,15 @@ def register(app) -> None:
         return RedirectResponse(f"/servers/{server.id}", status_code=303)
 
     @app.get("/servers/{server_id}/wp-center", response_class=HTMLResponse)
-    def wp_center(request: Request, server_id: str, user: tuple[str, str] = Depends(current_user)):
+    def wp_center(request: Request, server_id: str, admin: tuple[str, str] = Depends(current_admin)):
+        with lock:
+            server = require_server(server_id)
+        if not wp_center_ready(server):
+            raise HTTPException(status_code=503, detail="该服务器尚未配置共享 SSH 接入")
+        return render(request, "wp_center.html", server=server, csrf=admin[1], flash=False)
+
+    @app.get("/servers/{server_id}/wp-center/document", response_class=HTMLResponse)
+    def wp_center_document(request: Request, server_id: str, admin: tuple[str, str] = Depends(current_admin)):
         with lock:
             server = require_server(server_id)
         if not wp_center_ready(server):
@@ -270,8 +278,6 @@ def register(app) -> None:
                 pass
             page = wp_center_service.embed(
                 page,
-                f"/servers/{server.id}/wp-center/proxy",
-                user[1],
                 base_url(request),
                 server.name,
                 server.host,
@@ -281,9 +287,9 @@ def register(app) -> None:
             raise HTTPException(status_code=502, detail=str(exc)[:200]) from exc
 
     @app.post("/servers/{server_id}/wp-center/proxy/{endpoint}")
-    async def wp_center_proxy(
+    def wp_center_proxy(
         request: Request, server_id: str, endpoint: str, payload: str = Form("{}"),
-        user: tuple[str, str] = Depends(current_user),
+        admin: tuple[str, str] = Depends(current_admin),
     ):
         if endpoint not in {"config", "plugin"}:
             raise HTTPException(status_code=404, detail="WP 建站中心接口不存在")
@@ -320,7 +326,7 @@ def register(app) -> None:
             request, "server_detail.html", admin=admin[0], csrf=admin[1], server=server,
             sync=_server_state(server, inv, ctx.now()), synced_at=_time(inv.synced_at if inv else None),
             sync_error=inv.error if inv else None, count=len(inv.rows) if inv and inv.synced_at is not None else None,
-            enrollment_command=command, wp_center_ready=wp_center_ready(server),
+            enrollment_command=command, wp_center_ready=admin[0] == "admin" and wp_center_ready(server),
         )
 
     @app.post("/servers/{server_id}/enrollment")

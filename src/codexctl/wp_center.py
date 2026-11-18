@@ -150,7 +150,45 @@ def theme_assets(server: Server, key: Path) -> tuple[dict, dict]:
         raise WPError("WP 建站中心主题格式异常") from exc
 
 
-def embed(page: str, prefix: str, csrf: str, origin: str, server_name: str = '', server_host: str = '') -> str:
+_FRAME_BRIDGE = """<script>
+(() => {
+    const fetchDirectly = window.fetch.bind(window);
+    window.vite_public_request_token = 'wp-center-frame';
+    window.fetch = (input, options) => {
+        if (typeof input !== 'string' || options?.method?.toUpperCase() !== 'POST') {
+            return fetchDirectly(input, options);
+        }
+        const url = new URL(input, location.href);
+        if (url.origin !== location.origin || !['/plugin', '/config'].includes(url.pathname)) {
+            return fetchDirectly(input, options);
+        }
+        return new Promise((resolve, reject) => {
+            const channel = new MessageChannel();
+            const timeout = setTimeout(() => {
+                channel.port1.close();
+                reject(new Error('WP 建站中心请求超时'));
+            }, 100000);
+            channel.port1.onmessage = ({data}) => {
+                clearTimeout(timeout);
+                channel.port1.close();
+                if (data.error) reject(new Error(data.error));
+                else resolve(new Response(data.body, {
+                    status: data.status,
+                    headers: {'Content-Type': 'application/json'}
+                }));
+            };
+            parent.postMessage({
+                endpoint: url.pathname,
+                query: url.search,
+                body: new URLSearchParams(options.body).toString(),
+            }, location.origin, [channel.port2]);
+        });
+    };
+})();
+</script>"""
+
+
+def embed(page: str, origin: str, server_name: str = '', server_host: str = '') -> str:
     runtime_pattern = re.compile(
         r"(window\.AI_CENTER_RUNTIME\s*=\s*\{)",
     )
@@ -163,19 +201,9 @@ def embed(page: str, prefix: str, csrf: str, origin: str, server_name: str = '',
         page,
         count=1,
     )
-    if not upload_rewrites:
+    if not upload_rewrites and ('nativeUpload' in page or 'AICFileDrop.upload' not in page):
         raise WPError("WP 建站中心上传逻辑已变化，请更新适配")
-    page = page.replace(
-        "panelForm('/plugin?action=a&name=ai_center&s=",
-        "panelForm('" + prefix + "/plugin?action=a&name=ai_center&s=",
-    )
-    page = page.replace(
-        "panelForm('/config?action=get_token",
-        "panelForm('" + prefix + "/config?action=get_token",
-    )
-    page = page.replace("headers['x-http-token']=csrf", "headers['X-CSRFToken']=csrf")
-    page = page.replace('location.origin', json.dumps(origin), 1)
-    bootstrap = '<script>window.vite_public_request_token=' + json.dumps(csrf) + ';</script>'
+    page = page.replace('location.origin', json.dumps(origin).replace('<', '\\u003c'), 1)
     label = html.escape(server_name or '目标服务器', quote=True)
     host = html.escape(server_host, quote=True)
     context = (
@@ -191,7 +219,7 @@ def embed(page: str, prefix: str, csrf: str, origin: str, server_name: str = '',
 #codexctl-wp-server-context .codexctl-wp-server-name{font-size:13px;font-weight:650}
 #codexctl-wp-server-context .codexctl-wp-server-ip{color:var(--aic-muted,#87908d);font-size:11px;font-family:Consolas,monospace}
 </style>'''
-    page = page.replace('<head>', '<head>' + style + bootstrap, 1)
+    page = page.replace('<head>', '<head>' + _FRAME_BRIDGE + style, 1)
     page = page.replace('<div class="aic-workspace">', '<div class="aic-workspace">' + context, 1)
     page = page.replace('<title>wp建站中心', '<title>' + html.escape(server_name or '目标服务器') + ' · wp建站中心', 1)
     return page

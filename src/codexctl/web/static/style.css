@@ -584,3 +584,5 @@ progress.bad::-moz-progress-bar { background: var(--red); }
   .member-usage-panel .daily-label { display: none; }
   .daily-date-range { display: flex; justify-content: space-between; gap: 10px; color: var(--muted); font: 12px/1.5 var(--mono); }
 }
+.wp-center-shell { margin: 0; padding: 0; }
+#wp-center-frame { display: block; border: 0; width: 100%; height: 100dvh; }
