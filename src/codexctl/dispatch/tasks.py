@@ -22,6 +22,7 @@ from openpyxl.utils.exceptions import InvalidFileException
 import codexctl.accounts.repository as account_repo
 import codexctl.db as db
 import codexctl.dispatch.skills as dispatch_skills
+import codexctl.dispatch.prompts as dispatch_prompts
 import codexctl.events as events
 import codexctl.sites.inventory as sites
 import codexctl.sites.probe as site_probe
@@ -231,7 +232,7 @@ def recipient(ctx: Context, username: str) -> tuple[SysUser, str]:
     return user, account.label
 
 
-def _payload(rows: list[ImportRow], snapshot: dict, skills: list[dict], task_id: str) -> tuple[str, str, str]:
+def _payload(rows: list[ImportRow], snapshot: dict, skills: list[dict], task_id: str, prompt_code: str | None = None) -> tuple[str, str, str]:
     dispatcher, migration = skills
     title = f"{snapshot['filename']} · {len(rows)} 个任务"
     table = io.StringIO(newline="")
@@ -248,23 +249,13 @@ def _payload(rows: list[ImportRow], snapshot: dict, skills: list[dict], task_id:
         )
     plan = "\n".join(deployment_lines) or "匹配结果请读取 targets.json。"
     original = f"原始上传文件为 {snapshot['upload_file']}。\n" if snapshot.get("upload_file") else ""
-    prompt = (
-        f"使用 ${dispatcher['name']} 和 ${migration['name']} 执行本次文件中的全部任务。\n"
-        f"批次标识为 {task_id}。\n"
-        f"上传文件为 {json.dumps(snapshot['filename'], ensure_ascii=False)}，共 {len(rows)} 个任务。\n"
-        f"{original}"
-        f"task.csv 包含本次上传文件的全部 {len(rows)} 个数据行，按文件中的备注和折扣执行。"
-        "导入时折扣留空的行已按 3 折填入 task.csv。\n"
-        "交接文件和 Skill 的绝对路径随本条消息提供。"
-        "targets.json 中 csv_row 是 task.csv 的数据行号，line 是上传文件的原始行号。\n"
-        f"文件中新域名与服务器对应关系\n{plan}\n"
-        "部署目标以文件中的新域名及上述服务器对应关系为准。\n"
-        "先读取 capabilities 和 api.describe，核对站点，用 site.probe 读取 WordPress 实况。"
-        "在已授权范围内连续执行，不必逐步征求确认。接续装修任务、提交队列部署和归档。"
-        "过程与备份保存在本站 zdy-AI，使用 context.update 更新接手摘要。"
-        "断线后沿用原任务和请求标识，资源繁忙时等待并退避重试。"
-        "完成后用中文逐站汇报部署、验收和归档结果及具体阻塞。"
-    )
+    try:
+        prompt = dispatch_prompts.render(
+            prompt_code or dispatch_prompts.DEFAULT_CODE, dispatcher=dispatcher, migration=migration,
+            task_id=task_id, snapshot=snapshot, rows=rows, original=original, plan=plan,
+        )
+    except dispatch_prompts.PromptError as exc:
+        raise TaskError(str(exc)) from exc
     return title, prompt, csv_text
 
 
@@ -318,7 +309,9 @@ def _save_preview(
     ctx: Context, user: SysUser, rows: list[ImportRow], snapshot: dict, skills: list[dict], upload: bytes | None,
 ) -> str:
     task_id = uuid4().hex
-    title, prompt, csv_text = _payload(rows, snapshot, skills, task_id)
+    prompt_code = dispatch_prompts.get_code(ctx.conn)
+    snapshot["prompt_template_sha256"] = hashlib.sha256(prompt_code.encode()).hexdigest()
+    title, prompt, csv_text = _payload(rows, snapshot, skills, task_id, prompt_code)
     target_snapshot, skills_snapshot = json.dumps(snapshot), json.dumps(skills)
     existing = ctx.conn.execute(
         """SELECT id FROM dispatch_tasks

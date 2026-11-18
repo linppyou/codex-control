@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 import codexctl.dispatch.skills as dispatch_skills
 import codexctl.dispatch.tasks as dispatch_tasks
+import codexctl.dispatch.prompts as dispatch_prompts
 from codexctl.web.dependencies import current_admin, current_user
 from codexctl.web.responses import _redirect
 from codexctl.web.routes.servers import _time
@@ -60,7 +61,7 @@ def register(app) -> None:
     def task_url(task_id, request):
         return f"/tasks/{task_id}?" + urlencode({"back": back_url(request)})
 
-    def task_page(request, who, selections=None, *, rows=(), status=200, err=""):
+    def task_page(request, who, selections=None, *, rows=(), status=200, err="", prompt_code=None, prompt_preview=None, template_msg=""):
         user, csrf = who
         state = request.query_params.get("state", "")
         if state not in STATUS:
@@ -79,6 +80,8 @@ def register(app) -> None:
             where += " AND instr(lower(title || ' ' || owner || ' ' || recipient || ' ' || id), lower(?)) > 0"
             values.append(query)
         with lock:
+            if user == "admin" and prompt_code is None:
+                prompt_code = dispatch_prompts.get_code(ctx.conn)
             catalog = dispatch_skills.list_skills(ctx.conn)
             total = ctx.conn.execute(f"SELECT COUNT(*) FROM dispatch_tasks WHERE {where}", values).fetchone()[0]
             pages = max(1, (total + 49) // 50)
@@ -114,11 +117,33 @@ def register(app) -> None:
             can_cancel=dispatch_tasks.can_cancel, state=state, query=query, page=page, pages=pages, total=total,
             previous=page_url(page - 1) if page > 1 else None,
             next_page=page_url(page + 1) if page < pages else None, list_url=page_url(page),
+            prompt_code=prompt_code, prompt_preview=prompt_preview, template_msg=template_msg,
         )
 
     @app.get("/tasks", response_class=HTMLResponse)
     def tasks(request: Request, who: tuple[str, str] = Depends(current_user)):
         return task_page(request, who)
+
+    @app.post("/tasks/prompt-template", response_class=HTMLResponse)
+    def prompt_template(
+        request: Request, code: str = Form(""), action: str = Form("preview"),
+        admin: tuple[str, str] = Depends(current_admin),
+    ):
+        if action not in {"preview", "save", "reset"}:
+            raise HTTPException(422, "无效操作")
+        if action == "reset":
+            code = dispatch_prompts.DEFAULT_CODE
+        try:
+            preview = dispatch_prompts.preview(code)
+            if action in {"save", "reset"}:
+                with lock:
+                    dispatch_prompts.save(ctx, admin[0], code)
+        except dispatch_prompts.PromptError as exc:
+            return task_page(request, admin, status=422, err=str(exc), prompt_code=code)
+        return task_page(
+            request, admin, prompt_code=code, prompt_preview=preview,
+            template_msg="生成代码已保存，新导入的批次将使用此代码。" if action in {"save", "reset"} else "示例预览成功，尚未保存。",
+        )
 
     @app.post("/tasks/import", response_class=HTMLResponse)
     def import_tasks(
