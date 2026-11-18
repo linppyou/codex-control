@@ -21,7 +21,6 @@
     <a href="{{ href }}"{% if path == href or (href != "/" and path.startswith(href ~ "/")) %} class="on"{% endif %}>{{ text }}</a>
     {% endif %}
     {% endfor %}
-    <a href="https://ai.zhituowujie.shop/" target="_blank" rel="noopener noreferrer" aria-label="WP 服务中心，外部网站，在新标签页打开">WP 服务中心 ↗</a>
     {% else %}
     <a href="/users/{{ admin }}"{% if path == '/users/' ~ admin %} class="on" aria-current="page"{% endif %}>我的数据</a>
     {% endif %}

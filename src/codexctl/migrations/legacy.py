@@ -34,6 +34,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE web_sessions ADD COLUMN system_uid INTEGER")
         if "password_configured" not in {r["name"] for r in conn.execute("PRAGMA table_info(admins)")}:
             conn.execute("ALTER TABLE admins ADD COLUMN password_configured INTEGER NOT NULL DEFAULT 0")
+        if "wp_center_url" in {r["name"] for r in conn.execute("PRAGMA table_info(site_servers)")}:
+            conn.execute("ALTER TABLE site_servers DROP COLUMN wp_center_url")
         key_columns = {r["name"] for r in conn.execute("PRAGMA table_info(api_keys)")}
         if "account_pk" in key_columns:
             _migrate_user_keys(conn, key_columns)

@@ -33,7 +33,7 @@
   <ul class="server-list">
     {% for item in summary %}
     <li>
-      <div><a class="server-name" href="/servers/{{ item.server.id }}">{{ item.server.name }}</a> <span class="badge {{ item.status[1] }}">{{ item.status[0] }}</span></div>
+      <div><a class="server-name" href="/servers/{{ item.server.id }}">{{ item.server.name }}</a> <span class="badge {{ item.status[1] }}">{{ item.status[0] }}</span>{% if item.wp_center_ready %} <a class="btn small" href="/servers/{{ item.server.id }}/wp-center" target="_blank" rel="noopener noreferrer">打开 WP 建站中心 ↗</a>{% endif %}</div>
       <div class="hint server-meta">
         <span class="mono">{{ item.server.host }}</span>
         {% if item.count is not none %}<a href="/servers?server_id={{ item.server.id }}">{{ item.count }} 个站点</a>{% endif %}

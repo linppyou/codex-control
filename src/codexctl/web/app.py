@@ -74,7 +74,19 @@ class SecurityHeadersMiddleware:
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
                 headers = [(k, v) for k, v in message.get("headers", []) if k.decode().lower() not in _HEADER_NAMES]
-                headers += [(k.lower().encode(), v.encode()) for k, v in SECURITY_HEADERS.items()]
+                security_headers = SECURITY_HEADERS
+                path = scope.get("path", "")
+                if path.startswith("/servers/") and path.endswith("/wp-center"):
+                    security_headers = {
+                        **SECURITY_HEADERS,
+                        "Content-Security-Policy": (
+                            "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+                            "style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; "
+                            "font-src 'self' data: https:; connect-src 'self'; form-action 'self'; "
+                            "frame-ancestors 'none'"
+                        ),
+                    }
+                headers += [(k.lower().encode(), v.encode()) for k, v in security_headers.items()]
                 message = {**message, "headers": headers}
             await send(message)
 
@@ -237,7 +249,7 @@ def create_app(
 
     @app.get("/wp-center")
     def wp_center_redirect(admin: tuple[str, str] = Depends(current_admin)) -> RedirectResponse:
-        return RedirectResponse("https://ai.zhituowujie.shop/", status_code=303)
+        return RedirectResponse("/servers", status_code=303)
 
     import codexctl.web.routes.dispatch as dispatch_views
     import codexctl.web.routes.servers as server_views

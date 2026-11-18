@@ -49,6 +49,21 @@ def test_file_database_uses_wal(tmp_path):
     assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
 
 
+def test_removes_obsolete_wp_center_url_column(tmp_path):
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as old:
+        old.execute(
+            """CREATE TABLE site_servers (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL,
+                wp_center_url TEXT, host_key TEXT, public_key TEXT NOT NULL, private_key BLOB NOT NULL,
+                revision INTEGER NOT NULL DEFAULT 0, UNIQUE (host, port)
+            )"""
+        )
+    conn = db.connect(path)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(site_servers)")}
+    assert "wp_center_url" not in columns
+
+
 def test_db_file_mode_0600_regardless_of_umask(tmp_path):
     old = os.umask(0o022)
     try:

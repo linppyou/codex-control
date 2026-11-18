@@ -102,6 +102,7 @@ def csrf_guard(request: Request, csrf: str = Form("")) -> None:
         return
     if request.method == "POST" and path in ("/site-enrollment/install", "/site-enrollment/complete"):
         return  # These endpoints authenticate using a short-lived enrollment bearer token.
+    csrf = csrf or request.headers.get("X-CSRFToken", "")
     username, _ = session_csrf(request, csrf)
     user_task_post = request.method == "POST" and (
         path == "/tasks/import" or re.fullmatch(r"/tasks/[0-9a-f]{32}/(?:confirm|cancel|prompt)", path)

@@ -38,16 +38,16 @@ def test_requires_login(client):
     assert client.post("/logout", data={"csrf": "x"}).status_code == 403
 
 
-def test_wp_center_links_to_external_service(client):
+def test_wp_center_links_to_server_module(client):
     response = client.get("/wp-center")
     assert response.status_code == 303 and response.headers["location"] == "/login"
     do_login(client)
     page = client.get("/")
-    assert 'href="https://ai.zhituowujie.shop/" target="_blank" rel="noopener noreferrer"' in page.text
-    assert 'WP 服务中心 ↗</a>' in page.text
+    assert 'href="/servers"' in page.text
+    assert 'WP 建站中心</a>' not in page.text
     response = client.get("/wp-center?server_id=old-server")
     assert response.status_code == 303
-    assert response.headers["location"] == "https://ai.zhituowujie.shop/"
+    assert response.headers["location"] == "/servers"
     assert client.get("/wp-center/old-server/catalog").status_code == 404
     assert client.get("/wp-center/old-server/history").status_code == 404
     csrf = re.search(r'name="csrf" value="([^"]+)"', page.text)[1]

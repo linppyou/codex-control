@@ -5,6 +5,7 @@
   <div><div class="crumb"><a href="/servers">服务器</a></div><h1>{{ server.name }}</h1></div>
   <div class="form-row">
     <a class="btn" href="/servers?server_id={{ server.id }}">查看站点</a>
+    {% if wp_center_ready %}<a class="btn" href="/servers/{{ server.id }}/wp-center" target="_blank" rel="noopener noreferrer">打开 WP 建站中心 ↗</a>{% endif %}
     {% if is_admin %}<a class="btn primary" href="/servers/{{ server.id }}/edit">编辑</a>{% endif %}
   </div>
 </div>
@@ -15,6 +16,7 @@
     <dt>SSH 端口</dt><dd class="mono">{{ server.port }}</dd>
     <dt>状态</dt><dd><span class="badge {{ sync[1] }}">{{ sync[0] }}</span>{% if sync_error and server.host_key %} <span class="hint">{{ sync_error }}</span>{% endif %}</dd>
     <dt>站点数</dt><dd>{{ count if count is not none else '—' }}</dd>
+    <dt>WP 建站中心</dt><dd>{% if wp_center_ready %}<a href="/servers/{{ server.id }}/wp-center" target="_blank" rel="noopener noreferrer">通过总控打开</a>{% else %}<span class="hint">未配置 SSH 代理</span>{% endif %}</dd>
     <dt>上次成功同步</dt><dd>{{ synced_at ~ '（北京时间）' if synced_at else '—' }}</dd>
   </dl>
 </section>

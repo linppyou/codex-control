@@ -20,6 +20,7 @@ import codexctl.sites.inventory as sites
 import codexctl.sites.probe as site_probe
 import codexctl.sites.registry as site_registry
 import codexctl.users.webauth as webauth
+import codexctl.wp_center as wp_center
 from codexctl.web.app import create_app
 from codexctl.web.site_analytics import site_comparison
 
@@ -334,6 +335,18 @@ def test_admin_server_crud_and_csrf(ctx):
     assert {r[0] for r in ctx.conn.execute("SELECT actor FROM audit_log WHERE action LIKE 'server.%'")} == {
         f"web:{username}",
     }
+
+
+def test_wp_center_embed_uses_codexctl_proxy_and_csrf():
+    page = '<head></head>window.AI_CENTER_RUNTIME={version:"2.1.0",transport:"panel"};panelForm(\'/plugin?action=a&name=ai_center&s=x\') headers[\'x-http-token\']=csrf location.origin'
+    embedded = wp_center.embed(page, "/servers/abc/wp-center/proxy", "csrf-token", "https://codex.example", "刘子涵", "104.255.153.35")
+    assert "/servers/abc/wp-center/proxy/plugin?action=a&name=ai_center&s=x" in embedded
+    assert "headers['X-CSRFToken']=csrf" in embedded
+    assert 'window.AI_CENTER_RUNTIME={codexctl_proxy_upload:true,version:"2.1.0",transport:"panel"}' in embedded
+    assert "!window.AI_CENTER_RUNTIME?.codexctl_proxy_upload" in embedded
+    assert "window.vite_public_request_token=\"csrf-token\"" in embedded
+    assert '"https://codex.example"' in embedded
+    assert "刘子涵" in embedded and "104.255.153.35" in embedded
 
 
 def test_server_pages_require_login(ctx):

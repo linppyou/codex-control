@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from collections import Counter
 from datetime import datetime
@@ -7,7 +8,7 @@ from itertools import groupby
 from urllib.parse import urlencode
 
 from fastapi import BackgroundTasks, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 
 import codexctl.sites.access as site_access
 import codexctl.sites.enrollment as site_enrollment
@@ -15,6 +16,7 @@ import codexctl.sites.inventory as sites
 import codexctl.sites.probe as site_probe
 import codexctl.sites.registry as site_registry
 import codexctl.sites.ssh as site_ssh
+import codexctl.wp_center as wp_center_service
 from codexctl.vault import VaultError
 from codexctl.web.dependencies import current_admin, current_user
 
@@ -84,6 +86,15 @@ def register(app) -> None:
                 scheme = forwarded
         return str(request.base_url.replace(scheme=scheme)).rstrip("/")
 
+    def wp_center_ready(server) -> bool:
+        return bool(server.host_key and ctx.settings.site_ssh_enabled and ctx.settings.site_ssh_shared)
+
+    def wp_center_key():
+        try:
+            return site_access.shared_key(ctx.settings)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail="WP 建站中心 SSH 接入尚未配置") from exc
+
     def authenticated_server(token: str):
         if not token or len(token) > 128:
             raise HTTPException(403, "接入命令已失效，请在服务器详情页重新生成")
@@ -150,6 +161,7 @@ def register(app) -> None:
                 "server": server, "status": _server_state(server, inv, now),
                 "count": len(inv.rows) if inv and inv.synced_at is not None else None,
                 "synced_at": _time(inv.synced_at if inv else None), "error": inv.error if inv else None,
+                "wp_center_ready": wp_center_ready(server),
             })
             if not inv or (server_ids and server.id not in server_ids):
                 continue
@@ -210,7 +222,10 @@ def register(app) -> None:
 
     def editor(request, admin, server=None, fields=None, error=""):
         if fields is None:
-            fields = dict(name=server.name, host=server.host, port=server.port, host_key=server.host_key or "") if server else {
+            fields = dict(
+                name=server.name, host=server.host, port=server.port,
+                host_key=server.host_key or "",
+            ) if server else {
                 "name": "", "host": "", "port": 22, "host_key": "",
             }
         return render(
@@ -232,8 +247,68 @@ def register(app) -> None:
                 server = site_registry.create(ctx, f"web:{admin[0]}", name, host, port, host_key)
                 site_enrollment.issue(ctx, server)
         except site_registry.ServerError as exc:
-            return editor(request, admin, fields=dict(name=name, host=host, port=port, host_key=host_key), error=str(exc))
+            return editor(
+                request, admin,
+                fields=dict(name=name, host=host, port=port, host_key=host_key),
+                error=str(exc),
+            )
         return RedirectResponse(f"/servers/{server.id}", status_code=303)
+
+    @app.get("/servers/{server_id}/wp-center", response_class=HTMLResponse)
+    def wp_center(request: Request, server_id: str, user: tuple[str, str] = Depends(current_user)):
+        with lock:
+            server = require_server(server_id)
+        if not wp_center_ready(server):
+            raise HTTPException(status_code=503, detail="该服务器尚未配置共享 SSH 接入")
+        try:
+            key = wp_center_key()
+            _, page = wp_center_service.installed_workspace(server, key)
+            try:
+                settings, assets = wp_center_service.theme_assets(server, key)
+                page = wp_center_service.embed_theme(page, settings, assets)
+            except wp_center_service.WPError:
+                pass
+            page = wp_center_service.embed(
+                page,
+                f"/servers/{server.id}/wp-center/proxy",
+                user[1],
+                base_url(request),
+                server.name,
+                server.host,
+            )
+            return HTMLResponse(page, headers={"Cache-Control": "no-store"})
+        except (wp_center_service.WPError, OSError, subprocess.TimeoutExpired) as exc:
+            raise HTTPException(status_code=502, detail=str(exc)[:200]) from exc
+
+    @app.post("/servers/{server_id}/wp-center/proxy/{endpoint}")
+    async def wp_center_proxy(
+        request: Request, server_id: str, endpoint: str, payload: str = Form("{}"),
+        user: tuple[str, str] = Depends(current_user),
+    ):
+        if endpoint not in {"config", "plugin"}:
+            raise HTTPException(status_code=404, detail="WP 建站中心接口不存在")
+        with lock:
+            server = require_server(server_id)
+        if not wp_center_ready(server):
+            raise HTTPException(status_code=503, detail="该服务器尚未配置共享 SSH 接入")
+        if endpoint == "config" and request.query_params.get("action") == "get_token":
+            return JSONResponse({"open": False, "token": ""})
+        if endpoint != "plugin":
+            raise HTTPException(status_code=404, detail="WP 建站中心接口不存在")
+        try:
+            payload_data = json.loads(payload)
+            if not isinstance(payload_data, dict):
+                raise ValueError("请求格式无效")
+            result = wp_center_service.plugin(server, wp_center_key(), request.query_params.get("s", ""), payload_data)
+            if request.query_params.get("s", "") == "start_resource_upload" and isinstance(result, dict):
+                chunk_size = result.get("chunk_size")
+                if isinstance(chunk_size, int) and chunk_size > wp_center_service.PROXY_UPLOAD_CHUNK_SIZE:
+                    result = {**result, "chunk_size": wp_center_service.PROXY_UPLOAD_CHUNK_SIZE}
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+            return JSONResponse({"status": False, "msg": str(exc)[:300]})
+        except (wp_center_service.WPError, OSError, subprocess.TimeoutExpired) as exc:
+            return JSONResponse({"status": False, "msg": str(exc)[:300]})
+        return JSONResponse({"status": True, "data": result})
 
     @app.get("/servers/{server_id}", response_class=HTMLResponse)
     def server_details(request: Request, server_id: str, admin: tuple[str, str] = Depends(current_user)):
@@ -245,7 +320,7 @@ def register(app) -> None:
             request, "server_detail.html", admin=admin[0], csrf=admin[1], server=server,
             sync=_server_state(server, inv, ctx.now()), synced_at=_time(inv.synced_at if inv else None),
             sync_error=inv.error if inv else None, count=len(inv.rows) if inv and inv.synced_at is not None else None,
-            enrollment_command=command,
+            enrollment_command=command, wp_center_ready=wp_center_ready(server),
         )
 
     @app.post("/servers/{server_id}/enrollment")
@@ -270,7 +345,10 @@ def register(app) -> None:
             try:
                 site_registry.update(ctx, f"web:{admin[0]}", server, name, host, port, host_key)
             except site_registry.ServerError as exc:
-                return editor(request, admin, server, dict(name=name, host=host, port=port, host_key=host_key), str(exc))
+                return editor(
+                    request, admin, server,
+                    dict(name=name, host=host, port=port, host_key=host_key), str(exc),
+                )
         return RedirectResponse(f"/servers/{server.id}", status_code=303)
 
     @app.post("/servers/{server_id}/delete")
