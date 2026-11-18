@@ -5,6 +5,30 @@
   <div><h1>网站迁移</h1></div>
   {% if is_admin %}<div class="toolbar"><a class="btn" href="/skills">Skill 管理</a></div>{% endif %}
 </header>
+{% if is_admin %}
+<section class="panel flush" aria-labelledby="prompt-template-title">
+  <div class="panel-head"><h2 id="prompt-template-title">提示词生成代码</h2></div>
+  <form method="post" action="/tasks/prompt-template">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="panel-body">
+      <p class="hint">编辑 Python 的 <code>prompt = (...)</code>，保存后应用于所有成员新导入的批次。已有任务保留原正文；发送时仍会追加交接文件和 Skill 路径。</p>
+      <p class="hint">可用变量：<code>dispatcher</code>、<code>migration</code>、<code>task_id</code>、<code>snapshot</code>、<code>rows</code>、<code>original</code>、<code>plan</code>。支持 f-string、字符串相加、变量索引、<code>len()</code> 和 <code>json.dumps(..., ensure_ascii=False)</code>。</p>
+      <p class="hint">示例预览使用两个虚拟站点，不创建或执行任务。</p>
+      {% if template_msg %}<p class="flash ok" role="status">{{ template_msg }}</p>{% endif %}
+    </div>
+    <textarea class="dispatch-prompt dispatch-prompt-editor" name="code" rows="25" maxlength="32768" aria-labelledby="prompt-template-title" spellcheck="false" required>{{ prompt_code }}</textarea>
+    <div class="panel-body form-row">
+      <button class="btn" type="submit" name="action" value="preview">预览拼接结果</button>
+      <button class="btn primary" type="submit" name="action" value="save">保存生成代码</button>
+      <button class="btn" type="submit" name="action" value="reset" formnovalidate>恢复并保存默认代码</button>
+    </div>
+  </form>
+  {% if prompt_preview is not none %}
+  <div class="panel-head"><h3>示例拼接结果</h3></div>
+  <pre class="dispatch-prompt">{{ prompt_preview }}</pre>
+  {% endif %}
+</section>
+{% endif %}
 {% if rows %}
 <section class="panel flush dispatch-import-results" aria-labelledby="dispatch-results-title">
   <div class="panel-head">

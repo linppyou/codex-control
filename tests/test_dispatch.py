@@ -1039,3 +1039,105 @@ def test_staging_keeps_tasks_separate_in_existing_workspace(ctx, tmp_path, monke
     assert (tmp_path / "task.csv").read_text() == "existing workspace file"
     assert first[0]["path"] != second[0]["path"]
     assert Path(first[0]["path"]).is_file() and Path(second[0]["path"]).is_file()
+
+
+def test_admin_prompt_template_preview_save_and_reset(ctx):
+    from codexctl.dispatch import prompts
+
+    form = task_form(ctx)
+    app = create_app(ctx)
+    admin, csrf = session(ctx, app, "admin")
+    alice, alice_csrf = session(ctx, app, "alice")
+    assert 'name="code"' in admin.get('/tasks').text
+    assert 'name="code"' not in alice.get('/tasks').text
+    url = '/tasks/prompt-template'
+    code = '''prompt = (f"自定义 {snapshot['filename']}：{len(rows)} 个任务\\n"
+              f"${dispatcher['name']} + ${migration['name']}\\n{plan}")'''
+    assert admin.post(url, data={'csrf': 'bad', 'code': code}).status_code == 403
+    assert alice.post(url, data={'csrf': alice_csrf, 'code': code}).status_code == 403
+    response = admin.post(url, data={'csrf': csrf, 'code': code, 'action': 'preview'})
+    assert response.status_code == 200 and '自定义 示例任务.csv：2 个任务' in response.text
+    assert prompts.get_code(ctx.conn) == prompts.DEFAULT_CODE
+    assert admin.post(url, data={'csrf': csrf, 'code': code, 'action': 'save'}).status_code == 200
+    assert prompts.get_code(ctx.conn) == code
+    assert import_file(alice, alice_csrf, form).status_code == 200
+    first = ctx.conn.execute('SELECT * FROM dispatch_tasks').fetchone()
+    assert first['prompt'].startswith('自定义 tasks.csv：1 个任务\n')
+    assert 'shop.example.com' in first['prompt']
+    assert admin.post(url, data={'csrf': csrf, 'action': 'reset'}).status_code == 200
+    assert prompts.get_code(ctx.conn) == prompts.DEFAULT_CODE
+    assert import_file(alice, alice_csrf, form).status_code == 200
+    tasks = ctx.conn.execute('SELECT * FROM dispatch_tasks ORDER BY rowid').fetchall()
+    assert len(tasks) == 2
+    assert tasks[0]['prompt'] == first['prompt']
+    assert tasks[1]['prompt'].startswith('使用 $task-dispatcher')
+    # An unchanged template and input still reuse an existing preview.
+    import_file(alice, alice_csrf, form)
+    assert ctx.conn.execute('SELECT COUNT(*) FROM dispatch_tasks').fetchone()[0] == 2
+
+
+@pytest.mark.parametrize('code', [
+    '', 'prompt = (', 'prompt = ""', 'prompt = 123', 'wrong = "x"',
+    'prompt = unknown', 'prompt = snapshot["missing"]',
+    'import os\nprompt = "x"', 'prompt = __import__("os").getcwd()',
+    'prompt = open("/tmp/forbidden", "w")', 'prompt = json.__dict__',
+    'prompt = len.__globals__', 'prompt = "x" * 1000000000',
+    'prompt = f"{task_id:1000000000}"', 'prompt = [x for x in rows]',
+    'prompt = json.dumps(snapshot, default=len)',
+])
+def test_prompt_template_rejects_invalid_code_without_saving(ctx, code):
+    from codexctl.dispatch import prompts
+
+    app = create_app(ctx)
+    admin, csrf = session(ctx, app, 'admin')
+    response = admin.post('/tasks/prompt-template', data={'csrf': csrf, 'code': code, 'action': 'save'})
+    assert response.status_code == 422
+    assert prompts.get_code(ctx.conn) == prompts.DEFAULT_CODE
+    assert ctx.conn.execute('SELECT COUNT(*) FROM audit_log WHERE action="dispatch.prompt_template"').fetchone()[0] == 0
+
+
+def test_prompt_template_preserves_default_output_and_escapes_html(ctx):
+    from codexctl.dispatch import prompts
+
+    import ast
+    code = prompts.DEFAULT_CODE
+    context = dict(dispatcher={'name': '分发'}, migration={'name': '装修'}, task_id='id',
+                   snapshot={'filename': '文件.csv'}, rows=[{}], original='', plan='目标服务器')
+    expected = dict(context)
+    exec(compile(ast.parse(code), '<test-default>', 'exec'), {'json': json}, expected)
+    assert prompts.render(code, **context) == expected['prompt']
+    admin, csrf = session(ctx, create_app(ctx), 'admin')
+    response = admin.post('/tasks/prompt-template', data={
+        'csrf': csrf, 'code': 'prompt = "</textarea><script>alert(1)</script>"', 'action': 'preview',
+    })
+    assert response.status_code == 200
+    assert '<script>alert(1)</script>' not in response.text
+    assert '&lt;script&gt;' in response.text
+
+
+def test_prompt_template_runtime_error_does_not_create_task(ctx):
+    from codexctl.dispatch import prompts
+
+    form = task_form(ctx)
+    # Valid for the two-row preview, invalid for this one-row import.
+    prompts.save(ctx, 'admin', 'prompt = f"{rows[1]}"')
+    alice, csrf = session(ctx, create_app(ctx), 'alice')
+    response = import_file(alice, csrf, form)
+    assert response.status_code == 422 and '提示词生成失败' in response.text
+    assert ctx.conn.execute('SELECT COUNT(*) FROM dispatch_tasks').fetchone()[0] == 0
+
+
+def test_prompt_template_persists_across_database_reopen(tmp_path):
+    from codexctl.dispatch import prompts
+
+    path = tmp_path / 'existing.db'
+    conn = db.connect(path)
+    conn.execute('DROP TABLE dispatch_prompt_template')
+    conn.close()
+    conn = db.connect(path)
+    code = 'prompt = "持久化模板"'
+    conn.execute('INSERT INTO dispatch_prompt_template VALUES (1, ?, 1)', (code,))
+    conn.close()
+    conn = db.connect(path)
+    assert prompts.get_code(conn) == code
+    conn.close()

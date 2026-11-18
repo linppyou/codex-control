@@ -175,6 +175,11 @@ CREATE TABLE IF NOT EXISTS site_enrollments (
     token_ciphertext BLOB NOT NULL,
     expires_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS dispatch_prompt_template (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    code TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS dispatch_skills (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL CHECK (kind IN ('dispatcher', 'migration')),
