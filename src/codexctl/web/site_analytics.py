@@ -41,7 +41,7 @@ def site_comparison(conn: sqlite3.Connection, days: int, now: int) -> dict:
     maximum = max((value for day in daily for value in day["values"]), default=0)
     # An even integer scale keeps low site counts readable, including an all-zero range.
     scale = max(2, maximum + maximum % 2)
-    series = comparison_series(daily, [item["name"] for item in ranking], scale)
+    series = comparison_series(daily, [item["name"] for item in ranking], scale, width=600)
     return {
         "ranking": ranking, "daily": daily, "series": series, "scale": scale,
         "total": sum(item["total"] for item in ranking), "today": daily[-1]["total"],

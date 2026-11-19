@@ -248,6 +248,44 @@ input[type=checkbox] { accent-color: var(--green); width: 15px; height: 15px; ve
 .card-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 28px; }
 @media (max-width: 1000px) { .card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 640px) { .card-grid { grid-template-columns: minmax(0, 1fr); } }
+.dashboard-overview { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: 20px; align-items: start; margin-bottom: 20px; }
+.dashboard-overview > section { min-width: 0; }
+.dashboard-codex .card-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 12px; margin-bottom: 0; }
+.dashboard-codex .acard { padding: 16px; }
+.dashboard-codex .trend-head .remain-label { flex: none; white-space: nowrap; }
+.dashboard-codex .acard-foot { flex-wrap: wrap; gap: 6px 8px; }
+.dashboard-codex .acard-actions { margin-left: auto; white-space: nowrap; }
+.dashboard-codex .acard-actions .btn { white-space: nowrap; }
+.unavailable-accounts { margin-top: 12px; }
+.unavailable-accounts summary { display: flex; align-items: center; gap: 4px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--text-2); cursor: pointer; }
+.unavailable-accounts summary::before { content: "▸"; margin-right: 4px; }
+.unavailable-accounts[open] summary::before { content: "▾"; }
+.unavailable-accounts .when-open, .unavailable-accounts[open] .when-closed { display: none; }
+.unavailable-accounts[open] .when-open { display: inline; }
+.unavailable-accounts .card-grid { margin-top: 12px; }
+.server-overview-actions { display: flex; align-items: center; gap: 10px; }
+.server-metrics-list { display: grid; gap: 10px; }
+.server-metrics-list > .panel { margin: 0; }
+.server-metrics-card { min-width: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.server-metrics-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; margin-bottom: 8px; }
+.server-metrics-head a { color: var(--text); font-weight: 700; overflow-wrap: anywhere; text-decoration: none; }
+.server-metrics-head a:hover { color: var(--green); }
+.server-metrics-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.server-metric { display: flex; align-items: center; justify-content: space-between; gap: 4px; min-width: 0; }
+.server-metric + .server-metric { padding-left: 7px; border-left: 1px solid var(--line-soft); }
+.server-metric-copy { display: grid; gap: 2px; min-width: 0; }
+.server-metric-copy span { color: var(--text-2); font-size: 12px; }
+.server-metric-copy strong { font-size: 12px; line-height: 1.3; overflow-wrap: anywhere; }
+.server-meter { display: block; width: 48px; height: 48px; flex: none; }
+.server-meter-track, .server-meter-fill { fill: none; stroke-width: 5; }
+.server-meter-track { stroke: #e8ebed; }
+.server-meter-fill { stroke: var(--orange); stroke-linecap: round; }
+.server-meter text { fill: var(--orange); font-size: 11px; font-weight: 700; }
+@media (max-width: 1180px) { .dashboard-overview { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 560px) {
+  .server-metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .server-metric:nth-child(3) { padding-left: 0; border-left: 0; }
+}
 .acard { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 24px; display: flex; flex-direction: column; gap: 10px; }
 .acard-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
 .account-users { display: grid; gap: 6px; font-size: 12px; }
@@ -436,6 +474,33 @@ progress.bad::-moz-progress-bar { background: var(--red); }
 .compare-empty { padding: 52px 0; text-align: center; color: var(--muted); }
 .analytics-panel .daily-details summary { padding: 15px 24px; font-weight: 600; }
 @media (max-width: 720px) { .analytics-panel > .panel-head, .compare-chart-area { padding: 18px 16px; } .analytics-metrics > div { padding: 14px 16px; } .analytics-metrics strong { font-size: 21px; } .compare-plot { min-width: 560px; } }
+
+/* 总览中的紧凑图表 */
+.dashboard-comparisons { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 580px), 1fr)); gap: 14px; align-items: start; margin-bottom: 20px; }
+.dashboard-comparisons .analytics-panel { min-width: 0; margin-bottom: 0; }
+.dashboard-comparisons .analytics-panel > .panel-head { padding: 14px 16px; }
+.dashboard-comparisons .analytics-panel .panel-head h2 { font-size: 16px; }
+.dashboard-comparisons .analytics-metrics > div { padding: 10px 12px; }
+.dashboard-comparisons .analytics-metrics strong { margin-top: 0; font-size: 18px; line-height: 1.3; }
+.dashboard-comparisons .analytics-metrics strong small { font-weight: 400; }
+.dashboard-comparisons .analytics-note { margin: 8px 16px; }
+.dashboard-comparisons .analytics-note p { margin: 3px 0; }
+.dashboard-comparisons .compare-chart-area { padding: 14px 16px 12px; }
+.dashboard-comparisons .compare-chart-heading h3 { font-size: 13px; }
+.dashboard-comparisons .compare-legend { gap: 4px 6px; margin-top: 8px; }
+.dashboard-comparisons .compare-legend-button, .dashboard-comparisons .compare-reset { padding: 3px 7px; }
+.dashboard-comparisons .chart-inspector { gap: 4px 12px; min-height: 34px; padding: 6px 8px; margin-top: 8px; }
+.dashboard-comparisons .compare-plot { min-width: 520px; }
+.dashboard-comparisons .compare-empty { padding: 24px 0; }
+.dashboard-comparisons .daily-details summary { padding: 9px 16px; }
+@media (max-width: 560px) {
+  .dashboard-comparisons .compare-plot { min-width: 0; }
+  .dashboard-comparisons .compare-axis { font-size: 20px; }
+  .dashboard-comparisons .compare-x:not(.compare-mobile-tick) { display: none; }
+}
+@media (pointer: coarse) {
+  .dashboard-comparisons .compare-legend-button, .dashboard-comparisons .compare-reset { min-height: 40px; }
+}
 
 .session-title { font-weight: 600; max-width: 320px; overflow-wrap: anywhere; }
 .session-reference { margin-top: 3px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font: 11px var(--mono); }

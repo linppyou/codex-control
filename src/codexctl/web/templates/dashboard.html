@@ -1,10 +1,16 @@
 {% extends "base.html" %}
 {% block title %}总览 - codexctl{% endblock %}
-{% block content %}
-<div class="page-head"><div><h1>总览</h1><div class="sub">各账号本周额度与走势</div></div></div>
-<div class="section-head"><span class="section-title"><span class="section-mark"></span>Codex</span><span class="muted mono">{{ cards|length }} 个账号</span></div>
-<div class="card-grid">
-{% for c in cards %}
+{% macro server_metric(key, label) %}
+<div class="server-metric" data-metric="{{ key }}" aria-label="{{ label }}，等待采集">
+  <div class="server-metric-copy"><span>{{ label }}</span><strong data-detail>—</strong></div>
+  <svg class="server-meter" viewBox="0 0 52 52" aria-hidden="true">
+    <circle class="server-meter-track" cx="26" cy="26" r="21"/>
+    <circle class="server-meter-fill" cx="26" cy="26" r="21" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 26 26)"/>
+    <text x="26" y="30" text-anchor="middle" data-percent>—</text>
+  </svg>
+</div>
+{% endmacro %}
+{% macro account_card(c) %}
 <div class="acard">
   <div class="acard-head">
     <span class="acard-email">{{ c.email }}</span>
@@ -53,12 +59,54 @@
     </span>
   </div>
 </div>
-{% else %}
+{% endmacro %}
+{% block content %}
+<div class="page-head"><div><h1>总览</h1><div class="sub">Codex 额度、服务器状态与数据趋势</div></div></div>
+<div class="dashboard-overview">
+<section class="dashboard-codex" aria-label="Codex 账号概况">
+<div class="section-head"><span class="section-title"><span class="section-mark"></span>Codex</span><span class="muted mono">{{ cards|length }} 个账号</span></div>
+{% if not cards %}
 <div class="acard empty-state">还没有账号，去 <a href="/accounts">账号</a> 页添加</div>
-{% endfor %}
+{% endif %}
+{% if available_count %}
+<div class="card-grid">
+  {% for c in cards[:available_count] %}{{ account_card(c) }}{% endfor %}
 </div>
+{% endif %}
+{% if available_count < cards|length %}
+<details class="unavailable-accounts">
+  <summary><span class="when-closed">展开</span><span class="when-open">收起</span>无额度或暂无数据的账号 <span class="hint">{{ cards|length - available_count }} 个</span></summary>
+  <div class="card-grid">{% for c in cards[available_count:] %}{{ account_card(c) }}{% endfor %}</div>
+</details>
+{% endif %}
+</section>
+<section class="dashboard-servers" aria-labelledby="dashboard-servers-title">
+  <div class="section-head">
+    <h2 class="section-title" id="dashboard-servers-title"><span class="section-mark"></span>服务器</h2>
+    <div class="server-overview-actions"><span class="muted mono">{{ servers|length }} 台</span>{% if servers %}<button class="btn small" type="button" data-refresh-metrics>刷新</button>{% endif %}</div>
+  </div>
+  <div class="server-metrics-list" data-server-metrics>
+  {% for server in servers %}
+    <article class="server-metrics-card" data-server-id="{{ server.id }}">
+      <div class="server-metrics-head"><a href="/servers/{{ server.id }}">{{ server.name }}</a><span class="hint" data-server-status role="status">等待读取</span></div>
+      <div class="server-metrics-grid">
+        {{ server_metric('load', '负载') }}
+        {{ server_metric('cpu', 'CPU') }}
+        {{ server_metric('memory', '内存') }}
+        {{ server_metric('disk', '磁盘 /') }}
+      </div>
+    </article>
+  {% else %}
+    <div class="panel empty-state">暂无服务器，<a href="/servers">添加服务器</a></div>
+  {% endfor %}
+  </div>
+  {% if servers %}<noscript><p class="hint">服务器数据需要启用 JavaScript。</p></noscript>{% endif %}
+</section>
+</div>
+<div class="dashboard-comparisons">
 {% include "_user_comparison.html" %}
 {% include "_site_comparison.html" %}
+</div>
 <div class="section-head"><span class="section-title"><span class="section-mark red"></span>未解决告警</span><span class="muted mono">{{ alerts|length }} 条</span></div>
 <div class="panel flush">
 {% if alerts %}
@@ -73,4 +121,5 @@
 {% else %}<div class="empty-state">没有未解决的告警</div>{% endif %}
 </div>
 <script src="/static/chart-inspector.js" defer></script>
+{% if servers %}<script src="/static/server-metrics.js" defer></script>{% endif %}
 {% endblock %}

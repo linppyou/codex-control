@@ -89,5 +89,6 @@
       event.preventDefault();
       show(Math.max(0, Math.min(hits.length - 1, (active < 0 ? 0 : active) + (event.key === 'ArrowRight' ? 1 : -1))));
     });
+    if (chart.dataset.chartInitial === 'last') show(hits.length - 1);
   });
 })();

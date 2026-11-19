@@ -86,7 +86,7 @@ def user_comparison(ctx, days: int) -> dict:
                       "show_label": i == 0 or i == days - 1 or (days <= 7 or (days <= 30 and i % 5 == 0) or (days > 30 and i % 15 == 0))})
     series_names = [u["name"] for u in ranking]
     daily_max = max((value for d in daily for value in d["values"]), default=0)
-    series = comparison_series(daily, series_names, daily_max)
+    series = comparison_series(daily, series_names, daily_max, width=600)
     total_tokens = sum(u["total"] for u in ranking)
     total_turns = sum(u["turns"] for u in ranking)
     total_cost = sum(u["cost"] for u in ranking)
@@ -99,11 +99,11 @@ def user_comparison(ctx, days: int) -> dict:
                 has_price=has_price, has_unpriced=has_unpriced, total_input=total_input, total_cached=total_cached)
 
 
-def comparison_series(daily: list[dict], names: list[str], maximum: int) -> list[dict]:
+def comparison_series(daily: list[dict], names: list[str], maximum: int, *, width: int = 960) -> list[dict]:
     """Add coordinates to daily rows and build matching comparison lines."""
     series = [{"name": name, "index": i, "points": []} for i, name in enumerate(names)]
     for i, day in enumerate(daily):
-        day["x"] = round(70 + i * 850 / max(1, len(daily) - 1), 2)
+        day["x"] = round(70 + i * (width - 110) / max(1, len(daily) - 1), 2)
         for index, item in enumerate(series):
             value = day["values"][index]
             y = round(175 - max(0, value) / (maximum or 1) * 140, 2)

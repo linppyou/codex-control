@@ -124,6 +124,37 @@ def test_dashboard_account_users_follow_current_assignments(c, ctx):
     assert cards["second"]["users"] == ["alice"]
 
 
+def test_dashboard_prioritizes_accounts_with_remaining_quota(c, ctx):
+    entries = [
+        ("alpha-unknown", None),
+        ("bravo-empty", 100),
+        ("charlie-available", 40),
+        ("delta-available", 90),
+        ("echo-empty", 100),
+    ]
+    for label, used in entries:
+        account = add_acc(ctx, label=label, account_id=label)
+        if used is not None:
+            repo.insert_quota_sample(
+                ctx.conn, account.id, ctx.now(), "secondary", used, 10080, ctx.now() + 86400, "api",
+            )
+    page = c.get("/").text
+    ordered = ["charlie-available", "delta-available", "alpha-unknown", "bravo-empty", "echo-empty"]
+    positions = [page.index(f'href="/accounts/{label}/quota"') for label in ordered]
+    assert positions == sorted(positions)
+    available, collapsed = page.split('<details class="unavailable-accounts">', 1)
+    assert "charlie-available" in available and "delta-available" in available
+    assert all(label in collapsed for label in ("alpha-unknown", "bravo-empty", "echo-empty"))
+    assert "无额度或暂无数据的账号" in collapsed and "3 个" in collapsed
+
+
+def test_dashboard_collapses_all_accounts_without_quota(c, ctx):
+    add_acc(ctx)
+    page = c.get("/").text
+    assert '<details class="unavailable-accounts">' in page
+    assert page.index('<details class="unavailable-accounts">') < page.index('href="/accounts/acc1/quota"')
+
+
 def test_price_fields_have_names_and_mobile_layout(c):
     response = c.get("/pricing")
     assert response.status_code == 200

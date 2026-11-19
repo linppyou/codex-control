@@ -5,9 +5,9 @@
     <nav class="analytics-range" aria-label="选择建站统计时间范围">{% for n in (7, 30, 90) %}<a href="?days={{ n }}#site-comparison"{% if days == n %} class="active" aria-current="page"{% endif %}>{{ n }} 天</a>{% endfor %}</nav>
   </div>
   <div class="analytics-metrics site-analytics-metrics">
-    <div><span>近 {{ days }} 天建站</span><strong>{{ '{:,}'.format(sc.total) }}</strong><small>个</small></div>
-    <div><span>今日建站</span><strong>{{ '{:,}'.format(sc.today) }}</strong><small>个</small></div>
-    <div><span>已采集服务器</span><strong>{{ sc.ranking|length }} / {{ sc.server_count }}</strong><small>台</small></div>
+    <div><span>近 {{ days }} 天建站</span><strong>{{ '{:,}'.format(sc.total) }} <small>个</small></strong></div>
+    <div><span>今日建站</span><strong>{{ '{:,}'.format(sc.today) }} <small>个</small></strong></div>
+    <div><span>已采集服务器</span><strong>{{ sc.ranking|length }} / {{ sc.server_count }} <small>台</small></strong></div>
   </div>
   {% if sc.pending or sc.stale or sc.unknown_dates %}
   <div class="analytics-note hint">
@@ -17,15 +17,15 @@
   </div>
   {% endif %}
   <div class="compare-chart-area">
-    <div class="compare-chart-heading"><div><h3>每日建站趋势</h3><p>点击服务器名称显示或隐藏曲线；悬停名称可突出对应曲线</p></div><span class="compare-unit">个 / 日</span></div>
+    <div class="compare-chart-heading"><h3>每日建站趋势</h3><span class="compare-unit">个 / 日</span></div>
     {% if sc.series %}
     <div class="compare-legend" aria-label="选择显示的服务器">{% for item in sc.series %}<button type="button" class="compare-legend-button" data-series-toggle="{{ item.index }}" aria-pressed="true"><i class="compare-swatch compare-{{ item.index % 10 }}"></i>{{ item.name }}</button>{% endfor %}<button type="button" class="compare-reset" data-series-reset>显示全部</button></div>
     <div class="chart-inspector" data-chart-inspector aria-live="polite"><span class="chart-inspector-placeholder">将鼠标移到图表上，或使用左右方向键查看每天的数据</span></div>
-    <div class="compare-plot-wrap"><svg class="compare-plot interactive-chart" data-chart-kind="comparison" data-chart-total-label="全部服务器合计" data-chart-names="{{ sc.series|map(attribute='name')|list|tojson|forceescape }}" tabindex="0" viewBox="0 0 960 210" role="group" aria-label="近 {{ days }} 天各服务器每日建站数量折线图，详细数据可在下方表格查看">
-      {% for y, value in ((35, sc.scale), (105, sc.scale // 2), (175, 0)) %}<line class="daily-grid" x1="70" y1="{{ y }}" x2="920" y2="{{ y }}"/><text class="compare-axis" x="60" y="{{ y + 4 }}" text-anchor="end">{{ '{:,}'.format(value) }}</text>{% endfor %}
+    <div class="compare-plot-wrap"><svg class="compare-plot interactive-chart" data-chart-kind="comparison" data-chart-initial="last" data-chart-total-label="全部服务器合计" data-chart-names="{{ sc.series|map(attribute='name')|list|tojson|forceescape }}" tabindex="0" viewBox="0 0 600 210" role="group" aria-label="近 {{ days }} 天各服务器每日建站数量折线图，详细数据可在下方表格查看">
+      {% for y, value in ((35, sc.scale), (105, sc.scale // 2), (175, 0)) %}<line class="daily-grid" x1="70" y1="{{ y }}" x2="560" y2="{{ y }}"/><text class="compare-axis" x="60" y="{{ y + 4 }}" text-anchor="end">{{ '{:,}'.format(value) }}</text>{% endfor %}
       {% for item in sc.series %}<path data-series="{{ item.index }}" class="compare-line compare-{{ item.index % 10 }} pattern-{{ (item.index // 10) % 3 }}" d="{{ item.path }}"/><g data-series="{{ item.index }}" class="compare-points compare-{{ item.index % 10 }}">{% for p in item.points %}<circle cx="{{ p.x }}" cy="{{ p.y }}" r="{% if days == 7 %}3.5{% else %}2{% endif %}"><title>{{ p.day }} · {{ item.name }}：{{ '{:,}'.format(p.value) }} 个站点</title></circle>{% endfor %}</g>{% endfor %}
-      {% for d in sc.daily %}<rect class="chart-hit" x="{{ 70 + (loop.index0 - 0.5) * 850 / (days - 1) }}" y="25" width="{{ 850 / (days - 1) }}" height="160" tabindex="-1" data-day="{{ d.day }}" data-values="{{ d['values']|tojson|forceescape }}" data-values-short="{{ d['values']|tojson|forceescape }}" data-total="{{ d.total }}" data-total-short="{{ '{:,}'.format(d.total) }}" aria-label="{{ d.day }}，查看各服务器建站数量"/>{% endfor %}
-      {% for d in sc.daily %}{% if d.show_label %}<text class="compare-axis" x="{{ d.x }}" y="199" text-anchor="{% if loop.first %}start{% elif loop.last %}end{% else %}middle{% endif %}">{{ d.label }}</text>{% endif %}{% endfor %}
+      {% for d in sc.daily %}<rect class="chart-hit" x="{{ 70 + (loop.index0 - 0.5) * 490 / (days - 1) }}" y="25" width="{{ 490 / (days - 1) }}" height="160" tabindex="-1" data-day="{{ d.day }}" data-values="{{ d['values']|tojson|forceescape }}" data-values-short="{{ d['values']|tojson|forceescape }}" data-total="{{ d.total }}" data-total-short="{{ '{:,}'.format(d.total) }}" aria-label="{{ d.day }}，查看各服务器建站数量"/>{% endfor %}
+      {% for d in sc.daily %}{% if d.show_label %}<text class="compare-axis compare-x{% if loop.first or loop.last or loop.index0 == days // 2 %} compare-mobile-tick{% endif %}" x="{{ d.x }}" y="199" text-anchor="{% if loop.first %}start{% elif loop.last %}end{% else %}middle{% endif %}">{{ d.label }}</text>{% endif %}{% endfor %}
     </svg></div>
     {% else %}<div class="compare-empty">{{ '等待服务器站点数据采集' if sc.server_count else '暂无服务器，请先在服务器页面添加' }} · <a href="/servers">查看服务器</a></div>{% endif %}
   </div>
