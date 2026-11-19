@@ -158,6 +158,9 @@ CREATE TABLE IF NOT EXISTS site_servers (
     public_key TEXT NOT NULL,
     private_key BLOB NOT NULL,
     revision INTEGER NOT NULL DEFAULT 0,
+    panel_url TEXT,
+    panel_username TEXT,
+    panel_password BLOB,
     UNIQUE (host, port)
 );
 CREATE TABLE IF NOT EXISTS site_inventories (

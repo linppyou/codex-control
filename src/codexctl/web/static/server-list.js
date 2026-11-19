@@ -1,4 +1,22 @@
 (function () {
+  document.querySelectorAll("[data-panel-copy]").forEach(function (button) {
+    button.addEventListener("click", async function () {
+      var status = button.parentElement.querySelector("[data-panel-status]");
+      button.disabled = true;
+      try {
+        var csrf = button.closest("[data-panel-csrf]").dataset.panelCsrf;
+        var response = await fetch(button.dataset.panelCopy, { method: "POST", headers: { "X-CSRFToken": csrf }, cache: "no-store" });
+        if (!response.ok) throw new Error("request failed");
+        var result = await response.json();
+        await navigator.clipboard.writeText(result.value);
+        status.textContent = "已复制";
+      } catch (error) {
+        status.textContent = "复制失败，请检查登录状态和浏览器剪贴板权限";
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
   var filters = document.querySelectorAll("[data-site-filter]");
   filters.forEach(function (filter) {
     var checkboxes = filter.querySelectorAll('input[type="checkbox"]');

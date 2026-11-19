@@ -637,3 +637,66 @@ def test_pages_tolerate_malformed_historical_inventory(ctx):
     assert sites.snapshots(ctx.conn)[server.id].error == "站点缓存格式异常，请重新采集"
     assert client.get("/servers").status_code == 200
     assert client.get("/").status_code == 200
+
+
+def test_panel_credentials_are_encrypted_and_available_to_logged_in_users(ctx):
+    import asyncio
+    import httpx
+
+    async def check():
+        ctx.settings = replace(ctx.settings, web_cookie_secure=False)
+        ctx.test_users.add("reader")
+        for user in ("admin", "reader"):
+            webauth.create_admin(ctx.conn, user, PW, now=ctx.now())
+        transport = httpx.ASGITransport(app=create_app(ctx))
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as admin, httpx.AsyncClient(transport=transport, base_url="http://test") as reader:
+            for client, user in ((admin, "admin"), (reader, "reader")):
+                await client.get("/login")
+                response = await client.post("/login", data={"username": user, "password": PW, "csrf": client.cookies.get("codexctl_prelogin")})
+                assert response.status_code == 303
+            csrf = ctx.conn.execute("SELECT csrf FROM web_sessions WHERE username='admin'").fetchone()[0]
+            reader_csrf = ctx.conn.execute("SELECT csrf FROM web_sessions WHERE username='reader'").fetchone()[0]
+            fields = {"name": "panel", "host": "198.144.159.123", "port": "22", "host_key": host_key(),
+                      "panel_url": "https://panel.example.com:7800/entry", "panel_username": "shared-user",
+                      "panel_password": "shared-secret", "csrf": csrf}
+            assert (await admin.post("/servers", data=fields)).status_code == 303
+            server = site_registry.list_servers(ctx.conn)[0]
+            assert b"shared-secret" not in ctx.conn.execute("SELECT panel_password FROM site_servers").fetchone()[0]
+            assert "shared-secret" not in (await admin.get("/servers")).text
+            assert "shared-secret" not in (await admin.get(f"/servers/{server.id}/edit")).text
+            page = (await reader.get("/servers")).text
+            assert 'href="https://panel.example.com:7800/entry"' in page
+            assert "复制用户名" in page and "复制密码" in page
+            path = f"/servers/{server.id}/panel-credential/password"
+            assert (await reader.post(path)).status_code == 403
+            response = await reader.post(path, headers={"X-CSRFToken": reader_csrf})
+            assert response.json() == {"value": "shared-secret"}
+            assert response.headers["cache-control"] == "no-store"
+            assert (await reader.post(f"/servers/{server.id}/panel-credential/username", headers={"X-CSRFToken": reader_csrf})).json() == {"value": "shared-user"}
+            assert ctx.conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='server.panel_password.copy'").fetchone()[0] == 1
+            fields["panel_password"] = ""
+            assert (await admin.post(f"/servers/{server.id}/edit", data=fields)).status_code == 303
+            assert site_registry.panel_password(ctx, server.id) == "shared-secret"
+            fields["clear_panel_password"] = "true"
+            assert (await admin.post(f"/servers/{server.id}/edit", data=fields)).status_code == 303
+            assert (await reader.post(path, headers={"X-CSRFToken": reader_csrf})).status_code == 404
+            fields["panel_url"] = "javascript:alert(1)"
+            assert (await admin.post(f"/servers/{server.id}/edit", data=fields)).status_code == 422
+
+    asyncio.run(check())
+
+
+def test_panel_registry_password_lifecycle(ctx):
+    server = site_registry.create(ctx, "test", "panel", "198.144.159.123", "22", host_key(),
+                                  "https://panel.example.com/entry", "user", "secret")
+    blob = ctx.conn.execute("SELECT panel_password FROM site_servers WHERE id=?", (server.id,)).fetchone()[0]
+    assert b"secret" not in blob
+    assert site_registry.panel_password(ctx, server.id) == "secret"
+    site_registry.update(ctx, "test", server, server.name, server.host, "22", server.host_key,
+                         server.panel_url, server.panel_username)
+    assert site_registry.panel_password(ctx, server.id) == "secret"
+    site_registry.update(ctx, "test", server, server.name, server.host, "22", server.host_key,
+                         server.panel_url, server.panel_username, clear_panel_password=True)
+    assert site_registry.panel_password(ctx, server.id) is None
+    with pytest.raises(site_registry.ServerError):
+        site_registry.update(ctx, "test", server, server.name, server.host, "22", server.host_key, "javascript:alert(1)")

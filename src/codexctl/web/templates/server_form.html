@@ -19,6 +19,12 @@
   <label>服务器名称 <input type="text" name="name" value="{{ fields.name }}" maxlength="60" required></label>
   <label>公网 IP <input type="text" name="host" value="{{ fields.host }}" maxlength="45" spellcheck="false" required></label>
   <label>SSH 端口 <input type="text" name="port" value="{{ fields.port }}" inputmode="numeric" pattern="[0-9]{1,5}" required></label>
+  <label>宝塔登录页地址 <input type="url" name="panel_url" value="{{ fields.panel_url }}" maxlength="2048" placeholder="https://panel.example.com:7800/安全入口"></label>
+  <p class="hint">选填；建议使用 HTTPS。所有能查看服务器清单的用户均可访问该地址。</p>
+  <label>宝塔用户名 <input type="text" name="panel_username" value="{{ fields.panel_username }}" maxlength="256" autocomplete="off"></label>
+  <label>宝塔密码 <input type="password" name="panel_password" maxlength="1024" autocomplete="new-password"></label>
+  <p class="hint">选填；所有能查看服务器清单的用户均可复制。{% if server and server.has_panel_password %}留空保留已保存密码。{% endif %}</p>
+  {% if server and server.has_panel_password %}<label><input type="checkbox" name="clear_panel_password" value="true">清除已保存的宝塔密码（填写新密码时优先保存新密码）</label>{% endif %}
   {% if not server %}
   <label>root SSH 密码
     <input type="password" name="ssh_password" autocomplete="new-password" maxlength="1024" aria-describedby="ssh-password-help">
