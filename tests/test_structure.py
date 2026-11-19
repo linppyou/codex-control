@@ -61,6 +61,7 @@ GET /accounts/{label}/quota
 GET /accounts/{label}/quota.csv
 GET /audit
 GET /dashboard/server-metrics
+GET /dashboard/trends
 GET /favicon.ico
 GET /login
 GET /pricing
