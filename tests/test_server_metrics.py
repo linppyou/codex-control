@@ -1,15 +1,20 @@
+import asyncio
 import json
 import subprocess
+import threading
 from dataclasses import replace
 from pathlib import Path
 
+import anyio
+import httpx
 from fastapi.testclient import TestClient
 from test_servers import create
 from test_web_pages import c, mgr
 
 import codexctl.users.webauth as webauth
-from codexctl.web.app import SESSION_COOKIE
 from codexctl.web import server_metrics
+from codexctl.web.app import SESSION_COOKIE
+from codexctl.web.dependencies import current_admin
 
 
 METRICS = {
@@ -72,6 +77,68 @@ def test_metrics_handle_unavailable_and_malformed_servers(ctx, monkeypatch):
     assert server_metrics._read(server, Path("/tmp/test-key")) == {
         "id": server.id, "error": "无法连接或读取服务器数据",
     }
+
+
+def test_metrics_isolate_decoder_recursion(ctx, monkeypatch):
+    server = create(ctx)
+
+    def decode(_):
+        raise RecursionError("JSON input exceeds the decoder depth")
+
+    monkeypatch.setattr(server_metrics.json, "loads", decode)
+    monkeypatch.setattr(
+        server_metrics.site_ssh, "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess([], 0, stdout="{}", stderr=""),
+    )
+    assert server_metrics._read(server, Path("/tmp/test-key")) == {
+        "id": server.id, "error": "无法连接或读取服务器数据",
+    }
+
+
+def test_overlapping_manual_refreshes_share_a_sample_without_blocking_other_routes(c, monkeypatch):
+    async def exercise():
+        anyio.to_thread.current_default_thread_limiter().total_tokens = 2
+        loop = asyncio.get_running_loop()
+        collecting = asyncio.Event()
+        authenticated_twice = asyncio.Event()
+        release = threading.Event()
+        authenticated = 0
+        samples = []
+
+        async def authenticate():
+            nonlocal authenticated
+            authenticated += 1
+            if authenticated == 2:
+                authenticated_twice.set()
+            return "admin", ""
+
+        def collect(servers, settings):
+            samples.append(servers)
+            loop.call_soon_threadsafe(collecting.set)
+            assert release.wait(timeout=10)
+            return []
+
+        monkeypatch.setitem(c.app.dependency_overrides, current_admin, authenticate)
+        monkeypatch.setattr(server_metrics, "collect", collect)
+        transport = httpx.ASGITransport(app=c.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            url = "/dashboard/server-metrics?refresh=1"
+            requests = [asyncio.create_task(client.get(url))]
+            try:
+                await asyncio.wait_for(collecting.wait(), timeout=5)
+                requests.append(asyncio.create_task(client.get(url)))
+                await asyncio.wait_for(authenticated_twice.wait(), timeout=5)
+                response = await asyncio.wait_for(client.get("/favicon.ico"), timeout=5)
+                assert response.status_code == 301
+            finally:
+                release.set()
+                responses = await asyncio.gather(*requests)
+
+        assert len(samples) == 1
+        assert all(response.status_code == 200 for response in responses)
+        assert responses[0].json() == responses[1].json()
+
+    asyncio.run(exercise())
 
 
 def test_metrics_probe_reads_linux_statistics():

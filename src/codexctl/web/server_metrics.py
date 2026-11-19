@@ -81,7 +81,7 @@ def _read(server: Server, key: Path) -> dict:
         ):
             raise ValueError("invalid metrics")
         return {"id": server.id, "metrics": {key: metrics[key] for key in keys}}
-    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError, TypeError, KeyError, OverflowError):
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError, KeyError, OverflowError, RecursionError):
         return {"id": server.id, "error": "无法连接或读取服务器数据"}
 
 

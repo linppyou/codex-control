@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import threading
+import asyncio
 import time
 
 from fastapi import Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 import codexctl.events as events
 import codexctl.sites.registry as site_registry
@@ -22,8 +23,8 @@ def register(app) -> None:
     lock = app.state.lock
     render = app.state.render
     devlogins = app.state.devlogins
-    metrics_lock = threading.Lock()
-    metrics_cache = {"key": None, "expires": 0.0, "value": None}
+    metrics_lock = asyncio.Lock()
+    metrics_cache = {"key": None, "sampled_at": 0.0, "value": None}
 
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request, days: int = 7, admin: tuple[str, str] = Depends(current_user)):
@@ -50,22 +51,28 @@ def register(app) -> None:
                       available_count=available_count, servers=servers, site_analytics=site_analytics,
                       **analytics, **_flash(msg, err))
 
-    @app.get("/dashboard/server-metrics")
-    def server_metrics_page(refresh: bool = False, admin: tuple[str, str] = Depends(current_admin)):
-        with metrics_lock:
-            with lock:
-                servers = site_registry.list_servers(ctx.conn)
-            key = tuple((server.id, server.revision) for server in servers)
-            if not refresh and metrics_cache["key"] == key and time.monotonic() < metrics_cache["expires"]:
-                return JSONResponse(metrics_cache["value"])
-            readings = server_metrics.collect(servers, ctx.settings)
-            with lock:
-                current = {server.id: server.revision for server in site_registry.list_servers(ctx.conn)}
-            readings = [
-                reading for server, reading in zip(servers, readings)
-                if current.get(server.id) == server.revision
-            ]
-            value = {"servers": readings, "updated_at": fmt_ts(ctx.now())}
-            metrics_cache.update(key=key, expires=time.monotonic() + 30, value=value)
-        return JSONResponse(value)
+    def read_metrics(refresh: bool, requested_at: float) -> dict:
+        with lock:
+            servers = site_registry.list_servers(ctx.conn)
+        key = tuple((server.id, server.revision) for server in servers)
+        if metrics_cache["key"] == key:
+            sampled_at = metrics_cache["sampled_at"]
+            if sampled_at >= requested_at or (not refresh and time.monotonic() - sampled_at < 30):
+                return metrics_cache["value"]
+        readings = server_metrics.collect(servers, ctx.settings)
+        with lock:
+            current = {server.id: server.revision for server in site_registry.list_servers(ctx.conn)}
+        readings = [
+            reading for server, reading in zip(servers, readings)
+            if current.get(server.id) == server.revision
+        ]
+        value = {"servers": readings, "updated_at": fmt_ts(ctx.now())}
+        metrics_cache.update(key=key, sampled_at=time.monotonic(), value=value)
+        return value
 
+    @app.get("/dashboard/server-metrics")
+    async def server_metrics_page(refresh: bool = False, admin: tuple[str, str] = Depends(current_admin)):
+        requested_at = time.monotonic()
+        async with metrics_lock:
+            value = await run_in_threadpool(read_metrics, refresh, requested_at)
+        return JSONResponse(value)
