@@ -189,7 +189,7 @@ def register(app) -> None:
                 "server": server, "status": _server_state(server, inv, now),
                 "count": len(inv.rows) if inv and inv.synced_at is not None else None,
                 "synced_at": _time(inv.synced_at if inv else None), "error": inv.error if inv else None,
-                "wp_center_ready": admin[0] == "admin" and wp_center_ready(server),
+                "wp_center_ready": wp_center_ready(server),
             })
             if not inv or (server_ids and server.id not in server_ids):
                 continue
@@ -200,7 +200,7 @@ def register(app) -> None:
                     **row, "server": server, "date": sites.deployment_date(row["created_at"]) or "unknown",
                     "domain": row["domains"][0], "status": status,
                     "data": row.get("data"), "data_stale": data_stale,
-                    "can_manage": admin[0] == "admin" and wp_center_ready(server) and row["id"].isascii() and row["id"].isdecimal() and bool(row.get("name")),
+                    "can_manage": wp_center_ready(server) and row["id"].isascii() and row["id"].isdecimal() and bool(row.get("name")),
                     "waf_time": _time(row.get("waf_checked_at")),
                     "origin_status": _state(row["origin"], now), "checked_at": _time(row["public"]["checked_at"]),
                 })
@@ -293,7 +293,7 @@ def register(app) -> None:
         return RedirectResponse(f"/servers/{server.id}", status_code=303)
 
     @app.get("/servers/{server_id}/wp-center", response_class=HTMLResponse)
-    def wp_center(request: Request, server_id: str, site_id: str = "", admin: tuple[str, str] = Depends(current_admin)):
+    def wp_center(request: Request, server_id: str, site_id: str = "", admin: tuple[str, str] = Depends(current_user)):
         with lock:
             server = require_server(server_id)
             if site_id:
@@ -306,7 +306,7 @@ def register(app) -> None:
         return render(request, "wp_center.html", server=server, csrf=admin[1], site_id=site_id, flash=False)
 
     @app.get("/servers/{server_id}/wp-center/document", response_class=HTMLResponse)
-    def wp_center_document(request: Request, server_id: str, site_id: str = "", admin: tuple[str, str] = Depends(current_admin)):
+    def wp_center_document(request: Request, server_id: str, site_id: str = "", admin: tuple[str, str] = Depends(current_user)):
         with lock:
             server = require_server(server_id)
             site_name = ""
@@ -341,7 +341,7 @@ def register(app) -> None:
     @app.post("/servers/{server_id}/wp-center/proxy/{endpoint}")
     def wp_center_proxy(
         request: Request, server_id: str, endpoint: str, background: BackgroundTasks, payload: str = Form("{}"),
-        admin: tuple[str, str] = Depends(current_admin),
+        admin: tuple[str, str] = Depends(current_user),
     ):
         if endpoint not in {"config", "plugin"}:
             raise HTTPException(status_code=404, detail="WP 建站中心接口不存在")
@@ -357,7 +357,8 @@ def register(app) -> None:
             payload_data = json.loads(payload)
             if not isinstance(payload_data, dict):
                 raise ValueError("请求格式无效")
-            result = wp_center_service.plugin(server, wp_center_key(), request.query_params.get("s", ""), payload_data)
+            action = request.query_params.get("s", "")
+            result = wp_center_service.plugin(server, wp_center_key(), action, payload_data)
             if request.query_params.get("s") == "maintenance_api":
                 operation = payload_data.get("operation")
                 if operation == "submit":
@@ -408,7 +409,7 @@ def register(app) -> None:
             synced_at=_time(inv.synced_at if inv else None),
             sync_error=inv.error if inv else None, count=len(inv.rows) if inv and inv.synced_at is not None else None,
             enrollment_command=command, password_enrolling=enrolling,
-            wp_center_ready=admin[0] == "admin" and wp_center_ready(server),
+            wp_center_ready=wp_center_ready(server),
         )
 
     @app.post("/servers/{server_id}/enrollment/password")

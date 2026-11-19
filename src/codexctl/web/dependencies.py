@@ -107,6 +107,10 @@ def csrf_guard(request: Request, csrf: str = Form("")) -> None:
     user_task_post = request.method == "POST" and (
         path == "/tasks/import" or re.fullmatch(r"/tasks/[0-9a-f]{32}/(?:confirm|cancel|prompt)", path)
     )
-    if path != "/logout" and username != "admin" and not user_task_post:
+    user_site_post = request.method == "POST" and (
+        re.fullmatch(r"/servers/[0-9a-f]{32}/sites/[^/]+/(?:probe|waf|state|remark)", path)
+        or re.fullmatch(r"/servers/[0-9a-f]{32}/wp-center/proxy/(?:plugin|config)", path)
+    )
+    if path != "/logout" and username != "admin" and not user_task_post and not user_site_post:
         raise HTTPException(status_code=403, detail="仅管理员可以修改")
 

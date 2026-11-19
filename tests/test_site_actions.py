@@ -161,15 +161,47 @@ def test_manual_refresh_finishes_with_a_fresh_inventory(ctx, monkeypatch):
     assert client.get(path).json() == {"done": True, "error": None}
 
 
-def test_member_can_view_but_cannot_operate(ctx, monkeypatch):
+def test_member_can_manage_sites_but_not_delete(ctx, monkeypatch):
     server = prepare(ctx, monkeypatch)
     client, csrf = login_client(ctx, "reader")
     page = client.get("/servers?view=sites")
-    assert "初始备注" in page.text and "运行中" in page.text
     assert 'data-site-action="delete"' not in page.text
+    for action in ("probe", "waf", "state", "remark"):
+        assert f'data-site-action="{action}"' in page.text
+    assert f'/servers/{server.id}/wp-center?site_id=7' in page.text
     base = f"/servers/{server.id}/sites/7"
-    assert client.get(base + "/waf").status_code == 403
-    assert client.post(base + "/remark", data={"name": "example.com", "remark": "new"}, headers={"X-CSRFToken": csrf}).status_code == 403
+    calls = []
+    def call(target, key, operation, **params):
+        calls.append(operation)
+        return {"ok": True, "enabled": True, "site": {"enabled": True, "remark": "new", "path": "/site"}}
+    monkeypatch.setattr(panel, "call", call)
+    headers = {"X-CSRFToken": csrf}
+    assert client.post(base + "/probe", headers=headers).status_code == 200
+    assert client.get(base + "/waf").status_code == 200
+    assert client.post(base + "/waf", data={"name": "example.com", "expected": "true", "enabled": "false"}, headers=headers).status_code == 200
+    assert client.post(base + "/state", data={"name": "example.com", "expected": "true", "enabled": "false"}, headers=headers).status_code == 200
+    assert client.post(base + "/remark", data={"name": "example.com", "remark": "new"}, headers=headers).status_code == 200
+    assert client.post(base + "/remark", data={"name": "example.com"}).status_code == 403
+    assert client.post(base + "/delete", headers=headers).status_code == 403
+    assert "delete" not in calls
+
+
+def test_member_can_use_wp_center(ctx, monkeypatch):
+    server = prepare(ctx, monkeypatch)
+    member, csrf = login_client(ctx, "reader")
+    path = f"/servers/{server.id}/wp-center"
+    page = """<head></head><script>window.AI_CENTER_RUNTIME={version:"2.1.0",transport:"panel"};
+    function upload(){if(window.AI_CENTER_RUNTIME?.transport==='panel') return nativeUpload()}</script>"""
+    monkeypatch.setattr(wp_center, "installed_workspace", lambda *args: ("2.1.0", page))
+    monkeypatch.setattr(wp_center, "theme_assets", lambda *args: ({}, {}))
+    monkeypatch.setattr(wp_center, "plugin", lambda *args: {"kind": "domain", "preview_id": "p1"})
+    assert member.get(path).status_code == 200
+    assert member.get(path + "?site_id=7").status_code == 200
+    assert member.get(path + "/document?site_id=7").status_code == 200
+    endpoint = path + "/proxy/plugin?s=maintenance_api"
+    data = {"payload": json.dumps({"operation": "preview", "params": {"kind": "domain"}})}
+    assert member.post(endpoint, data=data).status_code == 403
+    assert member.post(endpoint, data=data, headers={"X-CSRFToken": csrf}).json()["data"]["preview_id"] == "p1"
 
 
 def test_probe_refreshes_only_the_selected_site_and_checks_duplicate_origin(ctx, monkeypatch):
