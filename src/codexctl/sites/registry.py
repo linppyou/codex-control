@@ -144,6 +144,7 @@ def update(ctx: Context, actor: str, server: Server, name: str, host: str, port:
             if changed:
                 ctx.conn.execute("DELETE FROM site_inventories WHERE server_id = ?", (server.id,))
                 ctx.conn.execute("DELETE FROM site_enrollments WHERE server_id = ?", (server.id,))
+                ctx.conn.execute("DELETE FROM site_domain_refreshes WHERE server_id = ?", (server.id,))
             events.audit(ctx.conn, actor, "server.update", server.id, name, now=ctx.now())
     except sqlite3.IntegrityError as exc:
         raise ServerError("该 IP 和端口已登记") from exc

@@ -47,7 +47,7 @@ def navigation(request: Request, user: str, is_admin: bool, managed: bool, gatew
 
     groups.append(("servers", "服务器", [
         ("server_list", "服务器清单", "/servers"),
-        ("sites", "网站巡检", "/servers?view=sites"),
+        ("sites", "网站", "/servers?view=sites"),
     ]))
 
     codex = []

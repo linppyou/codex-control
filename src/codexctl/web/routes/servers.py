@@ -16,11 +16,14 @@ import codexctl.sites.inventory as sites
 import codexctl.sites.probe as site_probe
 import codexctl.sites.registry as site_registry
 import codexctl.sites.ssh as site_ssh
+import codexctl.db as db
+import codexctl.events as events
 import codexctl.wp_center as wp_center_service
 from codexctl.vault import VaultError
 from codexctl.web.dependencies import current_admin, current_user
 from codexctl.web.navigation import site_view
 from codexctl.web.responses import _redirect
+from codexctl.web.routes.site_actions import bump_generation
 
 PAGE_SIZE = 50
 STATUSES = {
@@ -197,6 +200,8 @@ def register(app) -> None:
                     **row, "server": server, "date": sites.deployment_date(row["created_at"]) or "unknown",
                     "domain": row["domains"][0], "status": status,
                     "data": row.get("data"), "data_stale": data_stale,
+                    "can_manage": admin[0] == "admin" and wp_center_ready(server) and row["id"].isascii() and row["id"].isdecimal() and bool(row.get("name")),
+                    "waf_time": _time(row.get("waf_checked_at")),
                     "origin_status": _state(row["origin"], now), "checked_at": _time(row["public"]["checked_at"]),
                 })
         available_dates = sorted({row["date"] for row in rows}, key=lambda day: (day != "unknown", day), reverse=True)
@@ -288,17 +293,29 @@ def register(app) -> None:
         return RedirectResponse(f"/servers/{server.id}", status_code=303)
 
     @app.get("/servers/{server_id}/wp-center", response_class=HTMLResponse)
-    def wp_center(request: Request, server_id: str, admin: tuple[str, str] = Depends(current_admin)):
+    def wp_center(request: Request, server_id: str, site_id: str = "", admin: tuple[str, str] = Depends(current_admin)):
         with lock:
             server = require_server(server_id)
+            if site_id:
+                inv = sites.snapshots(ctx.conn).get(server_id)
+                matching = [row for row in inv.rows if row["id"] == site_id] if inv else []
+                if len(matching) != 1 or not site_id.isascii() or not site_id.isdecimal() or not matching[0].get("name"):
+                    raise HTTPException(404, "站点不存在或尚未采集宝塔信息")
         if not wp_center_ready(server):
             raise HTTPException(status_code=503, detail="该服务器尚未配置共享 SSH 接入")
-        return render(request, "wp_center.html", server=server, csrf=admin[1], flash=False)
+        return render(request, "wp_center.html", server=server, csrf=admin[1], site_id=site_id, flash=False)
 
     @app.get("/servers/{server_id}/wp-center/document", response_class=HTMLResponse)
-    def wp_center_document(request: Request, server_id: str, admin: tuple[str, str] = Depends(current_admin)):
+    def wp_center_document(request: Request, server_id: str, site_id: str = "", admin: tuple[str, str] = Depends(current_admin)):
         with lock:
             server = require_server(server_id)
+            site_name = ""
+            if site_id:
+                inv = sites.snapshots(ctx.conn).get(server_id)
+                matching = [row for row in inv.rows if row["id"] == site_id] if inv else []
+                if len(matching) != 1 or not site_id.isascii() or not site_id.isdecimal() or not matching[0].get("name"):
+                    raise HTTPException(404, "站点不存在或尚未采集宝塔信息")
+                site_name = matching[0]["name"]
         if not wp_center_ready(server):
             raise HTTPException(status_code=503, detail="该服务器尚未配置共享 SSH 接入")
         try:
@@ -315,13 +332,15 @@ def register(app) -> None:
                 server.name,
                 server.host,
             )
+            if site_id:
+                page = wp_center_service.focus_maintenance_site(page, site_id, site_name)
             return HTMLResponse(page, headers={"Cache-Control": "no-store"})
         except (wp_center_service.WPError, OSError, subprocess.TimeoutExpired) as exc:
             raise HTTPException(status_code=502, detail=str(exc)[:200]) from exc
 
     @app.post("/servers/{server_id}/wp-center/proxy/{endpoint}")
     def wp_center_proxy(
-        request: Request, server_id: str, endpoint: str, payload: str = Form("{}"),
+        request: Request, server_id: str, endpoint: str, background: BackgroundTasks, payload: str = Form("{}"),
         admin: tuple[str, str] = Depends(current_admin),
     ):
         if endpoint not in {"config", "plugin"}:
@@ -339,6 +358,31 @@ def register(app) -> None:
             if not isinstance(payload_data, dict):
                 raise ValueError("请求格式无效")
             result = wp_center_service.plugin(server, wp_center_key(), request.query_params.get("s", ""), payload_data)
+            if request.query_params.get("s") == "maintenance_api":
+                operation = payload_data.get("operation")
+                if operation == "submit":
+                    with lock, db.transaction(ctx.conn):
+                        if registry_server := site_registry.get(ctx.conn, server.id):
+                            if registry_server.revision == server.revision:
+                                bump_generation(ctx.conn, server.id)
+                                events.audit(ctx.conn, f"web:{admin[0]}", "site.maintenance.submit", server.id, "submitted", now=ctx.now())
+                if operation in {"task", "tasks"} and isinstance(result, dict):
+                    tasks = result.get("tasks", []) if operation == "tasks" else [result]
+                    if not isinstance(tasks, list):
+                        tasks = []
+                    completed = [task for task in tasks if isinstance(task, dict) and task.get("kind") == "domain" and (task.get("observed_state") or task.get("status")) == "done" and isinstance(task.get("id"), str) and len(task["id"]) <= 128]
+                    queued = False
+                    with lock, db.transaction(ctx.conn):
+                        current = site_registry.get(ctx.conn, server.id)
+                        if current and current.revision == server.revision:
+                            for task in completed:
+                                inserted = ctx.conn.execute("INSERT OR IGNORE INTO site_domain_refreshes(server_id, task_id) VALUES (?, ?)", (server.id, task["id"]))
+                                if inserted.rowcount:
+                                    bump_generation(ctx.conn, server.id)
+                                    events.audit(ctx.conn, f"web:{admin[0]}", "site.domain.complete", server.id, task["id"], now=ctx.now())
+                                    queued = True
+                    if queued:
+                        background.add_task(sites.refresh, ctx, server.id)
             if request.query_params.get("s", "") == "start_resource_upload" and isinstance(result, dict):
                 chunk_size = result.get("chunk_size")
                 if isinstance(chunk_size, int) and chunk_size > wp_center_service.PROXY_UPLOAD_CHUNK_SIZE:

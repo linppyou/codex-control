@@ -7,13 +7,15 @@ import subprocess
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from zoneinfo import ZoneInfo
 
 import codexctl.db as db
+import codexctl.sites.access as site_access
+import codexctl.sites.panel as site_panel
 import codexctl.sites.probe as site_probe
 import codexctl.sites.registry as site_registry
 import codexctl.sites.ssh as site_ssh
@@ -45,6 +47,14 @@ class Site:
     created_at: int | None
     domains: tuple[str, ...]
     data: SiteData | None = None
+    name: str | None = None
+    enabled: bool | None = None
+    remark: str | None = None
+    path: str | None = None
+    management_stale: bool = False
+    waf_enabled: bool | None = None
+    waf_checked_at: int | None = None
+    waf_stale: bool = False
 
 
 @dataclass(frozen=True)
@@ -85,6 +95,18 @@ def _site_data(value: object) -> SiteData | None:
     return None
 
 
+def _enabled(value: object) -> bool | None:
+    if value in ("1", 1) and type(value) in (str, int, bool):
+        return True
+    if value in ("0", 0) and type(value) in (str, int, bool):
+        return False
+    return None
+
+
+def _text(value: object, limit: int) -> str | None:
+    return value if isinstance(value, str) and len(value) <= limit else None
+
+
 def parse_inventory(payload: str) -> list[Site]:
     data = json.loads(payload)
     if data["version"] != 1 or not isinstance(data["sites"], list) or not isinstance(data["vhosts"], dict):
@@ -106,7 +128,11 @@ def parse_inventory(payload: str) -> list[Site]:
             aliases = tuple(host for domain in bound for host in vhosts.get(domain, ()))
         domains = _prefer((*bound, *aliases) or ((name,) if name else ()), name)
         if domains:
-            sites.append(Site(str(site_id), created_at, domains, _site_data(row.get("data"))))
+            sites.append(Site(
+                str(site_id), created_at, domains, _site_data(row.get("data")),
+                name=_text(row.get("name"), 253), enabled=_enabled(row.get("status")),
+                remark=_text(row.get("remark"), 500), path=_text(row.get("path"), 4096),
+            ))
     claimed = {host for site in sites for host in site.domains}
     for name, hosts in sorted(vhosts.items()):
         if hosts and claimed.isdisjoint(hosts):
@@ -182,6 +208,13 @@ def snapshots(conn: sqlite3.Connection) -> dict[str, Inventory]:
                 "id": str(item["id"]), "domains": list(domains),
                 "created_at": created if deployment_date(created) is not None else None,
                 "data": asdict(data) if data is not None else None,
+                "name": _text(item.get("name"), 253),
+                "enabled": item.get("enabled") if type(item.get("enabled")) is bool else None,
+                "remark": _text(item.get("remark"), 500), "path": _text(item.get("path"), 4096),
+                "management_stale": item.get("management_stale") is True,
+                "waf_enabled": item.get("waf_enabled") if type(item.get("waf_enabled")) is bool else None,
+                "waf_checked_at": item.get("waf_checked_at") if type(item.get("waf_checked_at")) is int and 0 <= item["waf_checked_at"] < 253402185600 else None,
+                "waf_stale": item.get("waf_stale") is True,
                 "public": _cached_probe(item.get("public")),
                 "origin": _cached_probe(item["origin"]) if item.get("origin") is not None else None,
             })
@@ -227,11 +260,21 @@ def _probe_by_server(targets: dict[ProbeTarget, str], clock, per_server: int) ->
 
 
 def _refresh(conn: sqlite3.Connection, ctx: Context, server_id: str | None = None) -> None:
+    generations = {row["server_id"]: row["generation"] for row in conn.execute(
+        "SELECT server_id, generation FROM site_inventory_generations"
+    )}
     previous = snapshots(conn)
     clock = ctx.now
     inventories = {}
     with ThreadPoolExecutor(max_workers=6) as pool:
         requests = {}
+        waf_requests = {}
+        shared_key = None
+        if ctx.settings.site_ssh_enabled and ctx.settings.site_ssh_shared:
+            try:
+                shared_key = site_access.shared_key(ctx.settings)
+            except (OSError, ValueError):
+                pass
         for server in site_registry.list_servers(conn):
             if server_id is not None and server.id != server_id:
                 continue
@@ -243,6 +286,8 @@ def _refresh(conn: sqlite3.Connection, ctx: Context, server_id: str | None = Non
                 continue
             if key is not None:
                 requests[server] = pool.submit(_collect, server, key, clock)
+                if shared_key and server.host_key:
+                    waf_requests[server] = pool.submit(site_panel.waf_statuses, server, shared_key)
         for server, request in requests.items():
             current, attempted, error = request.result() if request else (None, clock(), "SSH 密钥无法解密")
             cached = previous.get(server.id)
@@ -251,9 +296,42 @@ def _refresh(conn: sqlite3.Connection, ctx: Context, server_id: str | None = Non
             synced = attempted if current is not None else (cached.synced_at if cached else None)
             if current is None:
                 current = [
-                    Site(row["id"], row["created_at"], tuple(row["domains"]), _site_data(row.get("data")))
+                    Site(
+                        row["id"], row["created_at"], tuple(row["domains"]), _site_data(row.get("data")),
+                        name=row.get("name"), enabled=row.get("enabled"), remark=row.get("remark"),
+                        path=row.get("path"), management_stale=True, waf_enabled=row.get("waf_enabled"),
+                        waf_checked_at=row.get("waf_checked_at"), waf_stale=True,
+                    )
                     for row in cached.rows
                 ] if cached else []
+            if current is not None and cached:
+                prior = {(row["id"], row.get("name")): row for row in cached.rows}
+                preserved = []
+                for site in current:
+                    old = prior.get((site.id, site.name), {})
+                    preserved.append(replace(
+                        site,
+                        enabled=site.enabled if site.enabled is not None else old.get("enabled"),
+                        remark=site.remark if site.remark is not None else old.get("remark"),
+                        path=site.path if site.path is not None else old.get("path"),
+                        management_stale=site.management_stale or any(
+                            getattr(site, field) is None and old.get(field) is not None
+                            for field in ("enabled", "remark", "path")
+                        ),
+                        waf_enabled=old.get("waf_enabled"), waf_checked_at=old.get("waf_checked_at"),
+                        waf_stale=old.get("waf_enabled") is not None,
+                    ))
+                current = preserved
+            waf_request = waf_requests.get(server)
+            if waf_request:
+                try:
+                    statuses = waf_request.result()
+                    checked_at = clock()
+                    current = [replace(
+                        site, waf_enabled=statuses[site.name], waf_checked_at=checked_at, waf_stale=False,
+                    ) if site.name in statuses else site for site in current]
+                except (site_panel.PanelError, OSError, ValueError):
+                    log.info("服务器 %s 的防火墙状态暂不可用", server.id)
             inventories[server] = (current, attempted, synced, error)
 
     counts = Counter(alias for current, *_ in inventories.values() for site in current for alias in _aliases(site))
@@ -292,12 +370,13 @@ def _refresh(conn: sqlite3.Connection, ctx: Context, server_id: str | None = Non
             """
             INSERT INTO site_inventories(server_id, revision, attempted_at, synced_at, error, snapshot)
             SELECT id, revision, ?, ?, ?, ? FROM site_servers WHERE id = ? AND revision = ?
+                AND COALESCE((SELECT generation FROM site_inventory_generations WHERE server_id = site_servers.id), 0) = ?
             ON CONFLICT(server_id) DO UPDATE SET
                 revision = excluded.revision, attempted_at = excluded.attempted_at,
                 synced_at = excluded.synced_at, error = excluded.error, snapshot = excluded.snapshot
             WHERE excluded.attempted_at >= site_inventories.attempted_at
             """,
-            (attempted, synced, error, json.dumps(rows), server.id, server.revision),
+            (attempted, synced, error, json.dumps(rows), server.id, server.revision, generations.get(server.id, 0)),
         )
         log.info("服务器 %s 已巡检 %d 条站点记录", server.id, len(rows))
 
