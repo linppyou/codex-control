@@ -38,7 +38,7 @@
   <section class="panel flush" aria-labelledby="dispatch-prompt-title">
     <div class="panel-head"><h2 id="dispatch-prompt-title">发送给 Codex 的提示词</h2></div>
     {% if can_confirm %}
-    <form method="post" action="/tasks/{{ task.id }}/confirm?back={{ back_url|urlencode }}">
+    <form id="dispatch-confirm" method="post" action="/tasks/{{ task.id }}/confirm?back={{ back_url|urlencode }}" data-models-url="/tasks/{{ task.id }}/models">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <textarea class="dispatch-prompt dispatch-prompt-editor" name="prompt" rows="24" aria-labelledby="dispatch-prompt-title" required>{{ task.prompt }}</textarea>
       <div class="panel-body dispatch-confirm">
@@ -48,18 +48,22 @@
             <input type="text" name="working_directory" value="{{ execution.working_directory }}" maxlength="4096" placeholder="~/wp_front">
             <span class="hint">留空使用执行用户家目录下的 wp_front，相对路径也从该用户家目录解析。</span>
           </label>
-          <label>模型 ID
-            <input type="text" name="model" value="{{ execution.model }}" maxlength="128" spellcheck="false" placeholder="gpt-6.1-terra">
-          </label>
-          <label>思考程度
-            <input type="text" name="reasoning_effort" value="{{ execution.reasoning_effort }}" maxlength="32" spellcheck="false" list="dispatch-efforts" placeholder="medium">
-          </label>
+          <div class="dispatch-field">
+            <label id="dispatch-model-label" for="dispatch-model">模型 ID</label>
+            <select id="dispatch-model-choice" hidden></select>
+            <input id="dispatch-model" type="text" name="model" value="{{ execution.model }}" maxlength="128" spellcheck="false" placeholder="gpt-6.1-terra">
+          </div>
+          <div class="dispatch-field">
+            <label id="dispatch-effort-label" for="dispatch-effort">思考程度</label>
+            <select id="dispatch-effort-choice" hidden></select>
+            <input id="dispatch-effort" type="text" name="reasoning_effort" value="{{ execution.reasoning_effort }}" maxlength="32" spellcheck="false" list="dispatch-efforts" placeholder="medium">
+          </div>
           <datalist id="dispatch-efforts">
-            {% for effort in ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] %}<option value="{{ effort }}"></option>{% endfor %}
+            {% for effort in ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] %}<option value="{{ effort }}"></option>{% endfor %}
           </datalist>
+          <p id="dispatch-model-status" class="hint dispatch-wide" role="status" hidden></p>
           <input type="hidden" name="sandbox" value="{{ execution.sandbox }}">
           <p class="hint dispatch-wide">执行权限为不使用沙箱，批准策略为 never。运行中可通过同一用户的 Codex 会话介入。</p>
-          <p class="hint dispatch-wide">默认使用 gpt-6.1-terra，思考程度为 medium（中等）。可修改为执行环境支持的模型和档位，留空使用上述默认值。</p>
         </div>
         <label><input type="checkbox" name="confirmed" value="1" required> 已核对提示词、目标站及 Skill，确认发送</label>
         <div class="dispatch-actions">

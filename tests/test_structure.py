@@ -74,6 +74,7 @@ GET /skills
 GET /skills/{skill_id}/download
 GET /tasks
 GET /tasks/{task_id}
+GET /tasks/{task_id}/models
 GET /usage
 GET /usage.csv
 GET /usage/api
@@ -176,7 +177,7 @@ def test_route_contract_is_preserved(ctx, gateway_enabled):
             for route in EXPECTED_ROUTES
             if not route.split()[1].startswith("/v1/")
             and route.split()[1] != "/usage/api"
-            and "/models" not in route.split()[1]
+            and not (route.split()[1].startswith("/accounts/") and "/models" in route.split()[1])
             and "/api-key" not in route.split()[1]
             and "/web-password" not in route.split()[1]
         }

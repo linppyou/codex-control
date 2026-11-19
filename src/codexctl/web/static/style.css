@@ -551,6 +551,7 @@ progress.bad::-moz-progress-bar { background: var(--red); }
 .dispatch-layout > .panel { min-width: 0; }
 .dispatch-detail { grid-template-columns: minmax(0, 3fr) minmax(240px, 1.2fr); }
 .dispatch-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 16px; }
+.dispatch-form .dispatch-field { min-width: 0; display: grid; align-content: start; gap: 6px; }
 .dispatch-form label { min-width: 0; display: grid; align-content: start; gap: 6px; color: var(--text-2); font-weight: 600; }
 .dispatch-form input, .dispatch-form select { min-width: 0; width: 100%; font-weight: 400; }
 .dispatch-form input[type="file"] { font: inherit; color: var(--text-2); }
