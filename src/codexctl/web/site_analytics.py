@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 
 import codexctl.sites.inventory as sites
 import codexctl.sites.registry as site_registry
-from codexctl.web.charts import comparison_series
 
 
 def site_comparison(conn: sqlite3.Connection, days: int, now: int) -> dict:
@@ -36,16 +35,9 @@ def site_comparison(conn: sqlite3.Connection, days: int, now: int) -> dict:
         day = start + timedelta(days=i)
         key = day.isoformat()
         values = [item["counts"][key] for item in ranking]
-        daily.append({
-            "day": key, "label": day.strftime("%m-%d"), "values": values, "total": sum(values),
-            "show_label": days <= 7 or i in (0, days - 1) or i % (5 if days <= 30 else 15) == 0,
-        })
-    maximum = max((value for day in daily for value in day["values"]), default=0)
-    # An even integer scale keeps low site counts readable, including an all-zero range.
-    scale = max(2, maximum + maximum % 2)
-    series = comparison_series(daily, [item["name"] for item in ranking], scale, width=600)
+        daily.append({"day": key, "values": values, "total": sum(values)})
     return {
-        "ranking": ranking, "daily": daily, "series": series, "scale": scale,
+        "ranking": ranking, "daily": daily,
         "total": sum(item["total"] for item in ranking), "today": daily[-1]["total"],
         "site_counts": site_counts,
         "server_count": len(servers), "pending": pending, "stale": stale, "unknown_dates": unknown_dates,

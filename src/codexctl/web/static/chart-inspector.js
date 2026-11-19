@@ -1,5 +1,5 @@
 (function () {
-  document.querySelectorAll('.interactive-chart').forEach(function (chart) {
+  function bindChart(chart) {
     var inspector = chart.parentElement.querySelector('[data-chart-inspector]');
     if (!inspector) inspector = chart.closest('.compare-chart-area, .daily-chart-wrap').querySelector('[data-chart-inspector]');
     var hits = Array.from(chart.querySelectorAll('.chart-hit'));
@@ -15,9 +15,12 @@
       });
     }
     toggles.forEach(function (button, index) {
-      button.addEventListener('pointerenter', function () { emphasize(index); });
+      function highlight() {
+        if (button.getAttribute('aria-pressed') === 'true') emphasize(index);
+      }
+      button.addEventListener('pointerenter', highlight);
       button.addEventListener('pointerleave', function () { emphasize(null); });
-      button.addEventListener('focus', function () { emphasize(index); });
+      button.addEventListener('focus', highlight);
       button.addEventListener('blur', function () { emphasize(null); });
       button.addEventListener('click', function () {
         var enabled = button.getAttribute('aria-pressed') !== 'true';
@@ -25,14 +28,18 @@
         seriesNodes.forEach(function (node) {
           if (Number(node.dataset.series) === index) node.classList.toggle('is-hidden', !enabled);
         });
+        emphasize(null);
         if (active >= 0) show(active);
       });
     });
-    var reset = area && area.querySelector('[data-series-reset]');
-    if (reset) reset.addEventListener('click', function () {
-      toggles.forEach(function (button) { button.setAttribute('aria-pressed', 'true'); });
-      seriesNodes.forEach(function (node) { node.classList.remove('is-hidden'); });
-      if (active >= 0) show(active);
+    if (area) area.querySelectorAll('[data-series-reset]').forEach(function (reset) {
+      reset.addEventListener('click', function () {
+        var count = Number(reset.dataset.seriesReset);
+        toggles.forEach(function (button, index) { button.setAttribute('aria-pressed', String(index < count)); });
+        seriesNodes.forEach(function (node) { node.classList.toggle('is-hidden', Number(node.dataset.series) >= count); });
+        emphasize(null);
+        if (active >= 0) show(active);
+      });
     });
     var format = function (value) { return Number(value).toLocaleString('en-US'); };
     function value(label, amount, short, index) {
@@ -59,15 +66,14 @@
       inspector.replaceChildren();
       var date = document.createElement('strong');
       date.className = 'chart-inspector-date';
-      date.textContent = hit.dataset.day;
+      date.textContent = hit.dataset.day + (hit.hasAttribute('data-partial-week') ? '（范围内）' : '');
       inspector.appendChild(date);
       if (chart.dataset.chartKind === 'comparison') {
         var values = JSON.parse(hit.dataset.values);
-        var shortValues = JSON.parse(hit.dataset.valuesShort);
         names.forEach(function (name, i) {
-          if (!toggles[i] || toggles[i].getAttribute('aria-pressed') === 'true') value(name, values[i], shortValues[i], i);
+          if (!toggles[i] || toggles[i].getAttribute('aria-pressed') === 'true') value(name, values[i], null, i);
         });
-        value(chart.dataset.chartTotalLabel || '全部用户合计', hit.dataset.total, hit.dataset.totalShort);
+        value(chart.dataset.chartTotalLabel, hit.dataset.total);
       } else {
         value('总 Tokens', hit.dataset.total, hit.dataset.totalShort);
         value('输入', hit.dataset.input, hit.dataset.inputShort);
@@ -90,5 +96,10 @@
       show(Math.max(0, Math.min(hits.length - 1, (active < 0 ? 0 : active) + (event.key === 'ArrowRight' ? 1 : -1))));
     });
     if (chart.dataset.chartInitial === 'last') show(hits.length - 1);
+  }
+
+  document.querySelectorAll('.interactive-chart').forEach(bindChart);
+  document.addEventListener('dashboard:trends', function (event) {
+    event.detail.querySelectorAll('.interactive-chart').forEach(bindChart);
   });
 })();

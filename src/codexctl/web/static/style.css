@@ -539,6 +539,7 @@ progress.bad::-moz-progress-bar { background: var(--red); }
 /* 总览中的紧凑图表 */
 .dashboard-trends-heading { margin-bottom: 8px; }
 .dashboard-trends-heading .analytics-range a { display: inline-flex; align-items: center; }
+.dashboard-trends-status { margin: 0 0 8px; }
 .dashboard-comparisons { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: start; margin-bottom: 20px; }
 .dashboard-comparisons .analytics-panel { container: trend-panel / inline-size; min-width: 0; margin-bottom: 0; }
 .dashboard-comparisons .analytics-panel > .panel-head { padding: 14px 16px; }
@@ -549,28 +550,39 @@ progress.bad::-moz-progress-bar { background: var(--red); }
 .dashboard-comparisons .analytics-note { margin: 8px 16px; }
 .dashboard-comparisons .analytics-note p { margin: 3px 0; }
 .dashboard-comparisons .compare-chart-area { padding: 14px 16px 12px; }
-.dashboard-comparisons .compare-chart-heading h3 { font-size: 13px; }
-.dashboard-comparisons .compare-legend { gap: 4px 6px; margin-top: 8px; }
+.dashboard-comparisons .compare-chart-heading h3 { font-size: 14px; }
+.dashboard-comparisons .compare-unit { font-size: 12px; }
+.dashboard-comparisons .compare-period-note { margin: 4px 0 0; color: var(--text-2); font-size: 12px; }
+.dashboard-comparisons .compare-legend { gap: 4px 6px; margin-top: 10px; }
 .dashboard-comparisons .compare-legend-button, .dashboard-comparisons .compare-reset { padding: 3px 7px; }
+.dashboard-comparisons .compare-legend-button[aria-pressed="false"] { opacity: 1; color: var(--muted); }
+.dashboard-comparisons .compare-legend-button[aria-pressed="false"] .compare-swatch { opacity: .45; }
 .dashboard-comparisons .chart-inspector { gap: 4px 12px; min-height: 34px; padding: 6px 8px; margin-top: 8px; }
-.dashboard-comparisons .compare-plot-wrap { container: trend-plot / inline-size; overflow: visible; }
-.dashboard-comparisons .compare-plot { min-width: 0; max-height: 290px; }
+.dashboard-comparisons .chart-inspector-date { flex-basis: 100%; }
+.dashboard-comparisons .compare-plot-wrap { container: trend-plot / inline-size; overflow: visible; max-width: 1080px; margin-inline: auto; }
+.dashboard-comparisons .compare-plot { min-width: 0; height: clamp(174px, 35cqw, 320px); overflow: visible; }
+.dashboard-comparisons .compare-axis { fill: var(--text-2); font-size: 12px; pointer-events: none; }
+.dashboard-comparisons .compare-x { font-size: 11px; }
+.dashboard-comparisons .compare-points { pointer-events: none; }
+.dashboard-comparisons .compare-plot .daily-grid { stroke: #d2ded7; }
+.dashboard-comparisons .compare-plot .chart-hit[data-partial-week] { fill: rgba(63, 125, 32, .05); }
+.dashboard-comparisons .compare-plot .chart-hit.is-active { fill: rgba(63, 125, 32, .13); }
 .dashboard-comparisons .compare-empty { padding: 24px 0; }
 .dashboard-comparisons .daily-details summary { padding: 9px 16px; }
 .dashboard :is(#comparison, #site-comparison, #dashboard-alerts) { scroll-margin-top: 78px; }
+.dashboard #comparison { scroll-margin-top: 128px; }
 .dashboard-alerts-table td { overflow-wrap: anywhere; }
 @container dashboard (width >= 1120px) {
+  .dashboard-comparisons[data-trend-results="7"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container dashboard (width >= 1440px) {
   .dashboard-comparisons { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @container trend-panel (width < 540px) {
   .dashboard-comparisons .analytics-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @container trend-plot (width < 545px) {
-  .dashboard-comparisons .compare-axis { font-size: 20px; }
   .dashboard-comparisons .compare-x:not(.compare-mobile-tick) { display: none; }
-}
-@container trend-plot (width < 370px) {
-  .dashboard-comparisons .compare-axis { font-size: 24px; }
 }
 @media (pointer: coarse) {
   .dashboard :is(.compare-legend-button, .compare-reset, .analytics-range a, .btn.small, summary) { min-height: 44px; }

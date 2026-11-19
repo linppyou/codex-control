@@ -1,0 +1,62 @@
+{% macro comparison_chart(chart, heading, days, tokens=false) %}
+  {% set period = '每周' if chart.weekly else '每日' %}
+  {% set unit = '周' if chart.weekly else '日' %}
+  {% set total_label = '全部用户合计' if tokens else '全部服务器合计' %}
+  <div class="compare-chart-heading">
+    <h3>{{ period }}{{ heading }}趋势</h3>
+    <span class="compare-unit">{{ 'Tokens' if tokens else '个' }} / {{ unit }}</span>
+  </div>
+  {% if chart.weekly %}<p class="compare-period-note">按北京时间自然周汇总，* 表示范围内不足 7 天的部分周</p>{% endif %}
+  {% if chart.series %}
+  <div class="compare-plot-wrap">
+    <svg class="compare-plot interactive-chart" data-chart-kind="comparison" data-chart-initial="last"
+      data-chart-total-label="{{ total_label }}" data-chart-names="{{ chart.series|map(attribute='name')|list|tojson|forceescape }}"
+      tabindex="0" role="group" aria-label="近 {{ days }} 天{{ period }}{{ heading }}折线图，使用左右方向键查看数据">
+      {% for y, value in chart.y_ticks %}
+      {% set row = (100 * y / 210)|round(3) %}
+      <line class="daily-grid" x1="11.667%" y1="{{ row }}%" x2="93.333%" y2="{{ row }}%"/>
+      <text class="compare-axis" x="10%" y="{{ row }}%" dominant-baseline="middle" text-anchor="end">{{ value|tokens }}</text>
+      {% endfor %}
+      <svg width="100%" height="100%" viewBox="0 0 600 210" preserveAspectRatio="none">
+        {% for item in chart.series %}
+        {% set hidden = item.index >= chart.default_visible %}
+        <path data-series="{{ item.index }}" class="compare-line compare-{{ item.index % 10 }} pattern-{{ (item.index // 10) % 3 }}{% if hidden %} is-hidden{% endif %}" d="{{ item.path }}"/>
+        {% endfor %}
+        {% for d in chart.periods %}
+        <rect class="chart-hit" x="{{ d.x if loop.first else d.x - chart.step_x / 2 }}" y="25"
+          width="{{ chart.step_x / 2 if loop.first or loop.last else chart.step_x }}" height="160"
+          tabindex="-1" data-day="{{ d.day }}" data-values="{{ d['values']|tojson|forceescape }}"
+          data-total="{{ d.total }}"{% if d.partial %} data-partial-week{% endif %} aria-label="{{ d.day }}"/>
+        {% endfor %}
+      </svg>
+      {% if chart.show_points %}
+      {% for item in chart.series %}
+      <g data-series="{{ item.index }}" class="compare-points compare-{{ item.index % 10 }}{% if item.index >= chart.default_visible %} is-hidden{% endif %}">
+        {% for p in item.points %}
+        <circle cx="{{ (100 * p.x / 600)|round(3) }}%" cy="{{ (100 * p.y / 210)|round(3) }}%" r="{{ 3 if chart.weekly else 4 }}"/>
+        {% endfor %}
+      </g>
+      {% endfor %}
+      {% endif %}
+      {% for d in chart.periods if d.show_label %}
+      <text class="compare-axis compare-x{% if d.mobile_label %} compare-mobile-tick{% endif %}"
+        x="{{ (100 * d.x / 600)|round(3) }}%" y="95%" text-anchor="{% if loop.first %}start{% elif loop.last %}end{% else %}middle{% endif %}">{{ d.label }}{% if d.partial %}*{% endif %}</text>
+      {% endfor %}
+    </svg>
+  </div>
+  <div class="chart-inspector" data-chart-inspector aria-live="polite">
+    <span class="chart-inspector-placeholder">悬停、轻触图表或使用左右方向键查看数据</span>
+  </div>
+  <div class="compare-legend" aria-label="{{ '选择显示的用户' if tokens else '选择显示的服务器' }}">
+    {% for item in chart.series %}
+    <button type="button" class="compare-legend-button" data-series-toggle="{{ item.index }}" aria-pressed="{{ 'true' if item.index < chart.default_visible else 'false' }}"><i class="compare-swatch compare-{{ item.index % 10 }}"></i>{{ item.name }}</button>
+    {% endfor %}
+    {% if chart.default_visible < chart.series|length %}
+    <button type="button" class="compare-reset" data-series-reset="{{ chart.default_visible }}">仅显示前三</button>
+    {% endif %}
+    {% if chart.series|length > 1 %}<button type="button" class="compare-reset" data-series-reset="{{ chart.series|length }}">显示全部</button>{% endif %}
+  </div>
+  {% else %}
+  {{ caller() }}
+  {% endif %}
+{% endmacro %}

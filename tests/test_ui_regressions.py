@@ -114,6 +114,28 @@ def test_dashboard_summarizes_highest_severity_and_uses_one_date_filter(c, ctx):
     assert 'href="?days=30#comparison" class="active"' in page
 
 
+def test_dashboard_trends_fragment_uses_the_same_panels_and_requires_admin(c, ctx):
+    from fastapi.testclient import TestClient
+
+    import codexctl.users.webauth as webauth
+    from codexctl.web.app import SESSION_COOKIE
+
+    response = c.get("/dashboard/trends?days=90")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.text.strip() in c.get("/?days=90").text
+    assert 'data-trend-results="90"' in response.text
+    assert 'data-trend-results="7"' in c.get("/dashboard/trends?days=100").text
+    for absent in ("<!doctype html>", "dashboard-overview", "dashboard-alerts", "server-metrics.js"):
+        assert absent not in response.text
+
+    visitor = TestClient(c.app)
+    assert visitor.get("/dashboard/trends", follow_redirects=False).headers["location"] == "/login"
+    token, _ = webauth.create_session(ctx.conn, "alice", now=ctx.now())
+    visitor.cookies.set(SESSION_COOKIE, token)
+    assert visitor.get("/dashboard/trends").status_code == 403
+
+
 def test_dashboard_account_users_follow_current_assignments(c, ctx):
     from codexctl.web.views import _account_rows
 

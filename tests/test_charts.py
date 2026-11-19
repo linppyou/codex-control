@@ -1,3 +1,6 @@
+from datetime import date, timedelta
+
+from codexctl.usage.analytics import dashboard_comparison_chart
 from codexctl.web.charts import quota_chart
 
 
@@ -61,3 +64,25 @@ def test_daily_comparison_empty_single_and_zero_values():
         {"day": "2026-11-16", "values": [0]}, {"day": "2026-11-17", "values": [0]},
     ], ["每日用量"], 0)[0]
     assert zero["path"] == "M70.0,175.0 L920.0,175.0"
+
+
+def test_dashboard_comparison_groups_long_range_without_changing_daily_rows():
+    start = date(2026, 8, 22)  # Saturday
+    daily = [
+        {"day": (start + timedelta(days=i)).isoformat(), "values": [2, 1, 0, 0], "total": 3}
+        for i in range(90)
+    ]
+    names = ["a", "b", "c", "d"]
+    weekly = dashboard_comparison_chart(daily, names)
+    assert weekly["weekly"] and weekly["default_visible"] == 3
+    assert len(weekly["periods"]) == 14
+    assert weekly["periods"][0]["day"] == "2026-08-22 至 2026-08-23"
+    assert weekly["periods"][0]["partial"] and weekly["periods"][-1]["partial"]
+    assert weekly["periods"][1]["values"] == [14, 7, 0, 0]
+    assert sum(period["total"] for period in weekly["periods"]) == 270
+    assert daily[0] == {"day": "2026-08-22", "values": [2, 1, 0, 0], "total": 3}
+
+    monthly = dashboard_comparison_chart(daily[:30], names)
+    assert not monthly["weekly"] and not monthly["show_points"]
+    assert len(monthly["periods"]) == 30
+    assert sum(period["mobile_label"] for period in monthly["periods"]) == 3

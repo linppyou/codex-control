@@ -140,10 +140,8 @@
   <h2 class="section-title"><span class="section-mark"></span>数据趋势</h2>
   <nav class="analytics-range" aria-label="用户用量与建站统计的时间范围">{% for n in (7, 30, 90) %}<a href="?days={{ n }}#comparison"{% if days == n %} class="active" aria-current="page"{% endif %}>{{ n }} 天</a>{% endfor %}</nav>
 </div>
-<div class="dashboard-comparisons">
-{% include "_user_comparison.html" %}
-{% include "_site_comparison.html" %}
-</div>
+<p class="dashboard-trends-status hint" data-trend-status role="status" hidden></p>
+{% include "_dashboard_trends.html" %}
 <div class="section-head" id="dashboard-alerts"><h2 class="section-title"><span class="section-mark red"></span>未解决告警</h2><span class="muted mono">{{ alerts|length }} 条</span></div>
 <div class="panel flush">
 {% if alerts %}
@@ -158,5 +156,6 @@
 {% else %}<div class="empty-state">没有未解决的告警</div>{% endif %}
 </div>
 <script src="/static/chart-inspector.js" defer></script>
+<script src="/static/dashboard-trends.js" defer></script>
 {% if servers %}<script src="/static/server-metrics.js" defer></script>{% endif %}
 {% endblock %}

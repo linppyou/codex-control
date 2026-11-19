@@ -855,8 +855,8 @@ def test_usage_comparison_panel_renders(ctx):
     assert '折线图' in html and '查看每日用户用量' in html
     assert 'data-chart-kind="comparison"' in html and 'data-chart-names=' in html
     assert html.count('class="chart-hit"') == 7
-    assert 'chart-inspector.js' in html and 'data-values-short=' in html
-    assert 'data-total-short=' in html
+    assert 'chart-inspector.js' in html and 'data-values=' in html
+    assert 'data-total="2400000"' in html
     assert "25.0%" in html
     assert 'title="1,200,000 tokens">1.2M</td>' in html
     assert 'title="2,400,000 tokens">2.4M</td>' in html

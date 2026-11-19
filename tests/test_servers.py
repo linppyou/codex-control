@@ -564,7 +564,6 @@ def test_site_dashboard_counts_creation_dates_per_server(ctx, monkeypatch, days)
     assert data["daily"][-2]["values"] == [1, 0]
     assert [row["id"] for row in data["ranking"]] == [first.id, second.id]
     assert data["pending"] == data["stale"] == []
-    assert data["series"][0]["points"][-1]["value"] == 1
 
     html = client.get(f"/?days={days}").text
     for server, count in ((first, 5), (second, 1)):
@@ -574,7 +573,9 @@ def test_site_dashboard_counts_creation_dates_per_server(ctx, monkeypatch, days)
     panel = html.split('id="site-comparison"', 1)[1].split('</section>', 1)[0]
     assert html.index('>用户用量对比</h2>') < html.index('id="site-comparison"') < html.index('id="dashboard-alerts"')
     assert f'href="?days={days}#comparison" class="active"' in html
-    assert panel.count('class="chart-hit"') == days
+    assert panel.count('class="chart-hit"') == (14 if days == 90 else days)
+    assert ("每周建站趋势" in panel) == (days == 90)
+    assert ('2026-11-16 至 2026-11-17' if days == 90 else 'data-day="2026-11-17"') in panel
     assert panel.count('class="compare-line ') == 2
     assert 'data-chart-total-label="全部服务器合计"' in panel
     assert "一号服务器" in panel and "二号服务器" in panel
@@ -593,8 +594,8 @@ def test_site_dashboard_handles_empty_pending_and_stale_inventories(ctx, monkeyp
     ctx.test_clock.t += sites.STALE_AFTER + 1
     data = site_comparison(ctx.conn, 7, ctx.now())
     assert data["pending"] == [pending.name] and data["stale"] == [first.name]
-    assert data["total"] == data["today"] == 0 and data["scale"] == 2
-    assert data["series"][0]["points"][-1]["y"] == 175
+    assert data["total"] == data["today"] == 0
+    assert data["daily"][-1]["values"] == [0]
     html = client.get("/?days=123").text
     assert f'href="/servers?server_id={first.id}"><strong>0</strong> 个站点</a>' in html
     pending_card = html.split(f'data-server-id="{pending.id}">', 1)[1].split("</article>", 1)[0]
@@ -606,7 +607,7 @@ def test_site_dashboard_handles_empty_pending_and_stale_inventories(ctx, monkeyp
     ctx.test_clock.t -= sites.STALE_AFTER + 1
     assert site_comparison(ctx.conn, 7, ctx.now())["stale"] == [first.name]
     ctx.conn.execute("UPDATE site_inventories SET revision = revision + 1")
-    assert site_comparison(ctx.conn, 7, ctx.now())["series"] == []
+    assert site_comparison(ctx.conn, 7, ctx.now())["ranking"] == []
 
 
 def test_pages_tolerate_malformed_historical_inventory(ctx):

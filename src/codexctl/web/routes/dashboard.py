@@ -10,7 +10,7 @@ from starlette.concurrency import run_in_threadpool
 import codexctl.events as events
 import codexctl.sites.registry as site_registry
 from codexctl.formatting import fmt_ts
-from codexctl.usage.analytics import user_comparison
+from codexctl.usage.analytics import dashboard_comparison_chart, user_comparison
 from codexctl.web import server_metrics
 from codexctl.web.dependencies import clean_text, current_admin, current_user
 from codexctl.web.presenters import _account_rows, _complete_finished_logins
@@ -26,6 +26,19 @@ def register(app) -> None:
     metrics_lock = asyncio.Lock()
     metrics_cache = {"key": None, "sampled_at": 0.0, "value": None}
 
+    def read_trends(days: int) -> dict:
+        now = ctx.now()
+        analytics = user_comparison(ctx, days, now=now)
+        analytics["site_analytics"] = site_comparison(ctx.conn, analytics["days"], now)
+        return analytics
+
+    def trend_charts(analytics: dict) -> dict:
+        sites = analytics["site_analytics"]
+        return {
+            "user_chart": dashboard_comparison_chart(analytics["daily"], [u["name"] for u in analytics["ranking"]]),
+            "site_chart": dashboard_comparison_chart(sites["daily"], [s["name"] for s in sites["ranking"]]),
+        }
+
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request, days: int = 7, admin: tuple[str, str] = Depends(current_user)):
         if admin[0] != "admin":
@@ -37,8 +50,7 @@ def register(app) -> None:
             cards.sort(key=lambda card: not (card["has_quota"] and card["remaining"] > 0))
             available_count = sum(card["has_quota"] and card["remaining"] > 0 for card in cards)
             servers = site_registry.list_servers(ctx.conn)
-            analytics = user_comparison(ctx, days)
-            site_analytics = site_comparison(ctx.conn, analytics["days"], ctx.now())
+            analytics = read_trends(days)
             alerts = [
                 {
                     "level": clean_text(a["level"], 16), "kind": clean_text(a["kind"]),
@@ -50,8 +62,14 @@ def register(app) -> None:
             severity = {"critical": 3, "error": 2, "warning": 1, "warn": 1}
             top_alert = max(alerts, key=lambda alert: severity.get(alert["level"], 0), default=None)
         return render(request, "dashboard.html", admin=admin[0], csrf=admin[1], cards=cards, alerts=alerts,
-                      top_alert=top_alert, available_count=available_count, servers=servers, site_analytics=site_analytics,
-                      **analytics, **_flash(msg, err))
+                      top_alert=top_alert, available_count=available_count, servers=servers,
+                      **analytics, **trend_charts(analytics), **_flash(msg, err))
+
+    @app.get("/dashboard/trends", response_class=HTMLResponse, dependencies=[Depends(current_admin)])
+    def trends(request: Request, days: int = 7):
+        with lock:
+            analytics = read_trends(days)
+        return render(request, "_dashboard_trends.html", flash=False, **analytics, **trend_charts(analytics))
 
     def read_metrics(refresh: bool, requested_at: float) -> dict:
         with lock:
