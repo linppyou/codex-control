@@ -14,9 +14,12 @@ import codexctl.sites.access as site_access
 import codexctl.sites.inventory as sites
 import codexctl.sites.probe as site_probe
 import codexctl.sites.registry as site_registry
+import codexctl.sites.ssh as site_ssh
 from codexctl.context import Context
+from codexctl.sites.installer import INSTALL_ERRORS
 
 TTL = 1800
+MAX_PASSWORD_LENGTH = 1024
 
 
 def _aad(server_id: str) -> bytes:
@@ -71,7 +74,9 @@ def command(ctx: Context, server: site_registry.Server, base_url: str) -> str | 
     )
 
 
-def installer(server: site_registry.Server, token: str, base_url: str, *, access_key: str | None = None) -> str:
+def installer(
+    server: site_registry.Server, token: str = "", base_url: str = "", *, access_key: str | None = None,
+) -> str:
     collector = Path(__file__).resolve().parents[1] / "collect_sites.py"
     if not collector.is_file():
         collector = Path(__file__).resolve().parents[3] / "deploy" / "collect-sites.py"
@@ -79,8 +84,9 @@ def installer(server: site_registry.Server, token: str, base_url: str, *, access
         "collector": base64.b64encode(collector.read_bytes()).decode(),
         "authorized_key": server.authorized_key,
         "server_id": server.id,
+        "host_key": server.host_key,
         "token": token,
-        "callback": base_url + "/site-enrollment/complete",
+        "callback": base_url + "/site-enrollment/complete" if base_url else None,
         "access_key": access_key,
     }
     template = Path(__file__).with_name("installer.py").read_text()
@@ -88,12 +94,46 @@ def installer(server: site_registry.Server, token: str, base_url: str, *, access
 
 
 def candidate(server: site_registry.Server, host_key: str) -> site_registry.Server:
-    _, _, _, pinned = site_registry._validate(server.name, server.host, str(server.port), host_key)
+    pinned = site_registry.normalize_host_key(host_key)
     if not pinned:
         raise site_registry.ServerError("未读取到服务器主机公钥")
     if server.host_key and server.host_key != pinned:
         raise site_registry.ServerError("主机公钥与已登记值不一致，请核对服务器后更新")
     return replace(server, host_key=pinned)
+
+
+def validate_password(password: str) -> None:
+    if not password or len(password) > MAX_PASSWORD_LENGTH or "\x00" in password:
+        raise site_registry.ServerError("请输入有效的 root SSH 密码")
+
+
+def _shared_enabled(ctx: Context) -> bool:
+    settings = ctx.settings
+    return settings.site_ssh_enabled and settings.site_ssh_shared and settings.manages_local_codex
+
+
+def deployment_authorization(ctx: Context) -> str | None:
+    return site_access.shared_authorization(ctx.settings) if _shared_enabled(ctx) else None
+
+
+def verify(ctx: Context, server: site_registry.Server, key: bytes) -> list[sites.Site]:
+    inventory = sites.collect(server, key)
+    if _shared_enabled(ctx):
+        access = site_ssh.run(server, site_access.shared_key(ctx.settings), "id -u", timeout=15)
+        if access.returncode or access.stdout.strip() != "0":
+            raise site_registry.ServerError("共享部署密钥登录验证失败，请核对目标服务器的 SSH 公钥登录设置")
+    return inventory
+
+
+def install_with_password(
+    ctx: Context, server: site_registry.Server, password: str, key: bytes,
+) -> tuple[site_registry.Server, list[sites.Site]]:
+    script = installer(server, access_key=deployment_authorization(ctx))
+    host_key, status = site_ssh.run_installer(server, password, script)
+    if status != 0:
+        raise site_registry.ServerError(INSTALL_ERRORS.get(status, "采集器安装或 SSH 公钥配置失败"))
+    confirmed = candidate(server, host_key)
+    return confirmed, verify(ctx, confirmed, key)
 
 
 def complete(ctx: Context, server: site_registry.Server, token: str, verified: list[sites.Site]) -> None:

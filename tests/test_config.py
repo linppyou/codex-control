@@ -35,6 +35,12 @@ def test_removed_wp_key_remains_compatible(tmp_path):
     assert load_settings(cfg) == Settings()
 
 
+def test_removed_trusted_host_list_remains_compatible(tmp_path):
+    cfg = tmp_path / "c.toml"
+    cfg.write_text('site_ssh_trusted_hosts = "/etc/codexctl/trusted-site-hosts"\n')
+    assert load_settings(cfg) == Settings()
+
+
 def test_quota_poll_seconds_default():
     assert Settings().quota_poll_seconds == 600
 

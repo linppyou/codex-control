@@ -21,6 +21,20 @@
   </dl>
 </section>
 {% if is_admin %}
+{% if password_enrolling %}
+<p class="hint" role="status">正在自动安装采集器并验证 SSH，请稍后刷新查看结果。</p>
+{% else %}
+<form class="panel server-form" method="post" action="/servers/{{ server.id }}/enrollment/password" data-password-enrollment>
+  <h2>用密码接入</h2>
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  {% if server.host_key %}
+  <p class="hint">总控会校验已登记的主机公钥。</p>
+  {% else %}
+  <p class="hint">总控会记录首次接入的主机公钥。</p>
+  {% endif %}
+  <label>root SSH 密码 <input type="password" name="ssh_password" autocomplete="new-password" maxlength="1024" required></label>
+  <div class="form-row"><button type="submit" class="btn primary">自动接入</button></div>
+</form>
 <section class="panel server-detail">
   <h2>一条命令接入采集</h2>
   {% if enrollment_command %}
@@ -52,7 +66,8 @@
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <button class="btn danger" type="submit">删除服务器</button>
 </form>
+{% endif %}
 <script src="/static/confirm.js"></script>
-<script src="/static/server-enrollment.js"></script>
+<script src="/static/server-enrollment.js" defer></script>
 {% endif %}
 {% endblock %}

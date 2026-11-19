@@ -20,6 +20,7 @@ import codexctl.wp_center as wp_center_service
 from codexctl.vault import VaultError
 from codexctl.web.dependencies import current_admin, current_user
 from codexctl.web.navigation import site_view
+from codexctl.web.responses import _redirect
 
 PAGE_SIZE = 50
 STATUSES = {
@@ -78,6 +79,7 @@ def register(app) -> None:
     ctx = app.state.ctx
     lock = app.state.lock
     render = app.state.render
+    password_enrollments: set[str] = set()
 
     def base_url(request: Request) -> str:
         scheme = request.url.scheme
@@ -96,26 +98,31 @@ def register(app) -> None:
         except (OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail="WP 建站中心 SSH 接入尚未配置") from exc
 
+    def require_enrollment_idle(server_id: str) -> None:
+        if server_id in password_enrollments:
+            raise HTTPException(409, "该服务器正在自动接入，请稍后重试")
+
     def authenticated_server(token: str):
         if not token or len(token) > 128:
             raise HTTPException(403, "接入命令已失效，请在服务器详情页重新生成")
         try:
-            return site_enrollment.authenticate(ctx, token)
+            server = site_enrollment.authenticate(ctx, token)
         except site_registry.ServerError as exc:
             raise HTTPException(403, str(exc)) from exc
+        require_enrollment_idle(server.id)
+        return server
 
     @app.post("/site-enrollment/install", response_class=PlainTextResponse)
     def enrollment_install(request: Request, token: str = Form("")):
         with lock:
             server = authenticated_server(token)
-            access_key = None
-            if ctx.settings.site_ssh_enabled and ctx.settings.site_ssh_shared and ctx.settings.manages_local_codex:
-                access_key = site_access.shared_authorization(ctx.settings)
-            script = site_enrollment.installer(server, token, base_url(request), access_key=access_key)
+            script = site_enrollment.installer(
+                server, token, base_url(request), access_key=site_enrollment.deployment_authorization(ctx),
+            )
         return PlainTextResponse(script)
 
     @app.post("/site-enrollment/complete")
-    def enrollment_complete(request: Request, background: BackgroundTasks, host_key: str = Form("", max_length=512)):
+    def enrollment_complete(request: Request, background: BackgroundTasks, host_key: str = Form("", max_length=4096)):
         token = request.headers.get("authorization", "").removeprefix("Bearer ")
         try:
             with lock:
@@ -124,12 +131,9 @@ def register(app) -> None:
                 key = site_registry.private_key(ctx.conn, ctx.vault, server)
             if key is None:
                 raise site_registry.ServerError("服务器配置已变更，请重新生成接入命令")
-            inventory = sites.collect(candidate, key)
-            if ctx.settings.site_ssh_enabled and ctx.settings.site_ssh_shared and ctx.settings.manages_local_codex:
-                access = site_ssh.run(candidate, site_access.shared_key(ctx.settings), "id -u", timeout=15)
-                if access.returncode or access.stdout.strip() != "0":
-                    raise site_registry.ServerError("共享部署密钥登录验证失败，请重新执行接入命令")
+            inventory = site_enrollment.verify(ctx, candidate, key)
             with lock:
+                require_enrollment_idle(server.id)
                 site_enrollment.complete(ctx, candidate, token, inventory)
         except (site_registry.ServerError, sites.InventoryError, VaultError, OSError, subprocess.TimeoutExpired) as exc:
             raise HTTPException(422, str(exc)) from exc
@@ -141,6 +145,26 @@ def register(app) -> None:
         if not server:
             raise HTTPException(404, "服务器不存在")
         return server
+
+    def enroll_with_password(server, token: str, password: str, background: BackgroundTasks):
+        path = f"/servers/{server.id}"
+        try:
+            with lock:
+                key = site_registry.private_key(ctx.conn, ctx.vault, server)
+            if key is None:
+                raise site_registry.ServerError("服务器配置已变更，请重试")
+            candidate, inventory = site_enrollment.install_with_password(ctx, server, password, key)
+            with lock:
+                site_enrollment.complete(ctx, candidate, token, inventory)
+        except (site_registry.ServerError, sites.InventoryError) as exc:
+            return _redirect(path, err=f"自动接入未完成。{exc}")
+        except (VaultError, OSError, subprocess.TimeoutExpired, ValueError):
+            return _redirect(path, err="自动接入未完成，请检查总控配置及共享 SSH 密钥后重试")
+        finally:
+            with lock:
+                password_enrollments.discard(server.id)
+        background.add_task(sites.refresh, ctx, server.id)
+        return _redirect(path, msg=f"已自动接入，首次采集返回 {len(inventory)} 个站点")
 
     @app.get("/servers", response_class=HTMLResponse)
     def servers_page(
@@ -241,19 +265,26 @@ def register(app) -> None:
 
     @app.post("/servers")
     def add_server(
-        request: Request, name: str = Form(""), host: str = Form(""), port: str = Form(""),
-        host_key: str = Form(""), admin: tuple[str, str] = Depends(current_admin),
+        request: Request, background: BackgroundTasks, name: str = Form(""), host: str = Form(""),
+        port: str = Form(""), host_key: str = Form(""), ssh_password: str = Form(""),
+        admin: tuple[str, str] = Depends(current_admin),
     ):
         try:
+            if ssh_password:
+                site_enrollment.validate_password(ssh_password)
             with lock:
-                server = site_registry.create(ctx, f"web:{admin[0]}", name, host, port, host_key)
-                site_enrollment.issue(ctx, server)
+                server = site_registry.create(ctx, f"web:{admin[0]}", name, host, port, "" if ssh_password else host_key)
+                token = site_enrollment.issue(ctx, server)
+                if ssh_password:
+                    password_enrollments.add(server.id)
         except site_registry.ServerError as exc:
             return editor(
                 request, admin,
                 fields=dict(name=name, host=host, port=port, host_key=host_key),
                 error=str(exc),
             )
+        if ssh_password:
+            return enroll_with_password(server, token, ssh_password, background)
         return RedirectResponse(f"/servers/{server.id}", status_code=303)
 
     @app.get("/servers/{server_id}/wp-center", response_class=HTMLResponse)
@@ -323,17 +354,39 @@ def register(app) -> None:
         with lock:
             server = require_server(server_id)
             inv = sites.snapshots(ctx.conn).get(server_id)
-            command = site_enrollment.command(ctx, server, base_url(request)) if admin[0] == "admin" else None
+            enrolling = server.id in password_enrollments
+            command = None
+            if admin[0] == "admin" and not enrolling:
+                command = site_enrollment.command(ctx, server, base_url(request))
         return render(
             request, "server_detail.html", admin=admin[0], csrf=admin[1], server=server,
-            sync=_server_state(server, inv, ctx.now()), synced_at=_time(inv.synced_at if inv else None),
+            sync=("正在自动接入", "info") if enrolling else _server_state(server, inv, ctx.now()),
+            synced_at=_time(inv.synced_at if inv else None),
             sync_error=inv.error if inv else None, count=len(inv.rows) if inv and inv.synced_at is not None else None,
-            enrollment_command=command, wp_center_ready=admin[0] == "admin" and wp_center_ready(server),
+            enrollment_command=command, password_enrolling=enrolling,
+            wp_center_ready=admin[0] == "admin" and wp_center_ready(server),
         )
+
+    @app.post("/servers/{server_id}/enrollment/password")
+    def retry_password_enrollment(
+        server_id: str, background: BackgroundTasks, ssh_password: str = Form(""),
+        admin: tuple[str, str] = Depends(current_admin),
+    ):
+        with lock:
+            server = require_server(server_id)
+            require_enrollment_idle(server.id)
+            try:
+                site_enrollment.validate_password(ssh_password)
+            except site_registry.ServerError as exc:
+                return _redirect(f"/servers/{server.id}", err=str(exc))
+            token = site_enrollment.issue(ctx, server)
+            password_enrollments.add(server.id)
+        return enroll_with_password(server, token, ssh_password, background)
 
     @app.post("/servers/{server_id}/enrollment")
     def renew_enrollment(server_id: str, admin: tuple[str, str] = Depends(current_admin)):
         with lock:
+            require_enrollment_idle(server_id)
             site_enrollment.issue(ctx, require_server(server_id))
         return RedirectResponse(f"/servers/{server_id}", status_code=303)
 
@@ -350,6 +403,7 @@ def register(app) -> None:
     ):
         with lock:
             server = require_server(server_id)
+            require_enrollment_idle(server.id)
             try:
                 site_registry.update(ctx, f"web:{admin[0]}", server, name, host, port, host_key)
             except site_registry.ServerError as exc:
@@ -363,5 +417,6 @@ def register(app) -> None:
     def remove_server(server_id: str, admin: tuple[str, str] = Depends(current_admin)):
         with lock:
             server = require_server(server_id)
+            require_enrollment_idle(server.id)
             site_registry.delete(ctx, f"web:{admin[0]}", server)
         return RedirectResponse("/servers", status_code=303)
