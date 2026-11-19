@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}服务器 · codexctl{% endblock %}
+{% block title %}{{ '网站巡检' if site_view else '服务器' }} · codexctl{% endblock %}
 {% macro probe_result(result, status) %}
   <span class="badge {{ statuses[status][1] }}">{{ statuses[status][0] }}</span>
   {% if result %}
@@ -22,6 +22,7 @@
   <label><input type="checkbox" name="{{ name }}" value="{{ value }}"{% if value in selected %} checked{% endif %}>{{ label }}</label>
 {% endmacro %}
 {% block content %}
+{% if not site_view %}
 <div class="page-head">
   <h1>服务器</h1>
   {% if is_admin %}<a class="btn primary" href="/servers/new">添加服务器</a>{% endif %}
@@ -44,11 +45,15 @@
     {% endfor %}
   </ul>
 </section>
+{% else %}
+<div class="panel empty-state">暂无服务器。添加服务器后即可配置站点巡检。</div>
+{% endif %}
 
+{% else %}
 <section aria-labelledby="website-heading">
   <div class="page-head">
     <div>
-      <h2 id="website-heading">网站巡检</h2>
+      <h1 id="website-heading">网站巡检</h1>
       <div class="sub">{% if last_check %}最近检测 {{ last_check }} · 北京时间{% else %}等待首次巡检{% endif %}</div>
     </div>
     <div class="site-totals">
@@ -57,12 +62,14 @@
       {% if unconfirmed %}<span>待确认 <strong>{{ unconfirmed }}</strong></span>{% endif %}
     </div>
   </div>
+  {% if summary %}
   <div class="form-row">
     <span class="hint">筛选结果 {{ filtered }} 个站点</span>
     <button class="btn small" type="button" data-site-expand="true">展开全部</button>
     <button class="btn small" type="button" data-site-expand="false">折叠全部</button>
   </div>
   <form method="get" action="/servers" class="form-row panel site-filters">
+    <input type="hidden" name="view" value="sites">
     {% call multi_filter('服务器', server_ids) %}
       {% for item in summary %}{{ filter_option('server_id', item.server.id, item.server.name, server_ids) }}{% endfor %}
     {% endcall %}
@@ -74,7 +81,7 @@
     {% endcall %}
     <label>域名 <input type="text" name="q" value="{{ q }}" maxlength="253" spellcheck="false"></label>
     <button class="btn" type="submit">筛选</button>
-    {% if server_ids or dates or states or q %}<a class="btn ghost" href="/servers">清除筛选</a>{% endif %}
+    {% if server_ids or dates or states or q %}<a class="btn ghost" href="/servers?view=sites">清除筛选</a>{% endif %}
   </form>
 
   {% for server, days, count, more in groups %}
@@ -129,9 +136,10 @@
     {% if next_page %}<a class="btn" href="{{ next_page }}">下一页</a>{% endif %}
   </nav>
   {% endif %}
+  {% else %}
+  <div class="panel empty-state">暂无服务器。添加服务器后即可配置站点巡检。</div>
+  {% endif %}
 </section>
-{% else %}
-<div class="panel empty-state">暂无服务器。添加服务器后即可配置站点巡检。</div>
 {% endif %}
 <script src="/static/server-list.js" defer></script>
 {% endblock %}

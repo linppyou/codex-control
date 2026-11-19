@@ -45,6 +45,7 @@ from codexctl.web.dependencies import (
     current_user,
     session_csrf,
 )
+from codexctl.web.navigation import navigation
 
 PRELOGIN_COOKIE = "codexctl_prelogin"
 log = logging.getLogger(__name__)
@@ -168,6 +169,10 @@ def create_app(
         context.setdefault("is_admin", context["admin"] == "admin")
         context.setdefault("gateway_enabled", bool(gateway))
         context.setdefault("managed", ctx.settings.manages_local_codex)
+        if context["admin"]:
+            context["navigation"] = navigation(
+                request, context["admin"], context["is_admin"], context["managed"], context["gateway_enabled"]
+            )
         context.setdefault("msg", request.query_params.get("msg", "") if flash else "")
         context.setdefault("err", request.query_params.get("err", "") if flash else "")
         return app.state.templates.TemplateResponse(request, name, context, status_code=status)

@@ -60,6 +60,7 @@ GET /accounts/{label}/models
 GET /accounts/{label}/quota
 GET /accounts/{label}/quota.csv
 GET /audit
+GET /dashboard/server-metrics
 GET /favicon.ico
 GET /login
 GET /pricing

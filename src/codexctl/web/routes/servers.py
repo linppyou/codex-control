@@ -19,6 +19,7 @@ import codexctl.sites.ssh as site_ssh
 import codexctl.wp_center as wp_center_service
 from codexctl.vault import VaultError
 from codexctl.web.dependencies import current_admin, current_user
+from codexctl.web.navigation import site_view
 
 PAGE_SIZE = 50
 STATUSES = {
@@ -211,6 +212,7 @@ def register(app) -> None:
 
         return render(
             request, "servers.html", admin=admin[0], csrf=admin[1], summary=summary, groups=groups,
+            site_view=site_view(request),
             server_ids=server_ids, dates=dates, states=states, q=q, available_dates=available_dates, statuses=STATUSES,
             reasons=REASONS, probe_state=_probe_state, total=len(rows), filtered=len(filtered),
             anomalies=sum(counts[key] for key in ("down", "restricted", "redirect", "http_only")),

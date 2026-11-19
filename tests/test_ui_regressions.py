@@ -5,6 +5,58 @@ from test_web_pages import add_acc, c, mgr
 import codexctl.repo as repo
 
 
+def current_link(page, nav_class):
+    navigation = page.split(f'<nav class="{nav_class}"', 1)[1].split("</nav>", 1)[0]
+    return navigation.split('aria-current=', 1)[1].split(">", 1)[1].split("</a>", 1)[0]
+
+
+def test_navigation_selects_parent_module_and_tab(c, ctx):
+    add_acc(ctx)
+    ctx.test_users.add("alice")
+    cases = (
+        ("/", "数据面板", "总览"),
+        ("/usage", "数据面板", "会话用量"),
+        ("/audit", "数据面板", "审计"),
+        ("/servers", "服务器", "服务器清单"),
+        ("/servers?view=sites", "服务器", "网站巡检"),
+        ("/servers?server_id=legacy", "服务器", "网站巡检"),
+        ("/accounts", "Codex", "账号管理"),
+        ("/accounts/acc1/quota", "Codex", "账号管理"),
+        ("/tasks", "Codex", "任务"),
+        ("/skills", "Codex", "Skill 管理"),
+        ("/pricing", "Codex", "价目表"),
+        ("/users/alice", "用户", "用户列表"),
+    )
+    for path, module, tab in cases:
+        response = c.get(path)
+        assert response.status_code == 200
+        assert current_link(response.text, "primary-nav") == module
+        assert current_link(response.text, "module-tabs") == tab
+
+
+def test_navigation_member_links_follow_existing_permissions(c, ctx):
+    from fastapi.testclient import TestClient
+
+    import codexctl.users.webauth as webauth
+    from codexctl.web.app import SESSION_COOKIE
+
+    ctx.test_users.add("alice")
+    token, _ = webauth.create_session(ctx.conn, "alice", now=ctx.now())
+    member = TestClient(c.app)
+    member.cookies.set(SESSION_COOKIE, token)
+    own_page = member.get("/users/alice").text
+    primary = own_page.split('<nav class="primary-nav"', 1)[1].split("</nav>", 1)[0]
+    assert all(label in primary for label in ("服务器", "Codex", "用户"))
+    assert "数据面板" not in primary
+    assert current_link(own_page, "module-tabs") == "我的数据"
+    tasks = member.get("/tasks").text
+    assert current_link(tasks, "module-tabs") == "任务"
+    assert 'href="/accounts"' not in tasks
+    assert 'href="/skills"' not in tasks
+    assert member.get("/skills").status_code == 403
+    assert member.get("/users/bob").status_code == 403
+
+
 class Inputs(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -70,6 +122,37 @@ def test_dashboard_account_users_follow_current_assignments(c, ctx):
     cards = {card["label"]: card for card in _account_rows(ctx)}
     assert cards["first"]["users"] == ["zoe"]
     assert cards["second"]["users"] == ["alice"]
+
+
+def test_dashboard_prioritizes_accounts_with_remaining_quota(c, ctx):
+    entries = [
+        ("alpha-unknown", None),
+        ("bravo-empty", 100),
+        ("charlie-available", 40),
+        ("delta-available", 90),
+        ("echo-empty", 100),
+    ]
+    for label, used in entries:
+        account = add_acc(ctx, label=label, account_id=label)
+        if used is not None:
+            repo.insert_quota_sample(
+                ctx.conn, account.id, ctx.now(), "secondary", used, 10080, ctx.now() + 86400, "api",
+            )
+    page = c.get("/").text
+    ordered = ["charlie-available", "delta-available", "alpha-unknown", "bravo-empty", "echo-empty"]
+    positions = [page.index(f'href="/accounts/{label}/quota"') for label in ordered]
+    assert positions == sorted(positions)
+    available, collapsed = page.split('<details class="unavailable-accounts">', 1)
+    assert "charlie-available" in available and "delta-available" in available
+    assert all(label in collapsed for label in ("alpha-unknown", "bravo-empty", "echo-empty"))
+    assert "无额度或暂无数据的账号" in collapsed and "3 个" in collapsed
+
+
+def test_dashboard_collapses_all_accounts_without_quota(c, ctx):
+    add_acc(ctx)
+    page = c.get("/").text
+    assert '<details class="unavailable-accounts">' in page
+    assert page.index('<details class="unavailable-accounts">') < page.index('href="/accounts/acc1/quota"')
 
 
 def test_price_fields_have_names_and_mobile_layout(c):
