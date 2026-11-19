@@ -421,7 +421,7 @@ def test_overview_groups_filters_and_paginates(ctx, monkeypatch):
         else site_probe.Probe("up", 200),
     )
     sites._refresh(ctx.conn, ctx)
-    first = client.get("/servers").text
+    first = client.get("/servers?view=sites").text
     assert 'datetime="2026-11-15"' in first and "site00.com" in first and "site50.com" not in first
     assert first.count('<details class="panel flush site-server">') == 2
     first_server, next_server = first.split(f'id="site-server-{other.id}"', 1)
@@ -493,10 +493,10 @@ def test_overview_combines_multiple_filter_values(ctx, monkeypatch):
         for value in values:
             assert f'type="checkbox" name="{name}" value="{value}" checked' in page.text
     assert page.text.count("已选 2 项") == 3
-    assert 'href="/servers">清除筛选</a>' in page.text
+    assert 'href="/servers?view=sites">清除筛选</a>' in page.text
     unfiltered = client.get("/servers?server_id=invalid&date=invalid&state=invalid").text
     assert "筛选结果 5 个站点" in unfiltered
-    assert 'href="/servers">清除筛选</a>' not in unfiltered
+    assert 'href="/servers?view=sites">清除筛选</a>' not in unfiltered
 
 
 def test_overview_separates_timeouts_from_confirmed_failures(ctx, monkeypatch):
@@ -619,7 +619,7 @@ def test_pages_tolerate_malformed_historical_inventory(ctx):
     assert inventory.rows[0]["created_at"] is None
     assert inventory.rows[0]["public"]["state"] == "pending"
     assert inventory.error == "部分站点缓存格式异常，请重新采集"
-    response = client.get("/servers")
+    response = client.get("/servers?view=sites")
     assert response.status_code == 200 and "valid.example.com" in response.text
     assert "日期未知" in response.text
     assert client.get("/").status_code == 200

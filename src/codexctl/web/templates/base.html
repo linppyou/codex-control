@@ -11,33 +11,44 @@
 </head>
 <body>
 {% if admin %}
-{% set path = request.url.path %}
-<header class="nav">
-  <a class="brand" href="/"><img src="/static/favicon.svg" alt="">codexctl</a>
-  <nav>
-    {% if is_admin %}
-    {% for href, text in (("/", "总览"), ("/accounts", "账号"), ("/users", "用户"), ("/usage", "用量"), ("/pricing", "价目表"), ("/audit", "审计")) %}
-    {% if managed or gateway_enabled or href != "/users" %}
-    <a href="{{ href }}"{% if path == href or (href != "/" and path.startswith(href ~ "/")) %} class="on"{% endif %}>{{ text }}</a>
-    {% endif %}
+<div class="app-shell">
+  <aside class="sidebar">
+    <input class="menu-checkbox" type="checkbox" id="menu-open" aria-label="展开导航菜单">
+    <div class="sidebar-head">
+      <a class="brand" href="/"><img src="/static/favicon.svg" alt="">codexctl</a>
+      <label class="menu-toggle" for="menu-open">导航菜单</label>
+    </div>
+    <div class="sidebar-content">
+      <nav class="primary-nav" aria-label="主导航">
+        {% for group in navigation %}
+        <a href="{{ group.href }}"{% if group.active %} class="on" aria-current="location"{% endif %}>{{ group.label }}</a>
+        {% endfor %}
+      </nav>
+      <form method="post" action="/logout" class="who">
+        <span class="avatar">{{ admin[:1]|upper }}</span>
+        <span class="who-name"><strong>{{ admin }}</strong><span>{{ "管理员面板" if is_admin else "用户面板" }}</span></span>
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit" class="btn small">退出</button>
+      </form>
+    </div>
+  </aside>
+  <div class="workspace">
+    {% for group in navigation if group.active %}
+    <nav class="module-tabs" aria-label="{{ group.label }}导航">
+      {% for tab in group.tabs %}
+      <a href="{{ tab.href }}"{% if tab.active %} class="on" aria-current="page"{% endif %}>{{ tab.label }}</a>
+      {% endfor %}
+    </nav>
     {% endfor %}
-    {% else %}
-    <a href="/users/{{ admin }}"{% if path == '/users/' ~ admin %} class="on" aria-current="page"{% endif %}>我的数据</a>
-    {% endif %}
-    <a href="/servers"{% if path == "/servers" or path.startswith("/servers/") %} class="on" aria-current="page"{% endif %}>服务器</a>
-    <a href="/tasks"{% if path == '/tasks' or path.startswith('/tasks/') %} class="on" aria-current="page"{% endif %}>任务</a>
-  </nav>
-  <form method="post" action="/logout" class="who">
-    <span class="avatar">{{ admin[:1]|upper }}</span><span class="name">{{ admin }} · {{ "管理员面板" if is_admin else "用户面板" }}</span>
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <button type="submit" class="btn small">退出</button>
-  </form>
-</header>
 {% endif %}
 <main class="container">
   {% if msg %}<div class="flash ok">{{ msg }}</div>{% endif %}
   {% if err %}<div class="flash bad">{{ err }}</div>{% endif %}
   {% block content %}{% endblock %}
 </main>
+{% if admin %}
+  </div>
+</div>
+{% endif %}
 </body>
 </html>
