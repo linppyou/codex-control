@@ -365,10 +365,10 @@ def test_wp_center_isolates_remote_page_and_checks_proxy_permissions(ctx, monkey
     assert "allow-same-origin" not in document.headers["content-security-policy"]
     assert "codexctl_proxy_upload:true" in document.text
     assert "!window.AI_CENTER_RUNTIME?.codexctl_proxy_upload" in document.text
-    assert reader.get(path).status_code == reader.get(path + "/document").status_code == 403
+    assert reader.get(path).status_code == reader.get(path + "/document").status_code == 200
     proxy = path + "/proxy/plugin?s=start_resource_upload"
     data = {"payload": '{"name":"test.csv"}'}
-    assert reader.post(proxy, data=data, headers={"X-CSRFToken": reader_csrf}).status_code == 403
+    assert reader.post(proxy, data=data, headers={"X-CSRFToken": reader_csrf}).status_code == 200
     assert admin.post(proxy, data=data).status_code == 403
     assert admin.post(proxy, data=data, headers={"X-CSRFToken": csrf}).json() == {
         "status": True, "data": {"chunk_size": wp_center.PROXY_UPLOAD_CHUNK_SIZE},

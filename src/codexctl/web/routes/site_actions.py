@@ -12,7 +12,7 @@ import codexctl.sites.access as site_access
 import codexctl.sites.inventory as inventory
 import codexctl.sites.panel as panel
 import codexctl.sites.registry as registry
-from codexctl.web.dependencies import current_admin
+from codexctl.web.dependencies import current_admin, current_user
 
 
 def bump_generation(conn, server_id: str) -> None:
@@ -128,7 +128,7 @@ def register(app) -> None:
         return {"done": bool(record["attempted_at"]), "error": record["error"]}
 
     @app.get("/servers/{server_id}/sites/{site_id}/{operation}")
-    def site_read(server_id: str, site_id: str, operation: str, admin: tuple[str, str] = Depends(current_admin)):
+    def site_read(server_id: str, site_id: str, operation: str, admin: tuple[str, str] = Depends(current_user)):
         if not re.fullmatch(r"[0-9a-f]{32}", server_id):
             raise HTTPException(404, "服务器不存在")
         if operation not in {"inspect", "waf"}:
@@ -154,8 +154,10 @@ def register(app) -> None:
         name: str = Form(""), enabled: str = Form(""), expected: str = Form(""),
         remark: str = Form(""), path: str = Form(""), confirm: str = Form(""),
         delete_ftp: str = Form("false"), delete_database: str = Form("false"), delete_path: str = Form("false"),
-        admin: tuple[str, str] = Depends(current_admin),
+        admin: tuple[str, str] = Depends(current_user),
     ):
+        if operation == "delete" and admin[0] != "admin":
+            raise HTTPException(403, "仅管理员可以删除网站")
         if not re.fullmatch(r"[0-9a-f]{32}", server_id):
             raise HTTPException(404, "服务器不存在")
         if operation not in {"waf", "state", "remark", "delete", "probe"}:

@@ -128,16 +128,14 @@
               <span>运行状态 <strong>{{ '运行中' if row.enabled is true else '已停用' if row.enabled is false else '待采集' }}</strong>{% if (row.data_stale or row.management_stale) and row.enabled is not none %} <span class="hint">上次数据</span>{% endif %}</span>
               <span>防火墙 <strong>{{ '已开启' if row.waf_enabled is true else '已关闭' if row.waf_enabled is false else '未知' }}</strong>{% if (row.waf_stale or row.data_stale) and row.waf_enabled is not none %} <span class="hint">上次数据</span>{% endif %}{% if row.waf_time %} <span class="hint">读取于 {{ row.waf_time }}</span>{% endif %}</span>
             </div>
-            {% if is_admin %}
             <div class="site-actions">
               <button type="button" class="btn small" data-site-action="probe">检测</button>
               <button type="button" class="btn small" data-site-action="waf"{% if not row.can_manage %} disabled title="需要宝塔站点信息和共享 SSH 管理接入"{% endif %}>防火墙</button>
               <button type="button" class="btn small" data-site-action="state"{% if not row.can_manage or row.enabled is none %} disabled title="需要先采集运行状态"{% endif %}>{{ '停用' if row.enabled is true else '启用' }}</button>
               <button type="button" class="btn small" data-site-action="remark"{% if not row.can_manage %} disabled title="需要宝塔站点信息和共享 SSH 管理接入"{% endif %}>备注</button>
               {% if row.can_manage %}<a class="btn small" href="/servers/{{ server.id }}/wp-center?site_id={{ row.id|urlencode }}" target="_blank" rel="noopener noreferrer">换域名 ↗</a>{% else %}<button class="btn small" type="button" disabled>换域名</button>{% endif %}
-              <button type="button" class="btn small site-delete" data-site-action="delete"{% if not row.can_manage %} disabled title="需要宝塔站点信息和共享 SSH 管理接入"{% endif %}>删除</button>
+              {% if is_admin %}<button type="button" class="btn small site-delete" data-site-action="delete"{% if not row.can_manage %} disabled title="需要宝塔站点信息和共享 SSH 管理接入"{% endif %}>删除</button>{% endif %}
             </div>
-            {% endif %}
           </div>
         </li>
         {% endfor %}
@@ -159,7 +157,6 @@
   {% else %}
   <div class="panel empty-state">暂无服务器。添加服务器后即可配置站点巡检。</div>
   {% endif %}
-  {% if is_admin %}
   <dialog class="site-dialog" data-site-dialog aria-labelledby="site-dialog-title">
     <h2 id="site-dialog-title" data-dialog-title></h2>
     <p class="hint" data-dialog-target></p>
@@ -167,9 +164,8 @@
     <p class="site-dialog-error" data-dialog-error role="alert"></p>
     <div class="site-dialog-buttons"><button class="btn" type="button" data-dialog-close>取消</button><button class="btn primary" type="button" data-dialog-submit>确定</button></div>
   </dialog>
-  {% endif %}
 </section>
 {% endif %}
 <script src="/static/server-list.js" defer></script>
-{% if site_view and is_admin %}<script src="/static/site-actions.js" defer></script>{% endif %}
+{% if site_view %}<script src="/static/site-actions.js" defer></script>{% endif %}
 {% endblock %}
