@@ -9,10 +9,7 @@ from dataclasses import dataclass
 from uuid import uuid4
 
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import (
-    Ed25519PrivateKey,
-    Ed25519PublicKey,
-)
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import codexctl.db as db
 import codexctl.events as events
@@ -22,6 +19,13 @@ from codexctl.context import Context
 from codexctl.vault import Vault
 
 COLLECTOR = "/usr/local/libexec/codexctl-site-inventory"
+HOST_KEY_ALGORITHMS = {
+    "ssh-ed25519": ("ssh-ed25519",),
+    "ecdsa-sha2-nistp256": ("ecdsa-sha2-nistp256",),
+    "ecdsa-sha2-nistp384": ("ecdsa-sha2-nistp384",),
+    "ecdsa-sha2-nistp521": ("ecdsa-sha2-nistp521",),
+    "ssh-rsa": ("rsa-sha2-512", "rsa-sha2-256"),
+}
 
 
 @dataclass(frozen=True)
@@ -62,6 +66,19 @@ def get(conn: sqlite3.Connection, server_id: str) -> Server | None:
     return Server(**dict(row)) if row else None
 
 
+def normalize_host_key(host_key: str) -> str | None:
+    parts = host_key.split()
+    if not parts:
+        return None
+    try:
+        if len(parts) < 2 or parts[0] not in HOST_KEY_ALGORITHMS or len(parts[1]) > 4096:
+            raise ValueError
+        key = serialization.load_ssh_public_key(" ".join(parts[:2]).encode())
+    except ValueError as exc:
+        raise ServerError("请输入完整的 Ed25519、ECDSA 或 RSA 主机公钥") from exc
+    return key.public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH).decode()
+
+
 def _validate(name: str, host: str, port: str, host_key: str) -> tuple[str, str, int, str | None]:
     name = name.strip()
     if not name or len(name) > 60 or any(unicodedata.category(char).startswith("C") for char in name):
@@ -77,19 +94,7 @@ def _validate(name: str, host: str, port: str, host_key: str) -> tuple[str, str,
     port = port.strip()
     if not port.isascii() or not port.isdecimal() or len(port) > 5 or not 1 <= int(port) <= 65535:
         raise ServerError("SSH 端口应为 1 至 65535")
-    parts = host_key.split()
-    pinned = None
-    if parts:
-        try:
-            if len(parts) < 2 or parts[0] != "ssh-ed25519" or len(parts[1]) > 128:
-                raise ValueError
-            key = serialization.load_ssh_public_key(" ".join(parts[:2]).encode())
-            if not isinstance(key, Ed25519PublicKey):
-                raise ValueError
-            pinned = key.public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH).decode()
-        except ValueError as exc:
-            raise ServerError("请输入完整的 ssh-ed25519 主机公钥") from exc
-    return name, str(ip), int(port), pinned
+    return name, str(ip), int(port), normalize_host_key(host_key)
 
 
 def _aad(server_id: str) -> bytes:

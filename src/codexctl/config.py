@@ -107,8 +107,9 @@ def load_settings(path: Path | None) -> Settings:
     if path is None or not path.exists():
         return Settings()
     data = tomllib.loads(path.read_text(encoding="utf-8"))
-    # Accept existing deployments after removal of the built-in WP center.
+    # Ignore retired settings in existing deployments.
     data.pop("wp_ssh_key", None)
+    data.pop("site_ssh_trusted_hosts", None)
     known = {f.name for f in fields(Settings)}
     kwargs = {}
     for key, value in data.items():

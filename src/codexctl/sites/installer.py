@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import urllib.error
 import urllib.request
@@ -12,6 +13,17 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 SETTINGS = {}
+INSTALL_ERRORS = {
+    10: "请在目标站点服务器上以 root 执行接入命令",
+    11: "未找到宝塔站点数据库，请核对目标服务器",
+    12: "采集脚本自检失败，请检查宝塔数据库及 Python 3 环境",
+    127: "目标服务器缺少 Python 3",
+}
+
+
+def fail(code):
+    print(INSTALL_ERRORS[code], file=sys.stderr)
+    raise SystemExit(code)
 
 
 def atomic_write(path, content, mode):
@@ -28,13 +40,23 @@ def atomic_write(path, content, mode):
             os.unlink(temporary)
 
 
+def local_host_key():
+    for algorithm in ("ed25519", "ecdsa", "rsa"):
+        path = Path(f"/etc/ssh/ssh_host_{algorithm}_key.pub")
+        if path.is_file():
+            return path.read_text().strip()
+    raise SystemExit("未找到 SSH 主机公钥，请在服务器详情页配置主机公钥后重试")
+
+
 def main():
     if os.geteuid() != 0:
-        raise SystemExit("请在目标站点服务器上以 root 执行接入命令")
+        fail(10)
     panel = Path("/www/server/panel")
     if not any((panel / name).is_file() for name in ("data/db/site.db", "data/default.db")):
-        raise SystemExit("未找到宝塔站点数据库，请确认在目标宝塔服务器执行")
-    host_key = Path("/etc/ssh/ssh_host_ed25519_key.pub").read_text().strip()
+        fail(11)
+    callback = SETTINGS["callback"]
+    if callback:
+        host_key = SETTINGS["host_key"] or local_host_key()
     collector = Path("/usr/local/libexec/codexctl-site-inventory")
     collector.parent.mkdir(parents=True, exist_ok=True)
     ssh = Path("/root/.ssh")
@@ -43,10 +65,11 @@ def main():
     with (ssh / ".codexctl-enrollment.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         atomic_write(collector, base64.b64decode(SETTINGS["collector"]), 0o755)
-        result = subprocess.run([str(collector)], capture_output=True, text=True, timeout=25)
-        if result.returncode:
-            raise SystemExit("采集脚本自检失败，请检查宝塔数据库及 Python 3 环境")
-        json.loads(result.stdout)
+        try:
+            result = subprocess.run([str(collector)], capture_output=True, text=True, timeout=25, check=True)
+            json.loads(result.stdout)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            fail(12)
         authorized = ssh / "authorized_keys"
         lines = authorized.read_text().splitlines() if authorized.exists() else []
         keys = [SETTINGS["authorized_key"]]
@@ -58,8 +81,10 @@ def main():
             lines = [line for line in lines if public_key not in line.split()]
             lines.append(authorization)
         atomic_write(authorized, ("\n".join(lines) + "\n").encode(), 0o600)
+    if not callback:
+        return
     request = urllib.request.Request(
-        SETTINGS["callback"], data=urlencode({"host_key": host_key}).encode(),
+        callback, data=urlencode({"host_key": host_key}).encode(),
         headers={"Authorization": "Bearer " + SETTINGS["token"]},
     )
     try:

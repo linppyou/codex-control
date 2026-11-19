@@ -103,6 +103,7 @@ POST /servers
 POST /servers/{server_id}/delete
 POST /servers/{server_id}/edit
 POST /servers/{server_id}/enrollment
+POST /servers/{server_id}/enrollment/password
 POST /servers/{server_id}/wp-center/proxy/{endpoint}
 POST /site-enrollment/complete
 POST /site-enrollment/install
