@@ -41,7 +41,7 @@
     </nav>
     {% endfor %}
 {% endif %}
-<main class="container">
+<main class="container{% block container_class %}{% endblock %}">
   {% if msg %}<div class="flash ok">{{ msg }}</div>{% endif %}
   {% if err %}<div class="flash bad">{{ err }}</div>{% endif %}
   {% block content %}{% endblock %}

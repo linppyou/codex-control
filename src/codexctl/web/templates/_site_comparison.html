@@ -2,7 +2,6 @@
 <section class="panel flush analytics-panel" id="site-comparison" aria-labelledby="site-comparison-title">
   <div class="panel-head">
     <div><h2 id="site-comparison-title">建站数据看板</h2><div class="analytics-subtitle">每日建站数量 · 北京时间 · 按当前站点清单的创建日期统计</div></div>
-    <nav class="analytics-range" aria-label="选择建站统计时间范围">{% for n in (7, 30, 90) %}<a href="?days={{ n }}#site-comparison"{% if days == n %} class="active" aria-current="page"{% endif %}>{{ n }} 天</a>{% endfor %}</nav>
   </div>
   <div class="analytics-metrics site-analytics-metrics">
     <div><span>近 {{ days }} 天建站</span><strong>{{ '{:,}'.format(sc.total) }} <small>个</small></strong></div>

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block container_class %} container-wide{% endblock %}
 {% block title %}{{ '网站' if site_view else '服务器' }} · codexctl{% endblock %}
 {% macro probe_result(result, status) %}
   <span class="badge {{ statuses[status][1] }}">{{ statuses[status][0] }}</span>

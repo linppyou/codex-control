@@ -47,8 +47,10 @@ def register(app) -> None:
                 }
                 for a in events.open_alerts(ctx.conn)
             ]
+            severity = {"critical": 3, "error": 2, "warning": 1, "warn": 1}
+            top_alert = max(alerts, key=lambda alert: severity.get(alert["level"], 0), default=None)
         return render(request, "dashboard.html", admin=admin[0], csrf=admin[1], cards=cards, alerts=alerts,
-                      available_count=available_count, servers=servers, site_analytics=site_analytics,
+                      top_alert=top_alert, available_count=available_count, servers=servers, site_analytics=site_analytics,
                       **analytics, **_flash(msg, err))
 
     def read_metrics(refresh: bool, requested_at: float) -> dict:

@@ -1,8 +1,9 @@
 {% extends "base.html" %}
 {% block title %}总览 - codexctl{% endblock %}
+{% block container_class %} container-wide dashboard{% endblock %}
 {% macro server_metric(key, label) %}
-<div class="server-metric" data-metric="{{ key }}" aria-label="{{ label }}，等待采集">
-  <div class="server-metric-copy"><span>{{ label }}</span><strong data-detail>—</strong></div>
+<div class="server-metric" data-metric="{{ key }}" role="group" aria-label="{{ label }}，等待采集">
+  <div class="server-metric-copy" aria-hidden="true"><span>{{ label }}</span><strong data-detail>—</strong></div>
   <svg class="server-meter" viewBox="0 0 52 52" aria-hidden="true">
     <circle class="server-meter-track" cx="26" cy="26" r="21"/>
     <circle class="server-meter-fill" cx="26" cy="26" r="21" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 26 26)"/>
@@ -68,8 +69,40 @@
   </div>
 </div>
 {% endmacro %}
+{% macro server_card(server) %}
+<article class="server-metrics-card" data-server-id="{{ server.id }}">
+  {% set site_count = site_analytics.site_counts.get(server.id) %}
+  <div class="server-metrics-head">
+    <div class="server-identity">
+      <a class="server-name" href="/servers/{{ server.id }}">{{ server.name }}</a>
+      <div class="hint server-wrap">IP <span class="mono">{{ server.host }}</span></div>
+    </div>
+    {% if site_count is not none %}
+    <a class="server-site-count" href="/servers?server_id={{ server.id }}"><strong>{{ site_count }}</strong> 个站点</a>
+    {% else %}
+    <span class="server-site-count pending">站点待采集</span>
+    {% endif %}
+  </div>
+  <div class="server-metrics-grid">
+    {{ server_metric('load', '负载') }}
+    {{ server_metric('cpu', 'CPU') }}
+    {{ server_metric('memory', '内存') }}
+    {{ server_metric('disk', '磁盘 /') }}
+  </div>
+  <div class="hint server-status" data-server-status role="status">等待读取</div>
+</article>
+{% endmacro %}
 {% block content %}
-<div class="page-head"><div><h1>总览</h1><div class="sub">Codex 额度、服务器状态与数据趋势</div></div></div>
+<div class="page-head dashboard-heading">
+  <h1>总览</h1>
+  <a class="dashboard-alert-link" href="#dashboard-alerts">
+    {% if top_alert %}<span class="badge {{ top_alert.level }}">{{ {'critical': '严重', 'error': '错误', 'warning': '警告', 'warn': '警告', 'info': '提示'}.get(top_alert.level, top_alert.level) }}</span>{% endif %}
+    {{ alerts|length }} 条未解决告警
+  </a>
+</div>
+{% if top_alert and top_alert.level in ('critical', 'error') %}
+<p class="dashboard-alert-preview"><strong>{{ top_alert.target }}</strong> <span>{{ top_alert.message }}</span> <time class="mono">{{ top_alert.ts }}</time></p>
+{% endif %}
 <div class="dashboard-overview">
 <section class="dashboard-codex" aria-label="Codex 账号概况">
 <div class="section-head"><span class="section-title"><span class="section-mark"></span>Codex</span><span class="muted mono">{{ cards|length }} 个账号</span></div>
@@ -95,29 +128,7 @@
   </div>
   <div class="server-metrics-list" data-server-metrics>
   {% for server in servers %}
-    {% set site_count = site_analytics.site_counts.get(server.id) %}
-    <article class="server-metrics-card" data-server-id="{{ server.id }}">
-      <div class="server-metrics-head">
-        <div>
-          <a class="server-name" href="/servers/{{ server.id }}">{{ server.name }}</a>
-          <div class="hint server-meta">
-            <span class="server-wrap">IP <span class="mono">{{ server.host }}</span></span>
-            {% if site_count is not none %}
-            <a href="/servers?server_id={{ server.id }}">{{ site_count }} 个站点</a>
-            {% else %}
-            <span>站点待采集</span>
-            {% endif %}
-          </div>
-        </div>
-        <span class="hint" data-server-status role="status">等待读取</span>
-      </div>
-      <div class="server-metrics-grid">
-        {{ server_metric('load', '负载') }}
-        {{ server_metric('cpu', 'CPU') }}
-        {{ server_metric('memory', '内存') }}
-        {{ server_metric('disk', '磁盘 /') }}
-      </div>
-    </article>
+    {{ server_card(server) }}
   {% else %}
     <div class="panel empty-state">暂无服务器，<a href="/servers">添加服务器</a></div>
   {% endfor %}
@@ -125,18 +136,22 @@
   {% if servers %}<noscript><p class="hint">实时服务器指标需要启用 JavaScript。</p></noscript>{% endif %}
 </section>
 </div>
+<div class="section-head dashboard-trends-heading">
+  <h2 class="section-title"><span class="section-mark"></span>数据趋势</h2>
+  <nav class="analytics-range" aria-label="用户用量与建站统计的时间范围">{% for n in (7, 30, 90) %}<a href="?days={{ n }}#comparison"{% if days == n %} class="active" aria-current="page"{% endif %}>{{ n }} 天</a>{% endfor %}</nav>
+</div>
 <div class="dashboard-comparisons">
 {% include "_user_comparison.html" %}
 {% include "_site_comparison.html" %}
 </div>
-<div class="section-head"><span class="section-title"><span class="section-mark red"></span>未解决告警</span><span class="muted mono">{{ alerts|length }} 条</span></div>
+<div class="section-head" id="dashboard-alerts"><h2 class="section-title"><span class="section-mark red"></span>未解决告警</h2><span class="muted mono">{{ alerts|length }} 条</span></div>
 <div class="panel flush">
 {% if alerts %}
-<div class="table-wrap"><table>
+<div class="table-wrap"><table class="mobile-cards dashboard-alerts-table">
   <thead><tr><th>级别</th><th>类型</th><th>对象</th><th>消息</th><th>时间</th></tr></thead>
   <tbody>
   {% for a in alerts %}
-  <tr><td><span class="badge {{ a.level }}">{{ a.level }}</span></td><td class="mono">{{ a.kind }}</td><td>{{ a.target }}</td><td>{{ a.message }}</td><td class="mono nowrap">{{ a.ts }}</td></tr>
+  <tr><td data-label="级别"><span class="badge {{ a.level }}">{{ a.level }}</span></td><td data-label="类型" class="mono">{{ a.kind }}</td><td data-label="对象">{{ a.target }}</td><td data-label="消息" class="mobile-wide">{{ a.message }}</td><td data-label="时间" class="mono">{{ a.ts }}</td></tr>
   {% endfor %}
   </tbody>
 </table></div>

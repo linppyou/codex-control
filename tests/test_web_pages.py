@@ -851,7 +851,7 @@ def test_usage_comparison_panel_renders(ctx):
     assert "alice" in html and "bob" in html and "未定价" in html
     assert 'compare-line compare-0' in html and 'compare-line compare-1' in html
     assert 'data-series-toggle="0" aria-pressed="true"' in html
-    assert html.index('>Codex</span>') < html.index('>用户用量对比</h2>') < html.index('>未解决告警</span>')
+    assert html.index('>Codex</span>') < html.index('>用户用量对比</h2>') < html.index('id="dashboard-alerts"')
     assert '折线图' in html and '查看每日用户用量' in html
     assert 'data-chart-kind="comparison"' in html and 'data-chart-names=' in html
     assert html.count('class="chart-hit"') == 7

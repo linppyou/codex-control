@@ -99,6 +99,21 @@ def test_dashboard_title_contains_only_title_text(c):
     assert page.count('src="/static/chart-inspector.js"') == 1
 
 
+def test_dashboard_summarizes_highest_severity_and_uses_one_date_filter(c, ctx):
+    from codexctl.events import raise_alert
+
+    raise_alert(ctx.conn, "critical", "quota", "critical account", "Quota exhausted", now=ctx.now() - 5)
+    raise_alert(ctx.conn, "warning", "refresh", "recent account", "Delayed update", now=ctx.now())
+
+    page = c.get("/?days=30").text
+    header = page.split('<div class="dashboard-overview">', 1)[0]
+    assert 'href="#dashboard-alerts"' in header
+    assert "2 条未解决告警" in header
+    assert "critical account" in header and "recent account" not in header
+    assert page.count('class="analytics-range"') == 1
+    assert 'href="?days=30#comparison" class="active"' in page
+
+
 def test_dashboard_account_users_follow_current_assignments(c, ctx):
     from codexctl.web.views import _account_rows
 

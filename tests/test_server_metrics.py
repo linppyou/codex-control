@@ -79,6 +79,19 @@ def test_metrics_handle_unavailable_and_malformed_servers(ctx, monkeypatch):
     }
 
 
+def test_dashboard_shows_every_server_with_four_gauges(c, ctx):
+    servers = [create(ctx, name=f"服务器 {i}", host=f"198.144.159.{i}") for i in range(1, 10)]
+
+    response = c.get("/")
+
+    assert response.status_code == 200
+    region = response.text.split('data-server-metrics>', 1)[1].split('</section>', 1)[0]
+    assert '<details' not in region
+    for server in servers:
+        card = region.split(f'data-server-id="{server.id}">', 1)[1].split('</article>', 1)[0]
+        assert card.count('class="server-meter"') == 4
+
+
 def test_metrics_isolate_decoder_recursion(ctx, monkeypatch):
     server = create(ctx)
 

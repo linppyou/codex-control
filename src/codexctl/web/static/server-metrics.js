@@ -24,6 +24,7 @@
   function render(card, result, updatedAt) {
     var status = card.querySelector('[data-server-status]');
     if (result.error) {
+      status.dataset.state = 'error';
       status.textContent = card.dataset.hasMetrics ? result.error + ' · 上次 ' + card.dataset.updatedAt : result.error;
       return;
     }
@@ -39,6 +40,7 @@
       gib(data.disk_used) + ' / ' + gib(data.disk_total) + ' GiB');
     card.dataset.hasMetrics = 'true';
     card.dataset.updatedAt = updatedAt;
+    status.dataset.state = 'ok';
     status.textContent = '更新于 ' + updatedAt;
   }
 
@@ -72,5 +74,5 @@
 
   refreshButton.addEventListener('click', function () { refresh(true); });
   refresh();
-  window.setInterval(refresh, 60000);
+  window.setInterval(function () { if (!document.hidden) refresh(false); }, 60000);
 })();

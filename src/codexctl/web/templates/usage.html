@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block container_class %} container-wide{% endblock %}
 {% block title %}用量 - codexctl{% endblock %}
 {% macro cost_cell(n, cost, unpriced=0) -%}
 <td class="num{% if not n %} muted{% endif %}" title="{{ '{:,}'.format(n) }} tokens{% if cost is not none %} · 估算 {{ cost|usd }}{% endif %}{% if unpriced %} · {{ unpriced }} 个模型未定价{% endif %}">{{ n|tokens }}{% if n %}<div class="cost{% if cost is none %} muted{% endif %}">{% if cost is not none %}{{ cost|usd }}{% if unpriced %}*{% endif %}{% else %}未定价{% endif %}</div>{% endif %}</td>
