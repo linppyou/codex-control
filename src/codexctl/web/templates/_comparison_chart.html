@@ -26,7 +26,7 @@
         <rect class="chart-hit" x="{{ d.x if loop.first else d.x - chart.step_x / 2 }}" y="25"
           width="{{ chart.step_x / 2 if loop.first or loop.last else chart.step_x }}" height="160"
           tabindex="-1" data-day="{{ d.day }}" data-values="{{ d['values']|tojson|forceescape }}"
-          data-total="{{ d.total }}"{% if d.partial %} data-partial-week{% endif %} aria-label="{{ d.day }}"/>
+          data-total="{{ d.total }}"{% if tokens %} data-values-short="{{ d['values']|map('tokens')|list|tojson|forceescape }}" data-total-short="{{ d.total|tokens }}"{% endif %}{% if d.partial %} data-partial-week{% endif %} aria-label="{{ d.day }}"/>
         {% endfor %}
       </svg>
       {% if chart.show_points %}

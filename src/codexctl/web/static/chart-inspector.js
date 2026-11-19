@@ -70,10 +70,11 @@
       inspector.appendChild(date);
       if (chart.dataset.chartKind === 'comparison') {
         var values = JSON.parse(hit.dataset.values);
+        var shortValues = hit.dataset.valuesShort ? JSON.parse(hit.dataset.valuesShort) : [];
         names.forEach(function (name, i) {
-          if (!toggles[i] || toggles[i].getAttribute('aria-pressed') === 'true') value(name, values[i], null, i);
+          if (!toggles[i] || toggles[i].getAttribute('aria-pressed') === 'true') value(name, values[i], shortValues[i], i);
         });
-        value(chart.dataset.chartTotalLabel, hit.dataset.total);
+        value(chart.dataset.chartTotalLabel, hit.dataset.total, hit.dataset.totalShort);
       } else {
         value('总 Tokens', hit.dataset.total, hit.dataset.totalShort);
         value('输入', hit.dataset.input, hit.dataset.inputShort);
