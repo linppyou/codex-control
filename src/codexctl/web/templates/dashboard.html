@@ -19,6 +19,8 @@
       {% if c.status_text %}<span class="badge {{ c.status }}">{{ c.status_text }}</span>{% endif %}
     </span>
   </div>
+  <div class="account-card-body">
+  <div class="account-card-usage">
   <div class="account-users">
     <span class="muted">当前分配用户 · {{ c.users|length }} 人</span>
     <div class="account-user-links">
@@ -30,6 +32,10 @@
   <progress class="remain-bar {{ c.tone }}" max="100" value="{{ c.remaining }}">{{ c.remaining }}%</progress>
   <div class="meta-row mono"><span>已用 {{ c.used }}%</span><span>刷新 {{ c.reset }}</span></div>
   {% if c.other %}<div class="meta-sub mono">{{ c.other.name }} 已用 {{ c.other.used }}% · 刷新 {{ c.other.reset }}</div>{% endif %}
+  {% endif %}
+  </div>
+  <div class="account-card-trend">
+  {% if c.has_quota %}
   <div class="trend-head"><span class="remain-label">走势</span><span class="muted">{{ c.projection }}</span></div>
   {% if c.chart %}
   {% set ch = c.chart %}
@@ -51,6 +57,8 @@
   {% else %}
   <p class="muted nodata">暂无额度数据</p>
   {% endif %}
+  </div>
+  </div>
   <div class="acard-foot">
     <span class="muted mono">同步于 {{ c.synced }}</span>
     <span class="acard-actions">

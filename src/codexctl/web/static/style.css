@@ -250,8 +250,13 @@ input[type=checkbox] { accent-color: var(--green); width: 15px; height: 15px; ve
 @media (max-width: 640px) { .card-grid { grid-template-columns: minmax(0, 1fr); } }
 .dashboard-overview { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: 20px; align-items: start; margin-bottom: 20px; }
 .dashboard-overview > section { min-width: 0; }
-.dashboard-codex .card-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 12px; margin-bottom: 0; }
+.dashboard-codex .card-grid { grid-template-columns: minmax(0, 1fr); gap: 12px; margin-bottom: 0; }
 .dashboard-codex .acard { padding: 16px; }
+.account-card-body { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.account-card-usage, .account-card-trend { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.account-card-usage .meta-row { flex-wrap: wrap; gap: 4px 8px; }
+.dashboard-codex .account-card-trend .trend-head { margin-top: 0; padding-top: 0; border-top: 0; }
+.dashboard-codex .account-card-trend .trend { max-width: 360px; }
 .dashboard-codex .trend-head .remain-label { flex: none; white-space: nowrap; }
 .dashboard-codex .acard-foot { flex-wrap: wrap; gap: 6px 8px; }
 .dashboard-codex .acard-actions { margin-left: auto; white-space: nowrap; }
@@ -283,6 +288,7 @@ input[type=checkbox] { accent-color: var(--green); width: 15px; height: 15px; ve
 .server-meter text { fill: var(--orange); font-size: 11px; font-weight: 700; }
 @media (max-width: 1180px) { .dashboard-overview { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 560px) {
+  .account-card-body { grid-template-columns: minmax(0, 1fr); }
   .server-metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .server-metric:nth-child(3) { padding-left: 0; border-left: 0; }
 }
