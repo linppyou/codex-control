@@ -543,7 +543,7 @@ def test_site_dashboard_counts_creation_dates_per_server(ctx, monkeypatch, days)
     ctx.test_clock.t = int(datetime(2026, 11, 17, 1, tzinfo=sites.BEIJING).timestamp())
     client, _ = login_client(ctx)
     first = create(ctx, name="一号服务器")
-    second = create(ctx, name="二号服务器", host="104.255.153.35")
+    second = create(ctx, name="二号服务器", host="2001:4860:4860::8888")
     midnight = int(datetime(2026, 11, 16, 16, tzinfo=timezone.utc).timestamp())
     rows = [
         sites.Site("1", midnight, ("one.example.com", "www.one.example.com")),
@@ -567,6 +567,10 @@ def test_site_dashboard_counts_creation_dates_per_server(ctx, monkeypatch, days)
     assert data["series"][0]["points"][-1]["value"] == 1
 
     html = client.get(f"/?days={days}").text
+    for server, count in ((first, 5), (second, 1)):
+        card = html.split(f'data-server-id="{server.id}">', 1)[1].split("</article>", 1)[0]
+        assert f'IP <span class="mono">{server.host}</span>' in card
+        assert f'href="/servers?server_id={server.id}">{count} 个站点</a>' in card
     panel = html.split('id="site-comparison"', 1)[1].split('</section>', 1)[0]
     assert html.index('>用户用量对比</h2>') < html.index('id="site-comparison"') < html.index('>未解决告警</span>')
     assert f'href="?days={days}#site-comparison" class="active"' in panel
@@ -592,6 +596,9 @@ def test_site_dashboard_handles_empty_pending_and_stale_inventories(ctx, monkeyp
     assert data["total"] == data["today"] == 0 and data["scale"] == 2
     assert data["series"][0]["points"][-1]["y"] == 175
     html = client.get("/?days=123").text
+    assert f'href="/servers?server_id={first.id}">0 个站点</a>' in html
+    pending_card = html.split(f'data-server-id="{pending.id}">', 1)[1].split("</article>", 1)[0]
+    assert "站点待采集" in pending_card
     assert 'href="?days=7#site-comparison" class="active"' in html
     assert "以下服务器使用上次采集数据" in html
     assert "等待采集的服务器" in html

@@ -16,12 +16,14 @@ def site_comparison(conn: sqlite3.Connection, days: int, now: int) -> dict:
     servers = site_registry.list_servers(conn)
     inventories = sites.snapshots(conn)
     ranking, pending, stale = [], [], []
+    site_counts = {}
     unknown_dates = 0
     for server in servers:
         inventory = inventories.get(server.id)
         if not inventory or inventory.revision != server.revision or inventory.synced_at is None:
             pending.append(server.name)
             continue
+        site_counts[server.id] = len(inventory.rows)
         counts = Counter(sites.deployment_date(row["created_at"]) for row in inventory.rows)
         unknown_dates += counts[None]
         total = sum(count for day, count in counts.items() if day and start.isoformat() <= day <= today.isoformat())
@@ -45,5 +47,6 @@ def site_comparison(conn: sqlite3.Connection, days: int, now: int) -> dict:
     return {
         "ranking": ranking, "daily": daily, "series": series, "scale": scale,
         "total": sum(item["total"] for item in ranking), "today": daily[-1]["total"],
+        "site_counts": site_counts,
         "server_count": len(servers), "pending": pending, "stale": stale, "unknown_dates": unknown_dates,
     }

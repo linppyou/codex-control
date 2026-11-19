@@ -95,8 +95,22 @@
   </div>
   <div class="server-metrics-list" data-server-metrics>
   {% for server in servers %}
+    {% set site_count = site_analytics.site_counts.get(server.id) %}
     <article class="server-metrics-card" data-server-id="{{ server.id }}">
-      <div class="server-metrics-head"><a href="/servers/{{ server.id }}">{{ server.name }}</a><span class="hint" data-server-status role="status">等待读取</span></div>
+      <div class="server-metrics-head">
+        <div>
+          <a class="server-name" href="/servers/{{ server.id }}">{{ server.name }}</a>
+          <div class="hint server-meta">
+            <span class="server-wrap">IP <span class="mono">{{ server.host }}</span></span>
+            {% if site_count is not none %}
+            <a href="/servers?server_id={{ server.id }}">{{ site_count }} 个站点</a>
+            {% else %}
+            <span>站点待采集</span>
+            {% endif %}
+          </div>
+        </div>
+        <span class="hint" data-server-status role="status">等待读取</span>
+      </div>
       <div class="server-metrics-grid">
         {{ server_metric('load', '负载') }}
         {{ server_metric('cpu', 'CPU') }}
@@ -108,7 +122,7 @@
     <div class="panel empty-state">暂无服务器，<a href="/servers">添加服务器</a></div>
   {% endfor %}
   </div>
-  {% if servers %}<noscript><p class="hint">服务器数据需要启用 JavaScript。</p></noscript>{% endif %}
+  {% if servers %}<noscript><p class="hint">实时服务器指标需要启用 JavaScript。</p></noscript>{% endif %}
 </section>
 </div>
 <div class="dashboard-comparisons">
