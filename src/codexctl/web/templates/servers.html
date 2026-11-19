@@ -32,15 +32,28 @@
 {% if summary %}
 <section class="panel flush">
   <div class="panel-head"><h2>服务器清单</h2><span class="hint">{{ summary|length }} 台 · 北京时间</span></div>
-  <ul class="server-list">
+  <ul class="server-list" data-panel-csrf="{{ csrf }}">
     {% for item in summary %}
-    <li>
-      <div><a class="server-name" href="/servers/{{ item.server.id }}">{{ item.server.name }}</a> <span class="badge {{ item.status[1] }}">{{ item.status[0] }}</span>{% if item.wp_center_ready %} <a class="btn small" href="/servers/{{ item.server.id }}/wp-center" target="_blank" rel="noopener noreferrer">打开 WP 建站中心 ↗</a>{% endif %}</div>
-      <div class="hint server-meta">
+    <li class="server-card">
+      <div class="server-card-head">
+        <a class="server-name" href="/servers/{{ item.server.id }}">{{ item.server.name }}</a>
+        <span class="badge {{ item.status[1] }}">{{ item.status[0] }}</span>
+      </div>
+      <div class="server-meta">
         <span class="mono">{{ item.server.host }}</span>
         {% if item.count is not none %}<a href="/servers?server_id={{ item.server.id }}">{{ item.count }} 个站点</a>{% endif %}
         {% if item.synced_at %}<span>同步于 {{ item.synced_at }}</span>{% endif %}
       </div>
+      <div class="server-panel-access">
+        <div class="server-panel-heading"><strong>宝塔面板</strong>{% if not item.server.panel_url or not item.server.panel_username or not item.server.has_panel_password %}<span class="server-panel-incomplete">信息未完整配置</span>{% endif %}</div>
+        <div class="server-panel-actions">
+          {% if item.server.panel_url %}<a class="btn server-panel-open" href="{{ item.server.panel_url }}" target="_blank" rel="noopener noreferrer">打开宝塔</a>{% else %}<span class="server-panel-missing">宝塔地址未配置</span>{% endif %}
+          {% if item.server.panel_username %}<button type="button" class="btn" data-panel-copy="/servers/{{ item.server.id }}/panel-credential/username">复制用户名</button>{% else %}<span class="server-panel-missing">宝塔用户名未配置</span>{% endif %}
+          {% if item.server.has_panel_password %}<button type="button" class="btn" data-panel-copy="/servers/{{ item.server.id }}/panel-credential/password">复制密码</button>{% else %}<span class="server-panel-missing">宝塔密码未配置</span>{% endif %}
+          <span class="server-panel-status" data-panel-status role="status"></span>
+        </div>
+      </div>
+      {% if item.wp_center_ready %}<a class="server-wp-link" href="/servers/{{ item.server.id }}/wp-center" target="_blank" rel="noopener noreferrer">打开 WP 建站中心</a>{% endif %}
       {% if item.error and item.server.host_key %}<div class="hint">{{ item.error }}</div>{% endif %}
     </li>
     {% endfor %}

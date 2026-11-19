@@ -255,9 +255,9 @@ def register(app) -> None:
         if fields is None:
             fields = dict(
                 name=server.name, host=server.host, port=server.port,
-                host_key=server.host_key or "",
+                host_key=server.host_key or "", panel_url=server.panel_url or "", panel_username=server.panel_username or "",
             ) if server else {
-                "name": "", "host": "", "port": 22, "host_key": "",
+                "name": "", "host": "", "port": 22, "host_key": "", "panel_url": "", "panel_username": "",
             }
         return render(
             request, "server_form.html", 422 if error else 200, flash=False, admin=admin[0], csrf=admin[1],
@@ -272,25 +272,39 @@ def register(app) -> None:
     def add_server(
         request: Request, background: BackgroundTasks, name: str = Form(""), host: str = Form(""),
         port: str = Form(""), host_key: str = Form(""), ssh_password: str = Form(""),
+        panel_url: str = Form(""), panel_username: str = Form(""), panel_password: str = Form(""),
         admin: tuple[str, str] = Depends(current_admin),
     ):
         try:
             if ssh_password:
                 site_enrollment.validate_password(ssh_password)
             with lock:
-                server = site_registry.create(ctx, f"web:{admin[0]}", name, host, port, "" if ssh_password else host_key)
+                server = site_registry.create(ctx, f"web:{admin[0]}", name, host, port, "" if ssh_password else host_key, panel_url, panel_username, panel_password)
                 token = site_enrollment.issue(ctx, server)
                 if ssh_password:
                     password_enrollments.add(server.id)
         except site_registry.ServerError as exc:
             return editor(
                 request, admin,
-                fields=dict(name=name, host=host, port=port, host_key=host_key),
+                fields=dict(name=name, host=host, port=port, host_key=host_key, panel_url=panel_url, panel_username=panel_username),
                 error=str(exc),
             )
         if ssh_password:
             return enroll_with_password(server, token, ssh_password, background)
         return RedirectResponse(f"/servers/{server.id}", status_code=303)
+
+    @app.post("/servers/{server_id}/panel-credential/{kind}")
+    def panel_credential(server_id: str, kind: str, user: tuple[str, str] = Depends(current_user)):
+        if kind not in {"username", "password"}:
+            raise HTTPException(404, "凭据不存在")
+        with lock:
+            server = require_server(server_id)
+            value = server.panel_username if kind == "username" else site_registry.panel_password(ctx, server_id)
+            if not value:
+                raise HTTPException(404, "凭据尚未配置")
+            with db.transaction(ctx.conn):
+                events.audit(ctx.conn, f"web:{user[0]}", f"server.panel_{kind}.copy", server.id, now=ctx.now())
+        return JSONResponse({"value": value}, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
 
     @app.get("/servers/{server_id}/wp-center", response_class=HTMLResponse)
     def wp_center(request: Request, server_id: str, site_id: str = "", admin: tuple[str, str] = Depends(current_user)):
@@ -444,17 +458,19 @@ def register(app) -> None:
     @app.post("/servers/{server_id}/edit")
     def save_server(
         request: Request, server_id: str, name: str = Form(""), host: str = Form(""), port: str = Form(""),
-        host_key: str = Form(""), admin: tuple[str, str] = Depends(current_admin),
+        host_key: str = Form(""), panel_url: str = Form(""), panel_username: str = Form(""),
+        panel_password: str = Form(""), clear_panel_password: bool = Form(False),
+        admin: tuple[str, str] = Depends(current_admin),
     ):
         with lock:
             server = require_server(server_id)
             require_enrollment_idle(server.id)
             try:
-                site_registry.update(ctx, f"web:{admin[0]}", server, name, host, port, host_key)
+                site_registry.update(ctx, f"web:{admin[0]}", server, name, host, port, host_key, panel_url, panel_username, panel_password, clear_panel_password)
             except site_registry.ServerError as exc:
                 return editor(
                     request, admin, server,
-                    dict(name=name, host=host, port=port, host_key=host_key), str(exc),
+                    dict(name=name, host=host, port=port, host_key=host_key, panel_url=panel_url, panel_username=panel_username), str(exc),
                 )
         return RedirectResponse(f"/servers/{server.id}", status_code=303)
 

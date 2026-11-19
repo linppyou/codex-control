@@ -148,9 +148,25 @@ input[type=checkbox] { accent-color: var(--green); width: 15px; height: 15px; ve
 
 /* 服务器与站点巡检 */
 .server-list, .site-rows { margin: 0; padding: 0; list-style: none; }
-.server-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(330px, 100%), 1fr)); }
-.server-list li { min-width: 0; padding: 11px 20px; border-bottom: 1px solid var(--line-soft); }
+.server-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(350px, 100%), 1fr)); gap: 14px; padding: 16px; }
+.server-list .server-card { min-width: 0; padding: 18px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.server-card-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .server-name { font-weight: 700; overflow-wrap: anywhere; }
+.server-card .server-name { color: var(--text); font-size: 16px; text-decoration: none; }
+.server-card .server-name:hover { color: var(--green); }
+.server-card .server-meta { margin-top: 8px; font-size: 13px; color: var(--text-2); }
+.server-panel-access { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line-soft); }
+.server-panel-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; margin-bottom: 10px; }
+.server-panel-heading strong { font-size: 14px; }
+.server-panel-incomplete, .server-panel-missing { color: var(--text-2); font-size: 13px; }
+.server-panel-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.server-panel-actions .btn { min-height: 36px; font-size: 13px; }
+.server-panel-actions .server-panel-open { color: #fff; background: var(--green); border-color: var(--green); }
+.server-panel-actions .server-panel-open:hover { background: #356b1a; }
+.server-panel-status { flex-basis: 100%; font-size: 13px; color: var(--text-2); }
+.server-panel-status:empty { display: none; }
+.server-wp-link { display: inline-block; margin-top: 14px; font-size: 13px; color: var(--green); }
+.server-card :focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 .server-meta, .site-totals { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
 .site-totals { color: var(--text-2); }
 .site-totals strong { font-size: 17px; font-variant-numeric: tabular-nums; }
@@ -242,8 +258,8 @@ input[type=checkbox] { accent-color: var(--green); width: 15px; height: 15px; ve
   .site-mobile-label { position: static; width: auto; height: auto; clip-path: none; font-size: 12px; color: var(--text-2); }
 }
 @media (max-width: 560px) {
-  .server-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .server-list li { padding: 9px 12px; }
+  .server-list { grid-template-columns: minmax(0, 1fr); padding: 12px; }
+  .server-list .server-card { padding: 16px; }
   .server-meta { gap: 2px 8px; overflow-wrap: anywhere; }
 }
 

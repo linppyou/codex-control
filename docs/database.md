@@ -354,6 +354,9 @@ detail 的结构依赖 action，调用方负责组织。应用日志与审计事
 | `public_key` | TEXT | — | 是 | 未声明 | 此服务器专用的采集公钥，OpenSSH 文本。 |
 | `private_key` | BLOB | — | 是 | 未声明 | 此服务器专用的采集私钥，使用主密钥加密保存。 |
 | `revision` | INTEGER | — | 是 | `0` | 连接配置版本，host、port 或 host_key 变化时递增。 |
+| `panel_url` | TEXT | — | 否 | 未声明 | 宝塔登录页完整地址。 |
+| `panel_username` | TEXT | — | 否 | 未声明 | 共享宝塔用户名。 |
+| `panel_password` | BLOB | — | 否 | 未声明 | 使用主密钥加密的共享宝塔密码。 |
 
 - 主键 `(id)`。
 - 唯一约束 `(host, port)`。
@@ -765,6 +768,7 @@ status 字段允许保存后续新增错误码，DDL 使用 TEXT。只有收到�
 | --- | --- |
 | `account_secrets.blob` | AES-GCM，关联数据为 `codexctl:{label}` |
 | `site_servers.private_key` | AES-GCM，关联数据为 `site-ssh:{server_id}` |
+| `site_servers.panel_password` | AES-GCM，关联数据为 `site-panel:{server_id}` |
 | `site_enrollments.token_ciphertext` | AES-GCM，关联数据为 `site-enrollment:{server_id}` |
 | `api_keys.secret_ciphertext` | AES-GCM，关联数据为 `codexctl-api-key:{public_id}:{username}` |
 | `admins.password_hash` | Argon2 编码哈希 |
