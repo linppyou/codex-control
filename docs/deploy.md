@@ -303,7 +303,7 @@ curl -fsS -H "Authorization: Bearer ${CODEXCTL_API_KEY}" https://codex-control.p
 3. 生成的提示词列出文件中新域名对应的服务器和端口，并要求 Codex 先读取 `capabilities` 与 `api.describe`，通过 `site.probe` 核对 WordPress 实况，在已授权范围内连续执行装修、队列部署及归档。过程与备份放在本站 `zdy-AI`，通过 `context.update` 更新接手摘要；断线沿用原任务和请求标识，资源繁忙时退避重试。部署接口和认证沿用工作目录及执行用户已有的配置。
 
 管理员可在任务面板的「提示词生成代码」中编辑 `prompt = (...)`，先用两个虚拟站点预览，再保存或恢复默认代码。支持 f-string、字符串相加、变量索引、`len()`、`json.dumps(..., ensure_ascii=False)`；可用变量为 `dispatcher`、`migration`、`task_id`、`snapshot`、`rows`、`original`、`plan`。代码经语法、允许的表达式和示例输出校验后保存到数据库，修改会记录审计日志，仅影响之后导入的批次，不改写已有提示词。相同文件在模板修改后重新导入会生成新批次；发送时仍自动附加实际交接路径及 Skill 输入。
-4. 确认页可修改工作目录、模型 ID 和思考程度。工作目录默认是执行用户家目录下的 `wp_front`，相对路径和 `~/` 按该用户家目录解析。模型默认 `gpt-6.1-terra`，思考程度默认 `medium`，发送时传入 Codex 的 `model` 与 `effort`。
+4. 确认页从执行用户的 Codex App Server 加载可选的 GPT 模型和各自支持的思考程度。切换模型时，当前档位仍受支持就沿用，否则选择该模型的默认档位。目录不可用时可手动填写，也可从下拉框选择「自定义模型 ID」。新草稿默认使用 `gpt-6.1-terra` 和 `medium`，发送时传入 Codex 的 `model` 与 `effort`。工作目录默认是执行用户家目录下的 `wp_front`，相对路径和 `~/` 按该用户家目录解析。
 5. Worker 在指定工作目录创建一个 Codex 会话，将原始 `upload.csv` 或 `upload.xlsx`、标准化 `task.csv`、服务器清单 `targets.json` 和两个 Skill 放入 `<工作目录>/.codexctl-tasks/<任务ID>`，以绝对路径交接。不同任务使用独立文件目录。面板记录真实会话 ID、轮次 ID、发送状态和 Codex 回复，轮次结束后显示“Codex 轮次已结束”。
 6. 成员可在任务列表或详情点击「取消任务」。待确认和排队任务立即取消，执行中的任务先显示「正在取消」，Worker 请求中断当前 Codex 轮次并停止本机任务进程后显示「已取消」。已完成的操作保留，结果未知的原会话需要按页面提示核对。
 

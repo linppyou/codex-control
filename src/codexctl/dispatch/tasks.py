@@ -36,6 +36,8 @@ IMPORT_COLUMNS = ("网站", "新域名", "备注", "折扣")
 DEFAULT_MODEL = "gpt-6.1-terra"
 DEFAULT_REASONING_EFFORT = "medium"
 DEFAULT_SANDBOX = "danger-full-access"
+MODEL_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}")
+REASONING_EFFORT_PATTERN = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 _LEGACY_TARGET_FIELDS = """
     SELECT t.id, t.server_id, t.server_revision, t.domain, t.endpoint, t.credential_env,
            t.project, t.users, s.name AS server_name, s.host AS server_host, s.port AS server_port
@@ -387,9 +389,9 @@ def _execution_options(task: sqlite3.Row, model: str | None, reasoning_effort: s
     reasoning_effort = reasoning_effort.strip() or DEFAULT_REASONING_EFFORT
     if sandbox != DEFAULT_SANDBOX:
         raise TaskError("任务统一使用不受 Codex 沙箱限制的执行模式")
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}", model):
+    if not MODEL_ID_PATTERN.fullmatch(model):
         raise TaskError("模型 ID 最多 128 个字符，请使用字母、数字或 . _ : / + -")
-    if not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", reasoning_effort):
+    if not REASONING_EFFORT_PATTERN.fullmatch(reasoning_effort):
         raise TaskError("思考程度须为最多 32 个字符的小写英文标识")
     return model, reasoning_effort, sandbox
 

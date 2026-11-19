@@ -24,6 +24,7 @@ import codexctl.dispatch.tasks as dispatch_tasks
 import codexctl.events as events
 from codexctl.accounts.publisher import PublishError
 from codexctl.context import Context
+from codexctl.formatting import clean_text
 from codexctl.users.sysusers import SysUser
 
 log = logging.getLogger(__name__)
@@ -117,11 +118,11 @@ class AppServer:
                 self.result_text = item.get("text", "")[-65536:]
         return message
 
-    def call(self, method: str, params: dict) -> dict:
+    def call(self, method: str, params: dict, *, timeout: float = 45) -> dict:
         request_id = self.next_id
         self.next_id += 1
         self.send({"id": request_id, "method": method, "params": params})
-        deadline = time.monotonic() + 45
+        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             message = self.responses.pop(request_id, None)
             if message is None:
@@ -136,6 +137,11 @@ class AppServer:
                 return result
             raise DeliveryError(f"Codex 的 {method} 回执无效")
         raise DeliveryError("等待 Codex 回执超时")
+
+    def initialize(self, *, timeout: float = 45) -> None:
+        self.call("initialize", {"clientInfo": {"name": "codexctl_dispatch", "version": "0.1.0"},
+                                 "capabilities": {"experimentalApi": True}}, timeout=timeout)
+        self.send({"method": "initialized"})
 
     def wait_turn(self, turn_id: str, check_cancel=None) -> str:
         while self.completed is None or self.completed[0] != turn_id:
@@ -197,22 +203,31 @@ def _env(user: SysUser, name: str | None) -> dict[str, str]:
     return env
 
 
-def _connect_shared(ctx: Context, user: SysUser, cwd: Path, env: dict) -> AppServer:
+def _connect_shared(ctx: Context, user: SysUser, cwd: Path, env: dict, *, timeout: float = 45) -> AppServer:
     socket_path = user.home / '.codex' / 'app-server-control' / 'app-server-control.sock'
     if not socket_path.exists():
         started = subprocess.run(
             [str(ctx.settings.codex_bin), 'app-server', 'daemon', 'start'],
             cwd=cwd, env=env, user=user.uid, group=user.gid, extra_groups=[],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=45,
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,
         )
         if started.returncode or not socket_path.exists():
             raise DeliveryError('无法启动执行用户的共享 Codex App Server')
-    proc = subprocess.Popen(
-        [sys.executable, str(Path(__file__).with_name('transport.py')), str(socket_path)],
-        cwd=cwd, env=env, user=user.uid, group=user.gid, extra_groups=[],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        start_new_session=True, umask=0o077,
+    # Open the bridge before switching users so it can run from a private package installation.
+    launcher = (
+        "import os, sys\n"
+        "with os.fdopen(int(sys.argv.pop(1)), 'rb') as source:\n"
+        "    bridge = compile(source.read(), 'transport.py', 'exec')\n"
+        "exec(bridge)\n"
     )
+    with Path(__file__).with_name('transport.py').open('rb') as bridge:
+        fd = bridge.fileno()
+        proc = subprocess.Popen(
+            [sys.executable, '-c', launcher, str(fd), str(socket_path)],
+            cwd=cwd, env=env, user=user.uid, group=user.gid, extra_groups=[], pass_fds=(fd,),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            start_new_session=True, umask=0o077,
+        )
     return AppServer(proc)
 
 
@@ -264,6 +279,60 @@ def _stop(proc: subprocess.Popen) -> None:
         except ProcessLookupError:
             pass
         proc.wait()
+
+
+def _model_choice(entry: object) -> dict | None:
+    if not isinstance(entry, dict) or entry.get("hidden"):
+        return None
+    model_id = entry.get("model")
+    if not (isinstance(model_id, str) and model_id.startswith("gpt-")
+            and dispatch_tasks.MODEL_ID_PATTERN.fullmatch(model_id)):
+        return None
+    name = entry.get("displayName")
+    name = clean_text(name.strip(), 128) if isinstance(name, str) else ""
+    advertised = entry.get("supportedReasoningEfforts")
+    efforts = []
+    if isinstance(advertised, list):
+        for option in advertised:
+            effort = option.get("reasoningEffort") if isinstance(option, dict) else None
+            if (isinstance(effort, str) and dispatch_tasks.REASONING_EFFORT_PATTERN.fullmatch(effort)
+                    and effort not in efforts):
+                efforts.append(effort)
+    default = entry.get("defaultReasoningEffort")
+    if not efforts and isinstance(default, str) and dispatch_tasks.REASONING_EFFORT_PATTERN.fullmatch(default):
+        efforts.append(default)
+    if default not in efforts:
+        default = efforts[0] if efforts else None
+    return {"id": model_id, "name": name or model_id, "efforts": efforts, "default_effort": default}
+
+
+def list_models(ctx: Context, user: SysUser) -> list[dict]:
+    timeout = 8
+    deadline = time.monotonic() + timeout
+    client = _connect_shared(ctx, user, user.home, _env(user, None), timeout=timeout)
+    models = {}
+    params = {"includeHidden": False}
+    cursors = set()
+    try:
+        client.initialize(timeout=deadline - time.monotonic())
+        while True:
+            page = client.call("model/list", params, timeout=deadline - time.monotonic())
+            entries = page.get("data")
+            if not isinstance(entries, list):
+                raise DeliveryError("Codex 的模型目录无效")
+            for entry in entries:
+                choice = _model_choice(entry)
+                if choice is not None:
+                    models.setdefault(choice["id"], choice)
+            cursor = page.get("nextCursor")
+            if cursor is None:
+                return list(models.values())
+            if not isinstance(cursor, str) or not cursor or len(cursor) > 512 or cursor in cursors:
+                raise DeliveryError("Codex 的模型目录分页无效")
+            cursors.add(cursor)
+            params["cursor"] = cursor
+    finally:
+        _stop(client.proc)
 
 
 def _id(result: dict, key: str) -> str:
@@ -323,9 +392,7 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
         check_cancel()
         client = _connect_shared(ctx, user, Path(cwd), env)
         proc = client.proc
-        client.call("initialize", {"clientInfo": {"name": "codexctl_dispatch", "version": "0.1.0"},
-                                   "capabilities": {"experimentalApi": True}})
-        client.send({"method": "initialized"})
+        client.initialize()
         from codexctl.dispatch.threads import ThreadTools, TOOL_INSTRUCTIONS, tool_specs
 
         thread_options = {

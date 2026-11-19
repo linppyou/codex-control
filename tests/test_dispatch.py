@@ -161,6 +161,83 @@ def test_confirm_saves_execution_options_and_preserves_them_on_retry(ctx):
     assert 'name="model"' not in detail
 
 
+def test_preview_lists_visible_gpt_models_for_the_execution_user(ctx, monkeypatch):
+    form = task_form(ctx)
+    app = create_app(ctx)
+    alice, csrf = session(ctx, app, "alice")
+    bob, _ = session(ctx, app, "bob")
+    admin, _ = session(ctx, app, "admin")
+    assert import_file(alice, csrf, form).status_code == 200
+    task_id = ctx.conn.execute("SELECT id FROM dispatch_tasks").fetchone()[0]
+    url = f"/tasks/{task_id}/models"
+    assert f'data-models-url="{url}"' in alice.get(f"/tasks/{task_id}").text
+    assert bob.get(url).status_code == 404
+    assert admin.get(url).status_code == 403
+
+    def model(slug, name, efforts, default, *, hidden=False):
+        return {"id": f"picker-{slug}", "model": slug, "displayName": name, "hidden": hidden,
+                "supportedReasoningEfforts": [{"reasoningEffort": effort} for effort in efforts],
+                "defaultReasoningEffort": default, "description": "unused catalog metadata"}
+
+    pages = iter((
+        {"data": [model("gpt-6.2-sol", "GPT-6.2-Sol", ["low", "max", "ultra"], "low"),
+                  model("gpt-reserve", "Hidden", ["medium"], "medium", hidden=True)], "nextCursor": "second"},
+        {"data": [model("gpt-6-luna", "GPT-6-Luna", ["medium", "max"], "medium"),
+                  model("other-provider", "Other provider", ["high"], "high")], "nextCursor": None},
+    ))
+    calls = []
+    closed = []
+
+    class Client:
+        proc = object()
+
+        def initialize(self, *, timeout):
+            assert 0 < timeout <= 8
+
+        def call(self, method, params, *, timeout):
+            assert 0 < timeout <= 8
+            calls.append((method, dict(params)))
+            return next(pages)
+
+    def connect(context, user, cwd, env, *, timeout):
+        assert context is ctx and user == ctx.lookup_user("alice", ctx.settings.min_uid)
+        assert cwd == user.home and env["HOME"] == str(user.home)
+        return Client()
+
+    monkeypatch.setattr(dispatch_worker, "_connect_shared", connect)
+    monkeypatch.setattr(dispatch_worker, "_stop", closed.append)
+    response = alice.get(url)
+    assert response.status_code == 200
+    assert response.json() == {"models": [
+        {"id": "gpt-6.2-sol", "name": "GPT-6.2-Sol", "efforts": ["low", "max", "ultra"], "default_effort": "low"},
+        {"id": "gpt-6-luna", "name": "GPT-6-Luna", "efforts": ["medium", "max"], "default_effort": "medium"},
+    ]}
+    assert calls == [("model/list", {"includeHidden": False}),
+                     ("model/list", {"includeHidden": False, "cursor": "second"})]
+    assert closed == [Client.proc]
+
+
+def test_model_catalog_outage_keeps_manual_task_submission(ctx, monkeypatch):
+    form = task_form(ctx)
+    alice, csrf = session(ctx, create_app(ctx), "alice")
+    assert import_file(alice, csrf, form).status_code == 200
+    task_id = ctx.conn.execute("SELECT id FROM dispatch_tasks").fetchone()[0]
+    url = f"/tasks/{task_id}"
+
+    def unavailable(*args):
+        raise dispatch_worker.DeliveryError("private failure details")
+
+    monkeypatch.setattr(dispatch_worker, "list_models", unavailable)
+    response = alice.get(url + "/models")
+    assert response.status_code == 503 and "private failure details" not in response.text
+    assert 'name="model" value="gpt-6.1-terra"' in alice.get(url).text
+    assert alice.post(url + "/confirm", data={"csrf": csrf, "confirmed": "1",
+                                             "model": "gpt-custom", "reasoning_effort": "ultra"}).status_code == 303
+    saved = ctx.conn.execute("SELECT status, model, reasoning_effort FROM dispatch_tasks").fetchone()
+    assert tuple(saved) == ("queued", "gpt-custom", "ultra")
+    assert alice.get(url + "/models").status_code == 409
+
+
 def test_blank_execution_options_use_task_defaults(ctx):
     form = task_form(ctx)
     alice, csrf = session(ctx, create_app(ctx), "alice")
@@ -538,7 +615,7 @@ def test_zip_traversal_rejected(ctx):
 @pytest.mark.parametrize("directory", [None, "~/custom-work"])
 @pytest.mark.parametrize("cancel_running", [False, True])
 @pytest.mark.parametrize("execution", [None, {}, {"model": "gpt-6.1-sol"}, {"reasoning_effort": "xhigh"},
-                                        {"model": "gpt-6.1-sol", "reasoning_effort": "high"}])
+                                        {"model": "gpt-6.2-sol", "reasoning_effort": "ultra"}])
 def test_worker_attaches_both_packages_and_persists_acceptance(ctx, tmp_path, monkeypatch, cancel_running, execution, directory):
     form = task_form(ctx)
     second = site_registry.create(ctx, "admin", "第二台", "8.8.8.8", "2222", "")
@@ -827,13 +904,17 @@ def test_shared_connection_uses_user_daemon_socket(ctx, tmp_path, monkeypatch):
     class Process:
         pass
     def launch(args, **kwargs):
+        bridge = Path(dispatch_worker.__file__).with_name('transport.py').read_bytes()
+        fd, = kwargs['pass_fds']
+        assert os.pread(fd, len(bridge) + 1, 0) == bridge
+        assert args[-2] == str(fd)
         calls.append((args, kwargs))
         return Process()
     monkeypatch.setattr(dispatch_worker.subprocess, 'Popen', launch)
     client = dispatch_worker._connect_shared(ctx, user, tmp_path, {'HOME': str(user.home)})
     assert client.proc is not None
     assert calls[0][0][-1] == str(socket)
-    assert Path(calls[0][0][-2]) == Path(dispatch_worker.__file__).with_name('transport.py')
+    assert calls[0][0][1] == '-c'
     assert calls[0][1]['user'] == user.uid
 
 

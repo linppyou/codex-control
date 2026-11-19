@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+from subprocess import TimeoutExpired
 from urllib.parse import urlencode, urlsplit
 
 from fastapi import Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
+import codexctl.dispatch.prompts as dispatch_prompts
 import codexctl.dispatch.skills as dispatch_skills
 import codexctl.dispatch.tasks as dispatch_tasks
-import codexctl.dispatch.prompts as dispatch_prompts
+import codexctl.dispatch.worker as dispatch_worker
 from codexctl.web.dependencies import current_admin, current_user
 from codexctl.web.responses import _redirect
 from codexctl.web.routes.servers import _time
@@ -204,6 +206,25 @@ def register(app) -> None:
         with lock:
             task = get_task(task_id, who[0])
         return task_detail(request, who, task)
+
+    @app.get("/tasks/{task_id}/models")
+    def task_models(task_id: str, who: tuple[str, str] = Depends(current_user)):
+        with lock:
+            task = get_task(task_id, who[0])
+            if task["owner"] != who[0] or who[0] == "admin":
+                raise HTTPException(403, "仅任务所属成员可以查看可用模型")
+            if task["status"] != "preview":
+                raise HTTPException(409, "仅待人工确认的任务可以选择模型")
+            try:
+                user, _ = dispatch_tasks.recipient(ctx, task["recipient"])
+                if user.uid != task["recipient_uid"]:
+                    raise dispatch_tasks.TaskError("执行用户 UID 已变化，请重新预览")
+            except dispatch_tasks.TaskError as exc:
+                raise HTTPException(409, str(exc)) from exc
+        try:
+            return {"models": dispatch_worker.list_models(ctx, user)}
+        except (OSError, TimeoutExpired, dispatch_worker.DeliveryError):
+            raise HTTPException(503, "暂时无法读取执行用户的 Codex 模型目录") from None
 
     @app.post("/tasks/{task_id}/confirm")
     async def confirm(
