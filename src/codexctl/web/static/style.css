@@ -273,8 +273,9 @@ input[type=checkbox] { accent-color: var(--green); width: 15px; height: 15px; ve
 .server-metrics-list > .panel { margin: 0; }
 .server-metrics-card { min-width: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
 .server-metrics-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; margin-bottom: 8px; }
-.server-metrics-head a { color: var(--text); font-weight: 700; overflow-wrap: anywhere; text-decoration: none; }
-.server-metrics-head a:hover { color: var(--green); }
+.server-metrics-head .server-name { color: var(--text); text-decoration: none; }
+.server-metrics-head .server-name:hover { color: var(--green); }
+.server-metrics-head .server-meta { margin-top: 2px; }
 .server-metrics-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
 .server-metric { display: flex; align-items: center; justify-content: space-between; gap: 4px; min-width: 0; }
 .server-metric + .server-metric { padding-left: 7px; border-left: 1px solid var(--line-soft); }
