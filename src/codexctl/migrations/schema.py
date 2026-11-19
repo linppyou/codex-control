@@ -175,6 +175,15 @@ CREATE TABLE IF NOT EXISTS site_enrollments (
     token_ciphertext BLOB NOT NULL,
     expires_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS site_inventory_generations (
+    server_id TEXT PRIMARY KEY REFERENCES site_servers(id) ON DELETE CASCADE,
+    generation INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS site_domain_refreshes (
+    server_id TEXT NOT NULL REFERENCES site_servers(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL,
+    PRIMARY KEY (server_id, task_id)
+);
 CREATE TABLE IF NOT EXISTS dispatch_prompt_template (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     code TEXT NOT NULL,

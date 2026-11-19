@@ -11,7 +11,7 @@
   <iframe id="wp-center-frame"
           title="{{ server.name }} · WP 建站中心"
           sandbox="allow-scripts allow-downloads"
-          data-src="/servers/{{ server.id }}/wp-center/document"
+          data-src="/servers/{{ server.id }}/wp-center/document{% if site_id %}?site_id={{ site_id|urlencode }}#maintenance{% endif %}"
           data-proxy="/servers/{{ server.id }}/wp-center/proxy"
           data-csrf="{{ csrf }}"></iframe>
 </body>

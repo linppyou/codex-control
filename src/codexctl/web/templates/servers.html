@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ '网站巡检' if site_view else '服务器' }} · codexctl{% endblock %}
+{% block title %}{{ '网站' if site_view else '服务器' }} · codexctl{% endblock %}
 {% macro probe_result(result, status) %}
   <span class="badge {{ statuses[status][1] }}">{{ statuses[status][0] }}</span>
   {% if result %}
@@ -50,10 +50,10 @@
 {% endif %}
 
 {% else %}
-<section aria-labelledby="website-heading">
+<section aria-labelledby="website-heading" data-sites data-csrf="{{ csrf }}">
   <div class="page-head">
     <div>
-      <h1 id="website-heading">网站巡检</h1>
+      <h1 id="website-heading">网站</h1>
       <div class="sub">{% if last_check %}最近检测 {{ last_check }} · 北京时间{% else %}等待首次巡检{% endif %}</div>
     </div>
     <div class="site-totals">
@@ -62,6 +62,7 @@
       {% if unconfirmed %}<span>待确认 <strong>{{ unconfirmed }}</strong></span>{% endif %}
     </div>
   </div>
+  <p class="site-notice" data-site-notice role="status" aria-live="polite"></p>
   {% if summary %}
   <div class="form-row">
     <span class="hint">筛选结果 {{ filtered }} 个站点</span>
@@ -90,8 +91,9 @@
       <span class="site-server-title">{{ server.name }}</span>
       <span class="hint">{{ count }} 个站点</span>
     </summary>
+    {% if is_admin %}<div class="site-server-tools"><button type="button" class="btn small" data-site-refresh="{{ server.id }}">刷新网站清单</button><span class="hint" data-refresh-status role="status"></span></div>{% endif %}
     <div class="site-row site-columns" aria-hidden="true">
-      <span>域名</span><span>公网状态</span><span>源站直连</span><span>产品与菜单</span><span>检测时间</span>
+      <span>域名</span><span>公网状态</span><span>源站直连</span><span>备注</span><span>产品与菜单</span><span>检测时间</span>
     </div>
     {% for day, rows, day_count in days %}
     <section class="site-group" aria-labelledby="site-date-{{ server.id }}-{{ day }}">
@@ -101,13 +103,14 @@
       </div>
       <ul class="site-rows">
         {% for row in rows %}
-        <li class="site-row">
+        <li class="site-row" data-site-row data-endpoint="/servers/{{ server.id }}/sites/{{ row.id|urlencode }}" data-name="{{ row.name or '' }}" data-enabled="{{ 'true' if row.enabled is true else 'false' if row.enabled is false else '' }}" data-remark="{{ row.remark or '' }}" data-domain="{{ row.domain }}" data-server="{{ server.name }}">
           <div class="site-domain">
             <a href="{{ row.public.entry_url or ('https://' ~ row.domain ~ '/') }}" target="_blank" rel="noopener noreferrer">{{ row.domain }}</a>
             {% if row.origin %}<span class="tag">重复域名</span>{% endif %}
           </div>
           <div class="site-result site-public"><span class="site-a11y">公网状态</span>{{ probe_result(row.public, row.status) }}</div>
           <div class="site-result site-origin{% if not row.origin %} site-origin-empty{% endif %}">{% if row.origin %}<span class="site-a11y site-mobile-label">源站直连</span>{{ probe_result(row.origin, row.origin_status) }}{% else %}<span class="hint" aria-hidden="true">—</span>{% endif %}</div>
+          <div class="site-result site-remark"><span class="site-a11y site-mobile-label">备注</span><span class="site-remark-text">{{ row.remark if row.remark else '—' }}</span>{% if (row.management_stale or row.data_stale) and row.remark is not none %}<span class="hint">上次数据</span>{% endif %}</div>
           <div class="site-result site-data">
             {% if row.data is none %}
             <span class="badge info">导入情况待确认</span>
@@ -119,6 +122,22 @@
             {% endif %}
           </div>
           <span class="hint site-checked"><span class="site-a11y">检测时间</span>{{ row.checked_at }}</span>
+          <div class="site-management">
+            <div class="site-management-details">
+              <span>运行状态 <strong>{{ '运行中' if row.enabled is true else '已停用' if row.enabled is false else '待采集' }}</strong>{% if (row.data_stale or row.management_stale) and row.enabled is not none %} <span class="hint">上次数据</span>{% endif %}</span>
+              <span>防火墙 <strong>{{ '已开启' if row.waf_enabled is true else '已关闭' if row.waf_enabled is false else '未知' }}</strong>{% if (row.waf_stale or row.data_stale) and row.waf_enabled is not none %} <span class="hint">上次数据</span>{% endif %}{% if row.waf_time %} <span class="hint">读取于 {{ row.waf_time }}</span>{% endif %}</span>
+            </div>
+            {% if is_admin %}
+            <div class="site-actions">
+              <button type="button" class="btn small" data-site-action="probe">检测</button>
+              <button type="button" class="btn small" data-site-action="waf"{% if not row.can_manage %} disabled title="需要宝塔站点信息和共享 SSH 管理接入"{% endif %}>防火墙</button>
+              <button type="button" class="btn small" data-site-action="state"{% if not row.can_manage or row.enabled is none %} disabled title="需要先采集运行状态"{% endif %}>{{ '停用' if row.enabled is true else '启用' }}</button>
+              <button type="button" class="btn small" data-site-action="remark"{% if not row.can_manage %} disabled title="需要宝塔站点信息和共享 SSH 管理接入"{% endif %}>备注</button>
+              {% if row.can_manage %}<a class="btn small" href="/servers/{{ server.id }}/wp-center?site_id={{ row.id|urlencode }}" target="_blank" rel="noopener noreferrer">换域名 ↗</a>{% else %}<button class="btn small" type="button" disabled>换域名</button>{% endif %}
+              <button type="button" class="btn small site-delete" data-site-action="delete"{% if not row.can_manage %} disabled title="需要宝塔站点信息和共享 SSH 管理接入"{% endif %}>删除</button>
+            </div>
+            {% endif %}
+          </div>
         </li>
         {% endfor %}
       </ul>
@@ -139,7 +158,17 @@
   {% else %}
   <div class="panel empty-state">暂无服务器。添加服务器后即可配置站点巡检。</div>
   {% endif %}
+  {% if is_admin %}
+  <dialog class="site-dialog" data-site-dialog aria-labelledby="site-dialog-title">
+    <h2 id="site-dialog-title" data-dialog-title></h2>
+    <p class="hint" data-dialog-target></p>
+    <div data-dialog-content></div>
+    <p class="site-dialog-error" data-dialog-error role="alert"></p>
+    <div class="site-dialog-buttons"><button class="btn" type="button" data-dialog-close>取消</button><button class="btn primary" type="button" data-dialog-submit>确定</button></div>
+  </dialog>
+  {% endif %}
 </section>
 {% endif %}
 <script src="/static/server-list.js" defer></script>
+{% if site_view and is_admin %}<script src="/static/site-actions.js" defer></script>{% endif %}
 {% endblock %}

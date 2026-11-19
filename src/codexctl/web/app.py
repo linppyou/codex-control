@@ -259,10 +259,12 @@ def create_app(
 
     import codexctl.web.routes.dispatch as dispatch_views
     import codexctl.web.routes.servers as server_views
+    import codexctl.web.routes.site_actions as site_actions
     import codexctl.web.views as views
 
     views.register(app)
     server_views.register(app)
+    site_actions.register(app)
     dispatch_views.register(app)
     if gateway:
         import codexctl.web.routes.gateway as gateway_views

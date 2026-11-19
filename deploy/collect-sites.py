@@ -144,10 +144,17 @@ def collect(panel):
             bindings.setdefault(site_id, []).append(domain)
         columns = {column[1] for column in conn.execute("PRAGMA table_info(sites)")}
         path_column = "path" if "path" in columns else "NULL"
-        rows = conn.execute(f"SELECT id, name, addtime, {path_column} FROM sites ORDER BY id").fetchall()
+        status_column = "status" if "status" in columns else "NULL"
+        remark_column = "ps" if "ps" in columns else "NULL"
+        rows = conn.execute(
+            f"SELECT id, name, addtime, {path_column}, {status_column}, {remark_column} FROM sites ORDER BY id"
+        ).fetchall()
         sites = [
-            {"id": site_id, "name": name, "created_at": timestamp(addtime), "domains": bindings.get(site_id, [])}
-            for site_id, name, addtime, _ in rows
+            {
+                "id": site_id, "name": name, "created_at": timestamp(addtime),
+                "domains": bindings.get(site_id, []), "path": path, "status": status, "remark": remark,
+            }
+            for site_id, name, addtime, path, status, remark in rows
         ]
 
     mysql = next((path for path in MYSQL_CLIENTS if os.access(path, os.X_OK)), None)

@@ -70,6 +70,8 @@ GET /servers/{server_id}
 GET /servers/{server_id}/edit
 GET /servers/{server_id}/wp-center
 GET /servers/{server_id}/wp-center/document
+GET /servers/{server_id}/sites/{site_id}/{operation}
+GET /servers/{server_id}/sites/refresh
 GET /skills
 GET /skills/{skill_id}/download
 GET /tasks
@@ -104,6 +106,8 @@ POST /servers/{server_id}/delete
 POST /servers/{server_id}/edit
 POST /servers/{server_id}/enrollment
 POST /servers/{server_id}/wp-center/proxy/{endpoint}
+POST /servers/{server_id}/sites/{site_id}/{operation}
+POST /servers/{server_id}/sites/refresh
 POST /site-enrollment/complete
 POST /site-enrollment/install
 POST /skills/save
@@ -150,7 +154,7 @@ def test_repository_exports_keep_identity():
 def test_schema_matches_expected_definition():
     assert (
         hashlib.sha256(db.SCHEMA.encode()).hexdigest()
-        == "a2b4419833b225968deb2033cf0d4dc22efd462a599941832c3745dce62945d7"
+        == "c9e7bebe076b8014c8a95d19b6659d158c8aadcc56a505e44b1cc59d8b8a1dcf"
     )
 
 

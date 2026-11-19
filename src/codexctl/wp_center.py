@@ -225,6 +225,52 @@ def embed(page: str, origin: str, server_name: str = '', server_host: str = '') 
     return page
 
 
+def focus_maintenance_site(page: str, site_id: str, name: str) -> str:
+    context = json.dumps({'id': site_id, 'name': name}, ensure_ascii=True).replace('<', '\\u003c')
+    script = r'''<script>
+(() => {
+  const site = SITE;
+  function start() {
+    location.hash = '#maintenance';
+    const search = document.getElementById('mnt-sites-search');
+    const list = document.getElementById('mnt-sites');
+    if (!search || !list) return;
+    const status = document.createElement('p');
+    status.setAttribute('role', 'status');
+    status.textContent = '正在定位所选网站…';
+    search.parentElement.insertAdjacentElement('afterend', status);
+    search.value = site.name;
+    search.dispatchEvent(new Event('input', {bubbles: true}));
+    const observer = new MutationObserver(select);
+    let timer;
+    function select() {
+      const input = Array.from(list.querySelectorAll('[data-mnt-select]')).find(item => item.dataset.mntSelect === site.id);
+      if (!input) return;
+      if (input.disabled) {
+        status.textContent = '该网站暂不可维护，请查看网站列表中的说明。';
+      } else {
+        if (!input.checked) {
+          input.checked = true;
+          input.dispatchEvent(new Event('change', {bubbles: true}));
+        }
+        status.textContent = '已定位所选网站，请读取并确认 WordPress 原域名。';
+      }
+      observer.disconnect();
+      clearTimeout(timer);
+    }
+    observer.observe(list, {childList: true, subtree: true});
+    timer = setTimeout(() => {
+      observer.disconnect();
+      status.textContent = '请在下方搜索并选择该网站。';
+    }, 15000);
+    select();
+  }
+  window.addEventListener('aic-workspace-ready', start, {once: true});
+})();
+</script>'''.replace('SITE', context)
+    return page.replace('<head>', '<head>' + script, 1)
+
+
 def embed_theme(page: str, settings: dict, assets: dict) -> str:
     climb = 'try { for (let n=0; n<8 && host.parent!==host; n++) { void host.parent.document.documentElement; host=host.parent; } } catch (_) {}'
     if climb not in page:
