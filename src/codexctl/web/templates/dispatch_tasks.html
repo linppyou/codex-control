@@ -6,6 +6,23 @@
   {% if is_admin %}<div class="toolbar"><a class="btn" href="/skills">Skill 管理</a></div>{% endif %}
 </header>
 {% if is_admin %}
+<section class="panel flush" aria-labelledby="dispatch-defaults-title">
+  <div class="panel-head"><h2 id="dispatch-defaults-title">任务分发默认设置</h2></div>
+  {% set default_model, default_effort = defaults %}
+  <form class="panel-body form-row" method="post" action="/tasks/defaults">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>默认模型 ID<input type="text" name="model" value="{{ default_model }}" maxlength="128" spellcheck="false" required></label>
+    <label>默认思考程度<input type="text" name="reasoning_effort" value="{{ default_effort }}" list="dispatch-default-efforts" maxlength="32" spellcheck="false" required></label>
+    <datalist id="dispatch-default-efforts">
+      {% for effort in ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] %}<option value="{{ effort }}"></option>{% endfor %}
+    </datalist>
+    <button class="btn primary" type="submit">保存默认设置</button>
+  </form>
+  <div class="panel-body">
+    {% if defaults_error %}<p class="flash bad" role="alert">{{ defaults_error }}</p>{% endif %}
+    <p class="hint">保存后应用于新导入的批次。请填写执行用户可用的模型 ID 及其支持的思考程度，成员仍可在确认发送前修改。</p>
+  </div>
+</section>
 <section class="panel flush" aria-labelledby="prompt-template-title">
   <div class="panel-head"><h2 id="prompt-template-title">提示词生成代码</h2></div>
   <form method="post" action="/tasks/prompt-template">

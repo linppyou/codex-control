@@ -67,7 +67,10 @@ def register(app) -> None:
     def task_url(task_id, request):
         return f"/tasks/{task_id}?" + urlencode({"back": back_url(request)})
 
-    def task_page(request, who, selections=None, *, rows=(), status=200, err="", prompt_code=None, prompt_preview=None, template_msg=""):
+    def task_page(
+        request, who, selections=None, *, rows=(), status=200, err="", prompt_code=None,
+        prompt_preview=None, template_msg="", defaults=None, defaults_error="",
+    ):
         user, csrf = who
         state = request.query_params.get("state", "")
         if state not in STATUS:
@@ -86,8 +89,11 @@ def register(app) -> None:
             where += " AND instr(lower(title || ' ' || owner || ' ' || recipient || ' ' || id), lower(?)) > 0"
             values.append(query)
         with lock:
-            if user == "admin" and prompt_code is None:
-                prompt_code = dispatch_prompts.get_code(ctx.conn)
+            if user == "admin":
+                if prompt_code is None:
+                    prompt_code = dispatch_prompts.get_code(ctx.conn)
+                if defaults is None:
+                    defaults = dispatch_tasks.get_defaults(ctx.conn)
             catalog = dispatch_skills.list_skills(ctx.conn)
             total = ctx.conn.execute(f"SELECT COUNT(*) FROM dispatch_tasks WHERE {where}", values).fetchone()[0]
             pages = max(1, (total + 49) // 50)
@@ -127,11 +133,24 @@ def register(app) -> None:
             previous=page_url(page - 1) if page > 1 else None,
             next_page=page_url(page + 1) if page < pages else None, list_url=page_url(page),
             prompt_code=prompt_code, prompt_preview=prompt_preview, template_msg=template_msg,
+            defaults=defaults, defaults_error=defaults_error,
         )
 
     @app.get("/tasks", response_class=HTMLResponse)
     def tasks(request: Request, who: tuple[str, str] = Depends(current_user)):
         return task_page(request, who)
+
+    @app.post("/tasks/defaults")
+    def save_defaults(
+        request: Request, model: str = Form(""), reasoning_effort: str = Form(""),
+        admin: tuple[str, str] = Depends(current_admin),
+    ):
+        try:
+            with lock:
+                dispatch_tasks.save_defaults(ctx, admin[0], model, reasoning_effort)
+        except dispatch_tasks.TaskError as exc:
+            return task_page(request, admin, status=422, defaults=(model, reasoning_effort), defaults_error=str(exc))
+        return _redirect("/tasks", msg="任务分发默认设置已保存")
 
     @app.post("/tasks/prompt-template", response_class=HTMLResponse)
     def prompt_template(

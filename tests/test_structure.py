@@ -117,6 +117,7 @@ POST /site-enrollment/complete
 POST /site-enrollment/install
 POST /skills/save
 POST /skills/{skill_id}/delete
+POST /tasks/defaults
 POST /tasks/prompt-template
 POST /tasks/import
 POST /tasks/{task_id}/cancel
@@ -160,7 +161,7 @@ def test_repository_exports_keep_identity():
 def test_schema_matches_expected_definition():
     assert (
         hashlib.sha256(db.SCHEMA.encode()).hexdigest()
-        == "704d69be59796540b8fb1755af229a96bff1717f756b4e5e35469cf337fe826b"
+        == "b893fd6713bdcf32057d417df0b12df810fb4b476c61c0f0a98ced0cc7d2ac76"
     )
 
 

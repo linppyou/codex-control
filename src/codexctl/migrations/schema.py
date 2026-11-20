@@ -193,6 +193,11 @@ CREATE TABLE IF NOT EXISTS dispatch_prompt_template (
     code TEXT NOT NULL,
     updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS dispatch_defaults (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    model TEXT NOT NULL,
+    reasoning_effort TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS dispatch_skills (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL CHECK (kind IN ('dispatcher', 'migration')),

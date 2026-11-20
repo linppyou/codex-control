@@ -68,6 +68,32 @@ class TaskError(ValueError):
     pass
 
 
+def get_defaults(conn: sqlite3.Connection) -> tuple[str, str]:
+    row = conn.execute("SELECT model, reasoning_effort FROM dispatch_defaults WHERE id=1").fetchone()
+    if row is None:
+        return DEFAULT_MODEL, DEFAULT_REASONING_EFFORT
+    return row["model"], row["reasoning_effort"]
+
+
+def _validate_model_options(model: str, reasoning_effort: str) -> None:
+    if not MODEL_ID_PATTERN.fullmatch(model):
+        raise TaskError("模型 ID 须为 1 至 128 个字符，请使用字母、数字或 . _ : / + -，并以字母或数字开头")
+    if not REASONING_EFFORT_PATTERN.fullmatch(reasoning_effort):
+        raise TaskError("思考程度须为最多 32 个字符的小写英文标识")
+
+
+def save_defaults(ctx: Context, actor: str, model: str, reasoning_effort: str) -> None:
+    model, reasoning_effort = model.strip(), reasoning_effort.strip()
+    _validate_model_options(model, reasoning_effort)
+    with db.transaction(ctx.conn):
+        ctx.conn.execute(
+            """INSERT INTO dispatch_defaults(id, model, reasoning_effort) VALUES (1, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET model=excluded.model, reasoning_effort=excluded.reasoning_effort""",
+            (model, reasoning_effort),
+        )
+        events.audit(ctx.conn, actor, "dispatch.defaults", "global", f"{model} / {reasoning_effort}", now=ctx.now())
+
+
 @dataclass
 class ImportRow:
     line: int
@@ -331,6 +357,10 @@ def _save_preview(
     prompt_code = dispatch_prompts.get_code(ctx.conn)
     snapshot["prompt_template_sha256"] = hashlib.sha256(prompt_code.encode()).hexdigest()
     title, prompt, csv_text = _payload(rows, snapshot, skills, task_id, prompt_code)
+    model, reasoning_effort = get_defaults(ctx.conn)
+    # Keep pre-existing previews reusable under the original defaults.
+    if (model, reasoning_effort) != (DEFAULT_MODEL, DEFAULT_REASONING_EFFORT):
+        snapshot["execution_defaults"] = {"model": model, "reasoning_effort": reasoning_effort}
     target_snapshot, skills_snapshot = json.dumps(snapshot), json.dumps(skills)
     existing = ctx.conn.execute(
         """SELECT id FROM dispatch_tasks
@@ -347,7 +377,7 @@ def _save_preview(
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'preview', ?)""",
         (task_id, user.name, user.name, user.uid, task_id, target_snapshot, skills_snapshot,
          rows[0].source or rows[0].values[0], title, prompt, csv_text, upload,
-         DEFAULT_MODEL, DEFAULT_REASONING_EFFORT, DEFAULT_SANDBOX, str(user.home / "wp_front"), ctx.now()),
+         model, reasoning_effort, DEFAULT_SANDBOX, str(user.home / "wp_front"), ctx.now()),
     )
     return task_id
 
@@ -399,17 +429,14 @@ def _validate_legacy_target(conn: sqlite3.Connection, target_id: str, snapshot: 
 
 def _execution_options(task: sqlite3.Row, model: str | None, reasoning_effort: str | None,
                        sandbox: str | None) -> tuple[str, str, str]:
-    model = (task["model"] if model is None else model) or DEFAULT_MODEL
-    reasoning_effort = (task["reasoning_effort"] if reasoning_effort is None else reasoning_effort) or DEFAULT_REASONING_EFFORT
+    defaults = json.loads(task["target_snapshot"]).get("execution_defaults", {})
+    model = ((task["model"] if model is None else model) or "").strip() or defaults.get("model", DEFAULT_MODEL)
+    reasoning_effort = ((task["reasoning_effort"] if reasoning_effort is None else reasoning_effort) or "").strip()
+    reasoning_effort = reasoning_effort or defaults.get("reasoning_effort", DEFAULT_REASONING_EFFORT)
     sandbox = task["sandbox"] if sandbox is None else sandbox
-    model = model.strip() or DEFAULT_MODEL
-    reasoning_effort = reasoning_effort.strip() or DEFAULT_REASONING_EFFORT
     if sandbox != DEFAULT_SANDBOX:
         raise TaskError("任务统一使用不受 Codex 沙箱限制的执行模式")
-    if not MODEL_ID_PATTERN.fullmatch(model):
-        raise TaskError("模型 ID 最多 128 个字符，请使用字母、数字或 . _ : / + -")
-    if not REASONING_EFFORT_PATTERN.fullmatch(reasoning_effort):
-        raise TaskError("思考程度须为最多 32 个字符的小写英文标识")
+    _validate_model_options(model, reasoning_effort)
     return model, reasoning_effort, sandbox
 
 

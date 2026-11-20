@@ -8,6 +8,7 @@ import stat
 import subprocess
 import sys
 import zipfile
+from contextlib import closing
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -1223,6 +1224,51 @@ def test_staging_keeps_tasks_separate_in_existing_workspace(ctx, tmp_path, monke
     assert (tmp_path / "task.csv").read_text() == "existing workspace file"
     assert first[0]["path"] != second[0]["path"]
     assert Path(first[0]["path"]).is_file() and Path(second[0]["path"]).is_file()
+
+
+def test_admin_dispatch_defaults_apply_to_new_previews(ctx, tmp_path):
+    path = tmp_path / "dispatch.db"
+    with closing(db.connect(path)) as conn:
+        ctx.conn = conn
+        form = task_form(ctx)
+        app = create_app(ctx)
+        admin, csrf = session(ctx, app, "admin")
+        alice, alice_csrf = session(ctx, app, "alice")
+        url = "/tasks/defaults"
+        admin_page = admin.get("/tasks").text
+        assert f'action="{url}"' in admin_page and 'name="model" value="gpt-6.1-terra"' in admin_page
+        assert 'name="reasoning_effort" value="medium"' in admin_page
+        assert f'action="{url}"' not in alice.get("/tasks").text
+        assert import_file(alice, alice_csrf, form).status_code == 200
+
+        values = {"model": " gpt-6.2-sol ", "reasoning_effort": " ultra "}
+        assert alice.post(url, data={**values, "csrf": alice_csrf}).status_code == 403
+        assert admin.post(url, data={**values, "csrf": "bad"}).status_code == 403
+        assert admin.post(url, data={**values, "csrf": csrf}).status_code == 303
+        admin_page = admin.get("/tasks").text
+        assert 'name="model" value="gpt-6.2-sol"' in admin_page
+        assert 'name="reasoning_effort" value="ultra"' in admin_page
+        for invalid in ({"model": "bad model"}, {"reasoning_effort": " "}):
+            assert admin.post(url, data={**values, **invalid, "csrf": csrf}).status_code == 422
+
+        assert import_file(alice, alice_csrf, form).status_code == 200
+        assert import_file(alice, alice_csrf, form).status_code == 200
+        old, new = conn.execute("SELECT * FROM dispatch_tasks ORDER BY rowid").fetchall()
+        assert (old["model"], old["reasoning_effort"]) == ("gpt-6.1-terra", "medium")
+        assert (new["model"], new["reasoning_effort"]) == ("gpt-6.2-sol", "ultra")
+        detail = f"/tasks/{new['id']}"
+        page = alice.get(detail).text
+        assert 'name="model" value="gpt-6.2-sol"' in page
+        assert 'name="reasoning_effort" value="ultra"' in page
+        assert alice.post(detail + "/confirm", data={
+            "csrf": alice_csrf, "confirmed": "1", "model": "gpt-6.1-sol", "reasoning_effort": " ",
+        }).status_code == 303
+        queued = dispatch_worker.claim(ctx)
+        assert (queued["model"], queued["reasoning_effort"]) == ("gpt-6.1-sol", "ultra")
+        assert conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='dispatch.defaults'").fetchone()[0] == 1
+
+    with closing(db.connect(path)) as conn:
+        assert dispatch_tasks.get_defaults(conn) == ("gpt-6.2-sol", "ultra")
 
 
 def test_admin_prompt_template_preview_save_and_reset(ctx):
