@@ -17,6 +17,7 @@ from collections import deque
 from contextlib import suppress
 from dataclasses import replace
 from pathlib import Path
+from threading import Lock
 
 import codexctl.db as db
 import codexctl.dispatch.skills as dispatch_skills
@@ -29,6 +30,7 @@ from codexctl.users.sysusers import SysUser
 
 log = logging.getLogger(__name__)
 _MAX_PARALLEL = 3
+_DAEMON_START_LOCK = Lock()
 
 
 class DeliveryError(ValueError):
@@ -206,13 +208,15 @@ def _env(user: SysUser, name: str | None) -> dict[str, str]:
 def _connect_shared(ctx: Context, user: SysUser, cwd: Path, env: dict, *, timeout: float = 45) -> AppServer:
     socket_path = user.home / '.codex' / 'app-server-control' / 'app-server-control.sock'
     if not socket_path.exists():
-        started = subprocess.run(
-            [str(ctx.settings.codex_bin), 'app-server', 'daemon', 'start'],
-            cwd=cwd, env=env, user=user.uid, group=user.gid, extra_groups=[],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,
-        )
-        if started.returncode or not socket_path.exists():
-            raise DeliveryError('无法启动执行用户的共享 Codex App Server')
+        with _DAEMON_START_LOCK:
+            if not socket_path.exists():
+                started = subprocess.run(
+                    [str(ctx.settings.codex_bin), 'app-server', 'daemon', 'start'],
+                    cwd=cwd, env=env, user=user.uid, group=user.gid, extra_groups=[],
+                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,
+                )
+                if started.returncode or not socket_path.exists():
+                    raise DeliveryError('无法启动执行用户的共享 Codex App Server')
     # Open the bridge before switching users so it can run from a private package installation.
     launcher = (
         "import os, sys\n"
@@ -467,21 +471,13 @@ def deliver(ctx: Context, run_root: Path, task: sqlite3.Row) -> None:
 
 def claim(ctx: Context) -> sqlite3.Row | None:
     with db.transaction(ctx.conn):
-        task = ctx.conn.execute("""
-            SELECT q.* FROM dispatch_tasks q WHERE q.status='queued' AND NOT EXISTS (
+        task = ctx.conn.execute(f"""
+            SELECT q.* FROM dispatch_tasks q WHERE q.status='queued'
+            AND (q.run_immediately<>0 OR NOT EXISTS (
                 SELECT 1 FROM dispatch_tasks active
-                WHERE (active.recipient=q.recipient OR active.target_id=q.target_id OR EXISTS (
-                    SELECT 1
-                    FROM json_each(COALESCE(json_extract(active.target_snapshot, '$.targets'),
-                                            json_array(json(active.target_snapshot)))) a
-                    JOIN json_each(COALESCE(json_extract(q.target_snapshot, '$.targets'),
-                                            json_array(json(q.target_snapshot)))) b
-                      ON json_extract(a.value, '$.server_id')=json_extract(b.value, '$.server_id')
-                     AND (json_extract(a.value, '$.id')=json_extract(b.value, '$.id')
-                          OR json_extract(a.value, '$.domain')=json_extract(b.value, '$.domain'))
-                ))
-                  AND (active.status IN ('sending', 'cancelling') OR (active.status='sent' AND active.turn_status='inProgress'))
-            )
+                WHERE active.recipient=q.recipient AND {dispatch_tasks.ACTIVE_TASK_SQL}
+            ))
+            AND NOT {dispatch_tasks.TARGET_CONFLICT_SQL}
             ORDER BY q.confirmed_at, q.rowid LIMIT 1
         """).fetchone()
         if task:

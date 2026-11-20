@@ -229,6 +229,7 @@ CREATE TABLE IF NOT EXISTS dispatch_tasks (
     reasoning_effort TEXT,
     sandbox TEXT NOT NULL DEFAULT 'danger-full-access',
     working_directory TEXT,
+    run_immediately INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     confirmed_at INTEGER,

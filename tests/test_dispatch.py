@@ -9,6 +9,7 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
+from urllib.parse import urlencode
 
 import pytest
 from fastapi.testclient import TestClient
@@ -464,6 +465,106 @@ def test_batch_queue_blocks_overlapping_site_and_accepts_legacy_task(ctx):
     assert dispatch_worker.claim(ctx) is None
     ctx.conn.execute("UPDATE dispatch_tasks SET status='sent', turn_status='completed' WHERE id=?", (alice_id,))
     assert dispatch_worker.claim(ctx)["id"] == bob_id
+
+
+def test_immediate_batch_bypasses_user_queue_but_waits_for_overlapping_site(ctx):
+    form = task_form(ctx)
+    server = site_registry.get(ctx.conn, form["server_id"])
+    inventory(ctx, server, ("8", ["shop.example.com", "www.shop.example.com"]),
+              ("9", ["second.example.com"]), ("10", ["third.example.com"]))
+    alice, csrf = session(ctx, create_app(ctx), "alice")
+
+    def submit(domain, immediate=False):
+        content = f"网站,新域名,备注,折扣\nsource.example.com,{domain},,\n".encode()
+        assert import_file(alice, csrf, form, content).status_code == 200
+        task_id = ctx.conn.execute("SELECT id FROM dispatch_tasks ORDER BY rowid DESC LIMIT 1").fetchone()[0]
+        url = f"/tasks/{task_id}"
+        assert "立即执行" in alice.get(url).text
+        fields = [("csrf", csrf), ("confirmed", "1"), ("run_immediately", "0")]
+        if immediate:
+            fields.append(("run_immediately", "1"))
+        response = alice.post(url + "/confirm", content=urlencode(fields),
+                              headers={"Content-Type": "application/x-www-form-urlencoded"})
+        assert response.status_code == 303
+        saved = ctx.conn.execute("SELECT run_immediately FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()
+        assert saved[0] == int(immediate)
+        return task_id
+
+    first = submit("shop.example.com")
+    queued = submit("second.example.com")
+    immediate = submit("third.example.com", immediate=True)
+    overlapping = submit("www.shop.example.com")
+
+    assert dispatch_worker.claim(ctx)["id"] == first
+    ctx.conn.execute("UPDATE dispatch_tasks SET status='sent', turn_status='inProgress' WHERE id=?", (first,))
+    assert dispatch_worker.claim(ctx)["id"] == immediate
+    assert dispatch_worker.claim(ctx) is None
+    overlap_list = f"/tasks?state=queued&q={overlapping}"
+    overlap_detail = f"/tasks/{overlapping}"
+    warning = "目标站点冲突，等待其他批次释放"
+    assert warning in alice.get(overlap_list).text
+    assert warning not in alice.get(f"/tasks?state=queued&q={queued}").text
+    assert "目标站点冲突。其他批次正在处理" in alice.get(overlap_detail).text
+    assert alice.post(overlap_detail + "/run-immediately", data={"csrf": csrf}).status_code == 303
+    page = alice.get(overlap_list).text
+    assert warning in page and "已选择立即执行" in page
+    assert dispatch_worker.claim(ctx) is None
+
+    ctx.conn.execute("UPDATE dispatch_tasks SET turn_status='completed' WHERE id=?", (first,))
+    assert warning not in alice.get(overlap_list).text
+    assert "目标站点冲突。其他批次正在处理" not in alice.get(overlap_detail).text
+    assert dispatch_worker.claim(ctx)["id"] == overlapping
+    assert dispatch_worker.claim(ctx) is None
+    ctx.conn.execute("UPDATE dispatch_tasks SET status='sent', turn_status='completed' WHERE id IN (?, ?)",
+                     (immediate, overlapping))
+    assert dispatch_worker.claim(ctx)["id"] == queued
+
+
+def test_member_can_run_queued_batch_immediately_from_task_list(ctx):
+    form = task_form(ctx)
+    server = site_registry.get(ctx.conn, form["server_id"])
+    inventory(ctx, server, ("8", ["shop.example.com"]), ("9", ["second.example.com"]))
+    app = create_app(ctx)
+    alice, csrf = session(ctx, app, "alice")
+    bob, bob_csrf = session(ctx, app, "bob")
+    admin, admin_csrf = session(ctx, app, "admin")
+
+    def queue(domain):
+        content = f"网站,新域名,备注,折扣\nsource.example.com,{domain},,\n".encode()
+        task_id = dispatch_tasks.create_previews(
+            ctx, "alice", dispatch_tasks.parse_import(content), form["dispatcher"], form["migration"],
+        )
+        task = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()
+        dispatch_tasks.confirm(ctx, task, "alice")
+        return task_id
+
+    active = queue("shop.example.com")
+    queued = queue("second.example.com")
+    assert dispatch_worker.claim(ctx)["id"] == active
+    assert dispatch_worker.claim(ctx) is None
+    list_url = f"/tasks?state=queued&q={queued}&page=1"
+    action = f"/tasks/{queued}/run-immediately"
+    assert f'action="{action}?' in alice.get(list_url).text
+    assert action not in admin.get("/tasks").text
+    assert action not in bob.get("/tasks").text
+    assert alice.post(action, data={"csrf": "invalid"}).status_code == 403
+    assert admin.post(action, data={"csrf": admin_csrf}).status_code == 403
+    assert bob.post(action, data={"csrf": bob_csrf}).status_code == 404
+    assert alice.post(f"/tasks/{active}/run-immediately", data={"csrf": csrf}).status_code == 303
+    assert not ctx.conn.execute("SELECT run_immediately FROM dispatch_tasks WHERE id=?", (active,)).fetchone()[0]
+
+    original = ctx.conn.execute("SELECT status, confirmed_at FROM dispatch_tasks WHERE id=?", (queued,)).fetchone()
+    response = alice.post(action, params={"back": list_url}, data={"csrf": csrf})
+    assert response.status_code == 303 and response.headers["location"] == list_url
+    repeat = alice.post(action, params={"back": "//elsewhere.example/tasks"}, data={"csrf": csrf})
+    assert repeat.status_code == 303 and repeat.headers["location"] == "/tasks"
+    saved = ctx.conn.execute("SELECT status, confirmed_at, run_immediately FROM dispatch_tasks WHERE id=?",
+                             (queued,)).fetchone()
+    assert tuple(saved) == (*original, 1)
+    page = alice.get(list_url).text
+    assert "已选择立即执行" in page and action not in page
+    assert ctx.conn.execute("SELECT COUNT(*) FROM audit_log WHERE action='dispatch.run_immediately'").fetchone()[0] == 1
+    assert dispatch_worker.claim(ctx)["id"] == queued
 
 
 def test_xlsx_import_shares_matching_and_preserves_values(ctx):
@@ -939,7 +1040,7 @@ def test_draft_persists_execution_options_and_legacy_confirm_uses_them(ctx):
     url = f"/tasks/{task['id']}"
     response = alice.post(url + "/prompt", data={
         "csrf": csrf, "prompt": "新的提示词", "model": " gpt-6.1-sol ",
-        "reasoning_effort": " high ", "sandbox": "danger-full-access",
+        "reasoning_effort": " high ", "sandbox": "danger-full-access", "run_immediately": "1",
     })
     assert response.status_code == 303
     saved = ctx.conn.execute("SELECT * FROM dispatch_tasks").fetchone()
@@ -948,6 +1049,7 @@ def test_draft_persists_execution_options_and_legacy_confirm_uses_them(ctx):
     )
     page = alice.get(url).text
     assert 'value="gpt-6.1-sol"' in page and 'value="high"' in page
+    assert 'aria-describedby="dispatch-immediate-hint" checked' in page
     # Old clients only send the prompt and retain the already saved execution settings.
     assert alice.post(url + "/prompt", data={"csrf": csrf, "prompt": "再改提示词"}).status_code == 303
     assert alice.post(url + "/confirm", data={"csrf": csrf, "confirmed": "1"}).status_code == 303
@@ -955,6 +1057,7 @@ def test_draft_persists_execution_options_and_legacy_confirm_uses_them(ctx):
     assert (saved["prompt"], saved["model"], saved["reasoning_effort"]) == (
         "再改提示词", "gpt-6.1-sol", "high",
     )
+    assert saved["run_immediately"] == 1
 
 
 @pytest.mark.parametrize("invalid", [{"model": "bad\nmodel"}, {"reasoning_effort": "Bad"},

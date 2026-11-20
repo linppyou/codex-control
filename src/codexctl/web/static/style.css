@@ -127,6 +127,7 @@ input[type=checkbox] { accent-color: var(--green); width: 15px; height: 15px; ve
 .flash { padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; border: 1px solid transparent; }
 .flash.ok { background: var(--green-soft); color: #2c5a16; border-color: #cfe3c3; }
 .flash.bad { background: var(--red-soft); color: #a61b1b; border-color: #f5c6c6; }
+.flash.warn { background: #fdf1e4; color: #874711; border-color: #f0d4b4; }
 .badge { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 500; white-space: nowrap; background: #eef0f3; color: var(--text-2); }
 .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .badge.active, .badge.ok { background: var(--green-soft); color: var(--green); }

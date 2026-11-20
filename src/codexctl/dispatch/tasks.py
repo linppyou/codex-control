@@ -38,6 +38,23 @@ DEFAULT_REASONING_EFFORT = "medium"
 DEFAULT_SANDBOX = "danger-full-access"
 MODEL_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}")
 REASONING_EFFORT_PATTERN = re.compile(r"[a-z][a-z0-9_-]{0,31}")
+ACTIVE_TASK_SQL = """(
+    active.status IN ('sending', 'cancelling')
+    OR (active.status='sent' AND active.turn_status='inProgress')
+)"""
+TARGET_CONFLICT_SQL = f"""EXISTS (
+    SELECT 1 FROM dispatch_tasks active
+    WHERE {ACTIVE_TASK_SQL} AND (active.target_id=q.target_id OR EXISTS (
+        SELECT 1
+        FROM json_each(COALESCE(json_extract(active.target_snapshot, '$.targets'),
+                                json_array(json(active.target_snapshot)))) a
+        JOIN json_each(COALESCE(json_extract(q.target_snapshot, '$.targets'),
+                                json_array(json(q.target_snapshot)))) b
+          ON json_extract(a.value, '$.server_id')=json_extract(b.value, '$.server_id')
+         AND (json_extract(a.value, '$.id')=json_extract(b.value, '$.id')
+              OR json_extract(a.value, '$.domain')=json_extract(b.value, '$.domain'))
+    ))
+)"""
 _LEGACY_TARGET_FIELDS = """
     SELECT t.id, t.server_id, t.server_revision, t.domain, t.endpoint, t.credential_env,
            t.project, t.users, s.name AS server_name, s.host AS server_host, s.port AS server_port
@@ -416,7 +433,7 @@ def execution_directory(user: SysUser, task, value: str | None = None) -> str:
 def save_prompt(
     ctx: Context, task: sqlite3.Row, actor: str, prompt: str, *,
     model: str | None = None, reasoning_effort: str | None = None, sandbox: str | None = None,
-    working_directory: str | None = None,
+    working_directory: str | None = None, run_immediately: bool | None = None,
 ) -> None:
     with db.transaction(ctx.conn):
         current = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task["id"],)).fetchone()
@@ -430,8 +447,9 @@ def save_prompt(
         user, _ = recipient(ctx, current["recipient"])
         directory = execution_directory(user, current, working_directory)
         ctx.conn.execute(
-            "UPDATE dispatch_tasks SET prompt=?, model=?, reasoning_effort=?, sandbox=?, working_directory=? WHERE id=?",
-            (prompt, model, reasoning_effort, sandbox, directory, task["id"]),
+            """UPDATE dispatch_tasks SET prompt=?, model=?, reasoning_effort=?, sandbox=?, working_directory=?,
+               run_immediately=COALESCE(?, run_immediately) WHERE id=?""",
+            (prompt, model, reasoning_effort, sandbox, directory, run_immediately, task["id"]),
         )
         events.audit(ctx.conn, actor, "dispatch.prompt", task["id"], task["title"], now=ctx.now())
 
@@ -439,7 +457,7 @@ def save_prompt(
 def confirm(
     ctx: Context, task: sqlite3.Row, actor: str, prompt: str | None = None, *,
     model: str | None = None, reasoning_effort: str | None = None,
-    sandbox: str | None = None, working_directory: str | None = None,
+    sandbox: str | None = None, working_directory: str | None = None, run_immediately: bool | None = None,
 ) -> None:
     with db.transaction(ctx.conn):
         current = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task["id"],)).fetchone()
@@ -455,10 +473,22 @@ def confirm(
         user, _ = validate_snapshot(ctx, current)
         directory = execution_directory(user, current, working_directory)
         ctx.conn.execute(
-            "UPDATE dispatch_tasks SET prompt=?, status='queued', confirmed_at=?, model=?, reasoning_effort=?, sandbox=?, working_directory=? WHERE id=?",
-            (prompt, ctx.now(), model, reasoning_effort, sandbox, directory, task["id"]),
+            """UPDATE dispatch_tasks SET prompt=?, status='queued', confirmed_at=?, model=?, reasoning_effort=?,
+               sandbox=?, working_directory=?, run_immediately=COALESCE(?, run_immediately) WHERE id=?""",
+            (prompt, ctx.now(), model, reasoning_effort, sandbox, directory, run_immediately, task["id"]),
         )
         events.audit(ctx.conn, actor, "dispatch.confirm", task["id"], task["title"], now=ctx.now())
+
+
+def enable_immediate(ctx: Context, task_id: str, actor: str) -> None:
+    with db.transaction(ctx.conn):
+        task = ctx.conn.execute("SELECT * FROM dispatch_tasks WHERE id=?", (task_id,)).fetchone()
+        if task is None or actor == "admin" or actor not in {task["owner"], task["recipient"]}:
+            raise TaskError("仅任务所属成员可以立即执行任务")
+        if task["status"] != "queued" or task["run_immediately"]:
+            return
+        ctx.conn.execute("UPDATE dispatch_tasks SET run_immediately=1 WHERE id=?", (task_id,))
+        events.audit(ctx.conn, actor, "dispatch.run_immediately", task_id, task["title"], now=ctx.now())
 
 
 def can_cancel(task: sqlite3.Row) -> bool:

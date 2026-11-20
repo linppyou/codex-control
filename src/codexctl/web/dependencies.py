@@ -105,7 +105,7 @@ def csrf_guard(request: Request, csrf: str = Form("")) -> None:
     csrf = csrf or request.headers.get("X-CSRFToken", "")
     username, _ = session_csrf(request, csrf)
     user_task_post = request.method == "POST" and (
-        path == "/tasks/import" or re.fullmatch(r"/tasks/[0-9a-f]{32}/(?:confirm|cancel|prompt)", path)
+        path == "/tasks/import" or re.fullmatch(r"/tasks/[0-9a-f]{32}/(?:confirm|cancel|prompt|run-immediately)", path)
     )
     user_server_post = request.method == "POST" and (
         re.fullmatch(r"/servers/[0-9a-f]{32}/sites/[^/]+/(?:probe|waf|state|remark)", path)

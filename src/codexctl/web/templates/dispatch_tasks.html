@@ -121,8 +121,19 @@
         <a href="/tasks/{{ task.id }}?back={{ list_url|urlencode }}" class="dispatch-list-title">{{ task.title }}</a>
         <div class="dispatch-list-meta">
           <span class="badge {{ status_class }}">{{ status_text }}</span>
+          {% if task.target_conflict %}<span class="badge warn">目标站点冲突，等待其他批次释放</span>{% endif %}
           {% if is_admin %}<span>{{ task.recipient }}</span>{% endif %}
           <span>{{ time(task.created_at) }}</span>
+          {% if not is_admin and task.status == 'queued' %}
+            {% if task.run_immediately %}
+            <span>已选择立即执行</span>
+            {% else %}
+            <form method="post" action="/tasks/{{ task.id }}/run-immediately?back={{ list_url|urlencode }}">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <button class="btn small primary" type="submit">立即执行</button>
+            </form>
+            {% endif %}
+          {% endif %}
           {% if not is_admin and can_cancel(task) %}
           <form method="post" action="/tasks/{{ task.id }}/cancel">
             <input type="hidden" name="csrf" value="{{ csrf }}">

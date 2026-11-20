@@ -56,9 +56,13 @@ def register(app) -> None:
         return row
 
     def back_url(request):
-        value = request.query_params.get("back", "/tasks")
-        parsed = urlsplit(value)
-        return value if parsed.path == "/tasks" and not parsed.scheme and not parsed.netloc else "/tasks"
+        try:
+            parsed = urlsplit(request.query_params.get("back", "/tasks"))
+        except ValueError:
+            return "/tasks"
+        if parsed.path == "/tasks" and not parsed.scheme and not parsed.netloc and parsed.query:
+            return f"/tasks?{parsed.query}"
+        return "/tasks"
 
     def task_url(task_id, request):
         return f"/tasks/{task_id}?" + urlencode({"back": back_url(request)})
@@ -89,7 +93,10 @@ def register(app) -> None:
             pages = max(1, (total + 49) // 50)
             page = min(page, pages)
             history = ctx.conn.execute(
-                f"""SELECT id, owner, recipient, title, status, turn_status, created_at, target_snapshot FROM dispatch_tasks
+                f"""SELECT id, owner, recipient, title, status, turn_status, created_at, target_snapshot, run_immediately,
+                           CASE WHEN q.status='queued' THEN {dispatch_tasks.TARGET_CONFLICT_SQL} ELSE 0 END
+                               AS target_conflict
+                    FROM dispatch_tasks q
                     WHERE {where} ORDER BY created_at DESC, rowid DESC LIMIT 50 OFFSET ?""",
                 [*values, (page - 1) * 50],
             ).fetchall()
@@ -175,6 +182,10 @@ def register(app) -> None:
             children = ctx.conn.execute(
                 "SELECT * FROM dispatch_children WHERE task_id=? ORDER BY row_number", (task["id"],),
             ).fetchall()
+            target_conflict = task["status"] == "queued" and ctx.conn.execute(
+                f"SELECT 1 FROM dispatch_tasks q WHERE id=? AND status='queued' AND {dispatch_tasks.TARGET_CONFLICT_SQL}",
+                (task["id"],),
+            ).fetchone() is not None
         child_counts = {}
         for child in children:
             child_counts[child["status"]] = child_counts.get(child["status"], 0) + 1
@@ -183,6 +194,7 @@ def register(app) -> None:
             request, "dispatch_detail.html", status=status, admin=user, csrf=csrf, task=task,
             target=target, batch_rows=target.get("rows", []), skills=json.loads(task["skills"]),
             children=children, child_counts=child_counts, status_text=status_text, status_class=status_class, back_url=back_url(request), task_url=task_url(task["id"], request),
+            target_conflict=target_conflict,
             refreshing=task["status"] in {"queued", "sending", "cancelling"}
                        or task["turn_status"] == "inProgress"
                        or any(child["status"] in {"starting", "sending", "running"} for child in children),
@@ -198,6 +210,7 @@ def register(app) -> None:
                 "reasoning_effort": task["reasoning_effort"] or dispatch_tasks.DEFAULT_REASONING_EFFORT,
                 "sandbox": dispatch_tasks.DEFAULT_SANDBOX,
                 "working_directory": task["working_directory"] or "~/wp_front",
+                "run_immediately": task["run_immediately"],
             },
         )
 
@@ -231,6 +244,7 @@ def register(app) -> None:
         request: Request, task_id: str, confirmed: str = Form(""),
         model: str | None = Form(None), reasoning_effort: str | None = Form(None),
         sandbox: str | None = Form(None), working_directory: str | None = Form(None),
+        run_immediately: bool | None = Form(None),
         who: tuple[str, str] = Depends(current_user),
     ):
         prompt = (await request.form()).get("prompt")
@@ -245,7 +259,10 @@ def register(app) -> None:
                 error = "请先核对提示词并勾选确认"
             else:
                 try:
-                    dispatch_tasks.confirm(ctx, task, who[0], prompt, model=model, reasoning_effort=reasoning_effort, sandbox=sandbox, working_directory=working_directory)
+                    dispatch_tasks.confirm(
+                        ctx, task, who[0], prompt, model=model, reasoning_effort=reasoning_effort,
+                        sandbox=sandbox, working_directory=working_directory, run_immediately=run_immediately,
+                    )
                 except dispatch_tasks.TaskError as exc:
                     error = str(exc)
         if error:
@@ -255,7 +272,8 @@ def register(app) -> None:
                                execution={"model": model if model is not None else task["model"] or dispatch_tasks.DEFAULT_MODEL,
                                           "reasoning_effort": reasoning_effort if reasoning_effort is not None else task["reasoning_effort"] or dispatch_tasks.DEFAULT_REASONING_EFFORT,
                                           "sandbox": sandbox if sandbox is not None else task["sandbox"],
-                                          "working_directory": working_directory if working_directory is not None else task["working_directory"] or "~/wp_front"})
+                                          "working_directory": working_directory if working_directory is not None else task["working_directory"] or "~/wp_front",
+                                          "run_immediately": run_immediately if run_immediately is not None else task["run_immediately"]})
         return RedirectResponse(task_url(task_id, request), status_code=303)
 
     @app.post("/tasks/{task_id}/prompt")
@@ -263,6 +281,7 @@ def register(app) -> None:
         request: Request, task_id: str, prompt: str = Form(""),
         model: str | None = Form(None), reasoning_effort: str | None = Form(None),
         sandbox: str | None = Form(None), working_directory: str | None = Form(None),
+        run_immediately: bool | None = Form(None),
         who: tuple[str, str] = Depends(current_user),
     ):
         error = ""
@@ -271,7 +290,10 @@ def register(app) -> None:
             if task["owner"] != who[0] or who[0] == "admin":
                 raise HTTPException(403, "仅任务所属成员可以修改提示词")
             try:
-                dispatch_tasks.save_prompt(ctx, task, who[0], prompt, model=model, reasoning_effort=reasoning_effort, sandbox=sandbox, working_directory=working_directory)
+                dispatch_tasks.save_prompt(
+                    ctx, task, who[0], prompt, model=model, reasoning_effort=reasoning_effort,
+                    sandbox=sandbox, working_directory=working_directory, run_immediately=run_immediately,
+                )
             except dispatch_tasks.TaskError as exc:
                 error = str(exc)
                 if task["status"] == "preview":
@@ -281,8 +303,19 @@ def register(app) -> None:
                                execution={"model": model if model is not None else task["model"] or dispatch_tasks.DEFAULT_MODEL,
                                           "reasoning_effort": reasoning_effort if reasoning_effort is not None else task["reasoning_effort"] or dispatch_tasks.DEFAULT_REASONING_EFFORT,
                                           "sandbox": sandbox if sandbox is not None else task["sandbox"],
-                                          "working_directory": working_directory if working_directory is not None else task["working_directory"] or "~/wp_front"})
+                                          "working_directory": working_directory if working_directory is not None else task["working_directory"] or "~/wp_front",
+                                          "run_immediately": run_immediately if run_immediately is not None else task["run_immediately"]})
         return RedirectResponse(task_url(task_id, request), status_code=303)
+
+    @app.post("/tasks/{task_id}/run-immediately")
+    def run_immediately(request: Request, task_id: str, who: tuple[str, str] = Depends(current_user)):
+        with lock:
+            get_task(task_id, who[0])
+            try:
+                dispatch_tasks.enable_immediate(ctx, task_id, who[0])
+            except dispatch_tasks.TaskError as exc:
+                raise HTTPException(403, str(exc)) from exc
+        return RedirectResponse(back_url(request), status_code=303)
 
     @app.post("/tasks/{task_id}/cancel")
     def cancel_task(request: Request, task_id: str, who: tuple[str, str] = Depends(current_user)):

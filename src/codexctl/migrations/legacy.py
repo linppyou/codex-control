@@ -30,6 +30,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE dispatch_tasks ADD COLUMN result_text TEXT NOT NULL DEFAULT ''")
         if "sandbox" not in task_columns:
             conn.execute("ALTER TABLE dispatch_tasks ADD COLUMN sandbox TEXT NOT NULL DEFAULT 'workspace-write'")
+        if "run_immediately" not in task_columns:
+            conn.execute("ALTER TABLE dispatch_tasks ADD COLUMN run_immediately INTEGER NOT NULL DEFAULT 0")
         if "system_uid" not in {r["name"] for r in conn.execute("PRAGMA table_info(web_sessions)")}:
             conn.execute("ALTER TABLE web_sessions ADD COLUMN system_uid INTEGER")
         if "password_configured" not in {r["name"] for r in conn.execute("PRAGMA table_info(admins)")}:

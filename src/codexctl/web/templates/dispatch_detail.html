@@ -11,6 +11,7 @@
 </header>
 
 {% if task.error %}<p class="flash bad" role="alert">{{ task.error }}</p>{% endif %}
+{% if target_conflict %}<p class="flash warn" role="status">目标站点冲突。其他批次正在处理至少一个相同的目标站点，本批次将等待站点释放。</p>{% endif %}
 {% if task.result_text %}
 <section class="panel flush">
   <div class="panel-head"><h2>Codex 执行回复</h2></div>
@@ -65,6 +66,11 @@
           <input type="hidden" name="sandbox" value="{{ execution.sandbox }}">
           <p class="hint dispatch-wide">执行权限为不使用沙箱，批准策略为 never。运行中可通过同一用户的 Codex 会话介入。</p>
         </div>
+        <input type="hidden" name="run_immediately" value="0">
+        <label>
+          <input type="checkbox" name="run_immediately" value="1" aria-describedby="dispatch-immediate-hint"{% if execution.run_immediately %} checked{% endif %}>
+          <span>立即执行<br><span class="hint" id="dispatch-immediate-hint">允许与同一执行用户的其他批次并行。目标站点冲突或 Worker 满 3 个批次时仍需等待。</span></span>
+        </label>
         <label><input type="checkbox" name="confirmed" value="1" required> 已核对提示词、目标站及 Skill，确认发送</label>
         <div class="dispatch-actions">
           <a class="btn" href="{{ back_url }}">返回任务</a>
@@ -111,6 +117,7 @@
       {% endif %}
       <div><dt>工作目录</dt><dd>{{ working_directory }}</dd></div>
       <div><dt>执行用户</dt><dd>{{ task.recipient }}</dd></div>
+      {% if task.confirmed_at %}<div><dt>调度方式</dt><dd>{{ '立即执行' if task.run_immediately else '按用户排队' }}</dd></div>{% endif %}
       <div><dt>模型 ID</dt><dd>{{ task.model or '沿用用户默认配置' }}</dd></div>
       <div><dt>思考程度</dt><dd>{{ task.reasoning_effort or '沿用用户默认配置' }}</dd></div>
       <div><dt>执行权限</dt><dd>{{ '不使用沙箱' if task.sandbox == 'danger-full-access' else '工作区写入沙箱' }}</dd></div>
