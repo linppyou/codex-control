@@ -4,6 +4,7 @@ import logging
 import signal
 import threading
 from datetime import datetime, timedelta
+from functools import partial
 from typing import Callable
 
 from apscheduler.executors.pool import ThreadPoolExecutor
@@ -24,7 +25,7 @@ JOBS: list[tuple[str, Callable[[Context], object], int]] = [
     ("refresh", refresher.refresh_due, 600),
     ("quota", quota.poll_quotas, 0),  # 0 表示取 settings.quota_poll_seconds
     ("logscan", logscan.scan_all, 60),
-    ("watch", watcher.run_checks, 300),
+    ("watch", partial(watcher.run_checks, reconcile_disabled=True), 300),
 ]
 
 

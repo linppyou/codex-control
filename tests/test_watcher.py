@@ -6,6 +6,7 @@ import codexctl.events as events
 import codexctl.repo as repo
 import codexctl.usage.watcher as watcher
 import codexctl.users.assignments as assignments
+from codexctl.runner import CommandError
 
 ACL_ALICE = "user::rw-\nuser:alice:r--\ngroup::---\nmask::r--\nother::---\n"
 
@@ -26,6 +27,23 @@ def kinds(findings):
 
 def test_clean_state_has_no_findings(setup):
     assert watcher.run_checks(setup) == []
+
+
+def test_reconciles_legacy_disabled_acl_and_reports_failure(setup, monkeypatch):
+    ctx = setup
+    acc = repo.get_account(ctx.conn, "acc1")
+    repo.set_status(ctx.conn, acc.id, "disabled")
+
+    def fail(label):
+        raise CommandError("setfacl failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ctx.publisher, "revoke_readers", fail)
+        assert kinds(watcher.run_checks(ctx, reconcile_disabled=True)) == [("acl_mismatch", "acc1")]
+    assert kinds(watcher.run_checks(ctx)) == [("acl_mismatch", "acc1")]
+    assert watcher.run_checks(ctx, reconcile_disabled=True) == []
+    assert ctx.test_runner.calls[-1][2] == "u::rw-,g::---,o::---"
+    assert not events.open_alerts(ctx.conn)
 
 
 def test_deleted_link_detected_and_resolved_after_fix(setup):

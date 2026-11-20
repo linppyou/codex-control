@@ -254,6 +254,7 @@ def scan_all(ctx: Context) -> int:
                 total += scan_file(ctx, name, path)
             except Exception as e:  # 单个文件出错不能影响其他文件
                 log.warning("扫描会话日志失败 %s：%r", path, e)
-    for acc in account_repo.list_accounts(ctx.conn):
-        quota.evaluate_thresholds(ctx, acc)
+    with transaction(ctx.conn):
+        for acc in account_repo.list_accounts(ctx.conn):
+            quota.evaluate_thresholds(ctx, acc)
     return total

@@ -183,6 +183,8 @@ def _account_rows(ctx) -> list[dict]:
         users_by_account.setdefault(assignment.account_pk, []).append(assignment.username)
     rows = []
     for acc in account_repo.list_accounts(ctx.conn):
+        if acc.status == "disabled":
+            continue
         latest = usage_repo.latest_quota(ctx.conn, acc.id, api_fresh_since=now - 2 * ctx.settings.quota_poll_seconds)
         history = usage_repo.quota_history(ctx.conn, acc.id, now - 7 * 86400)
         card = _card(acc, history, latest, now, ctx.settings)
@@ -191,14 +193,18 @@ def _account_rows(ctx) -> list[dict]:
     return rows
 
 
-def _account_table(ctx) -> list[dict]:
+def _account_table(ctx, status: str = "all") -> list[dict]:
     """账号管理页的表格行：比首页卡片多出邮箱、用户数、错误与 token 到期等管理信息。"""
     now = ctx.now()
-    counts: dict[int, int] = {}
+    users: dict[int, list[str]] = {}
     for a in user_repo.all_active(ctx.conn):
-        counts[a.account_pk] = counts.get(a.account_pk, 0) + 1
+        users.setdefault(a.account_pk, []).append(a.username)
     rows = []
     for acc in account_repo.list_accounts(ctx.conn):
+        if status == "enabled" and acc.status == "disabled":
+            continue
+        if status not in ("enabled", "all") and acc.status != status:
+            continue
         quotas = [
             _quota_view(q, now)
             for q in usage_repo.latest_quota(ctx.conn, acc.id, api_fresh_since=now - 2 * ctx.settings.quota_poll_seconds)
@@ -211,7 +217,7 @@ def _account_table(ctx) -> list[dict]:
             "plan": clean_text(acc.plan_type or "-"),
             "status": acc.status,
             "last_error": clean_text(acc.last_error or "", 200),
-            "users": counts.get(acc.id, 0),
+            "users": users.get(acc.id, []),
             "last_refresh": fmt_ts(acc.last_refresh),
             "expires": fmt_ts(acc.access_expires_at),
             "quota": quotas,
@@ -252,7 +258,7 @@ def _finish_login(ctx, devlogins, login_id: str, label: str, mode: str, actor: s
     msg, err = _finish_login_import(ctx, devlogins, login_id, label, mode, actor)
     if msg:
         acc = account_repo.get_account(ctx.conn, label)
-        if acc is not None:
+        if acc is not None and acc.status == "active":
             failure = quota.poll_account(ctx, acc)
             if failure:
                 msg += f"（额度获取失败：{clean_text(failure, 200)}）"

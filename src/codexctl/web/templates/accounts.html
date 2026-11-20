@@ -1,7 +1,13 @@
 {% extends "base.html" %}
 {% block title %}账号 - codexctl{% endblock %}
 {% block content %}
-<div class="page-head"><div><h1>账号</h1><div class="sub">共 {{ rows|length }} 个账号</div></div></div>
+<div class="page-head"><div><h1>账号</h1><div class="sub">共 {{ rows|length }} 个账号</div></div>
+<nav class="seg account-filters" aria-label="账号状态">
+  {% for value, title in account_filters.items() %}
+  {% if status_filter == value %}<strong aria-current="page">{{ title }}</strong>{% else %}<a href="/accounts{% if value != 'enabled' %}?status={{ value }}{% endif %}">{{ title }}</a>{% endif %}
+  {% endfor %}
+</nav>
+</div>
 <div class="panel flush">
 <div class="table-wrap"><table class="mobile-cards accounts-table">
   <thead><tr><th>名称 / 标签</th><th>邮箱</th><th>套餐</th><th>状态</th><th>额度</th><th>最近错误</th><th class="num">用户数</th><th>上次刷新</th><th>token 到期</th>{% if is_admin %}<th>操作</th>{% endif %}</tr></thead>
@@ -21,22 +27,35 @@
     </td><td data-label="邮箱">{{ r.email or "—" }}</td><td class="mono" data-label="套餐">{{ r.plan or "—" }}</td>
     <td data-label="状态"><span class="badge {{ r.status }}">{{ {"active": "正常", "disabled": "已停用", "needs_relogin": "需重新登录"}.get(r.status, r.status) }}</span></td>
     <td class="nowrap mono" data-label="额度">{% for q in r.quota %}{{ q.name }} {{ "未知" if q.percent is none else q.percent ~ "%" }}{% if not loop.last %} / {% endif %}{% else %}<span class="muted">-</span>{% endfor %} <a href="/accounts/{{ r.label }}/quota">记录</a></td>
-    <td class="muted mobile-wide" data-label="最近错误">{{ r.last_error or "无" }}</td><td class="num" data-label="用户数">{{ r.users }}</td><td class="mono nowrap" data-label="上次刷新">{{ r.last_refresh }}</td><td class="mono nowrap" data-label="Token 到期">{{ r.expires }}</td>
+    <td class="muted mobile-wide" data-label="最近错误">{{ r.last_error or "无" }}</td><td class="num" data-label="用户数">{{ r.users|length }}</td><td class="mono nowrap" data-label="上次刷新">{{ r.last_refresh }}</td><td class="mono nowrap" data-label="Token 到期">{{ r.expires }}</td>
     {% if is_admin %}<td class="ops mobile-wide" data-label="操作">
+      {% if r.status == "disabled" %}
+      <form method="post" action="/accounts/{{ r.label }}/enable" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn small">启用</button></form>
+      {% if r.users %}
+      <div class="hint">删除前请转移或解除分配：{% for user in r.users %}<a href="/users/{{ user|urlencode }}">{{ user }}</a>{{ "、" if not loop.last }}{% endfor %}</div>
+      {% else %}
+      <details class="rename">
+        <summary class="btn small danger">删除账号</summary>
+        <form method="post" action="/accounts/{{ r.label }}/delete" class="rename-form">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <label>输入标签 <code>{{ r.label }}</code> 确认<input type="text" name="confirmation" maxlength="32" spellcheck="false" autocomplete="off" required></label>
+          <button class="btn small danger">确认删除</button>
+        </form>
+        <div class="hint">删除凭证并保留历史记录。</div>
+      </details>
+      {% endif %}
+      {% else %}
       {% if gateway_enabled %}<a href="/accounts/{{ r.label }}/models" class="btn small">模型</a>{% endif %}
-      {% for act, text in (("refresh", "刷新"), ("republish", "重新发布")) if managed or act != "republish" %}
+      {% for act, text in (("refresh", "刷新"), ("republish", "重新发布")) if (act == "refresh" and r.status == "active") or (act == "republish" and managed) %}
       <form method="post" action="/accounts/{{ r.label }}/{{ act }}" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn small">{{ text }}</button></form>
       {% endfor %}
       {% if managed %}<form method="post" action="/accounts/login" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="label" value="{{ r.label }}"><input type="hidden" name="mode" value="relogin"><button class="btn small">重新登录</button></form>{% endif %}
-      {% if r.status == "disabled" %}
-      <form method="post" action="/accounts/{{ r.label }}/enable" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn small">启用</button></form>
-      {% else %}
-      <form method="post" action="/accounts/{{ r.label }}/disable" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn small danger">停用</button></form>
+      <form method="post" action="/accounts/{{ r.label }}/disable" class="inline" data-confirm="停用 {{ r.label }} 将暂停已分配用户的账号访问。确认停用？"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn small danger">停用</button></form>
       {% endif %}
     </td>{% endif %}
   </tr>
   {% else %}
-  <tr><td colspan="10" class="empty">还没有账号</td></tr>
+  <tr><td colspan="10" class="empty">{{ "还没有账号" if status_filter == "all" else "没有符合此状态的账号" }}</td></tr>
   {% endfor %}
   </tbody>
 </table></div>

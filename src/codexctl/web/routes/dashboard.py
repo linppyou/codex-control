@@ -7,6 +7,7 @@ from fastapi import Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
 
+import codexctl.accounts.repository as account_repo
 import codexctl.events as events
 import codexctl.sites.registry as site_registry
 from codexctl.formatting import fmt_ts
@@ -47,8 +48,13 @@ def register(app) -> None:
             devlogins.sweep()
             msg, err = _complete_finished_logins(app, admin)
             cards = _account_rows(ctx)
-            cards.sort(key=lambda card: not (card["has_quota"] and card["remaining"] > 0))
-            available_count = sum(card["has_quota"] and card["remaining"] > 0 for card in cards)
+            available, pending = [], []
+            for card in cards:
+                if card["status"] == "active" and card["has_quota"] and card["remaining"] > 0:
+                    available.append(card)
+                else:
+                    pending.append(card)
+            only_disabled = not cards and bool(account_repo.list_accounts(ctx.conn))
             servers = site_registry.list_servers(ctx.conn)
             analytics = read_trends(days)
             alerts = [
@@ -61,8 +67,8 @@ def register(app) -> None:
             ]
             severity = {"critical": 3, "error": 2, "warning": 1, "warn": 1}
             top_alert = max(alerts, key=lambda alert: severity.get(alert["level"], 0), default=None)
-        return render(request, "dashboard.html", admin=admin[0], csrf=admin[1], cards=cards, alerts=alerts,
-                      top_alert=top_alert, available_count=available_count, servers=servers,
+        return render(request, "dashboard.html", admin=admin[0], csrf=admin[1], available=available, pending=pending,
+                      only_disabled=only_disabled, alerts=alerts, top_alert=top_alert, servers=servers,
                       **analytics, **trend_charts(analytics), **_flash(msg, err))
 
     @app.get("/dashboard/trends", response_class=HTMLResponse, dependencies=[Depends(current_admin)])

@@ -7,8 +7,10 @@ import codexctl.accounts.repository as account_repo
 import codexctl.accounts.service as accounts
 import codexctl.events as events
 import codexctl.users.repository as user_repo
+from codexctl.accounts.publisher import PublishError
 from codexctl.context import Context
 from codexctl.db import transaction
+from codexctl.locks import LockBusy, account_lock
 from codexctl.runner import CommandError
 from codexctl.users.sysusers import UserError
 
@@ -50,9 +52,25 @@ def _check_stale_links(ctx: Context, findings: list) -> None:
             findings.append(Finding("warning", "stale_link", user.name, f"未分配账号但仍链接到 {state.target}"))
 
 
-def _check_accounts(ctx: Context, findings: list) -> None:
+def _check_accounts(ctx: Context, findings: list, *, reconcile_disabled: bool) -> None:
     now = ctx.now()
     for acc in account_repo.list_accounts(ctx.conn):
+        if acc.status == "disabled":
+            try:
+                with account_lock(ctx.settings.state_dir, acc.label, blocking=False):
+                    fresh = account_repo.get_account(ctx.conn, acc.label)
+                    if fresh and fresh.status == "disabled" and ctx.publisher.account_file(acc.label).exists():
+                        actual = ctx.publisher.read_readers(acc.label)
+                        if actual and reconcile_disabled:
+                            ctx.publisher.revoke_readers(acc.label)
+                        elif actual:
+                            findings.append(Finding("critical", "acl_mismatch", acc.label,
+                                                    f"停用账号仍有凭证读取权限：{sorted(actual)}"))
+            except LockBusy:
+                pass
+            except (CommandError, OSError, PublishError) as e:
+                findings.append(Finding("critical", "acl_mismatch", acc.label, f"无法撤销停用账号的凭证读取权限：{e}"))
+            continue
         expected = {u.name for u in accounts.readers_for(ctx, acc.id)}
         try:
             actual = ctx.publisher.read_readers(acc.label)
@@ -77,18 +95,18 @@ def _check_accounts(ctx: Context, findings: list) -> None:
                 findings.append(
                     Finding("critical", "published_mismatch", acc.label, "发布文件与保险库不一致，可执行 account republish")
                 )
-        if acc.status != "disabled" and acc.access_expires_at - now < 86400:
+        if acc.access_expires_at - now < 86400:
             findings.append(
                 Finding("critical", "token_expiring", acc.label, "access_token 将在 24 小时内过期，刷新尚未成功")
             )
 
 
-def run_checks(ctx: Context) -> list[Finding]:
-    """执行全部巡检，只告警不修复：新问题打开告警，恢复正常的项关闭告警。"""
+def run_checks(ctx: Context, *, reconcile_disabled: bool = False) -> list[Finding]:
+    """巡检并更新告警。守护进程同时收回停用账号遗留的读取权限。"""
     findings: list[Finding] = []
     _check_assigned_links(ctx, findings)
     _check_stale_links(ctx, findings)
-    _check_accounts(ctx, findings)
+    _check_accounts(ctx, findings, reconcile_disabled=reconcile_disabled)
     now = ctx.now()
     problems = {(f.kind, f.target) for f in findings}
     with transaction(ctx.conn):

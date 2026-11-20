@@ -11,6 +11,7 @@ import codexctl.accounts.service as accounts
 import codexctl.events as events
 import codexctl.usage.repository as usage_repo
 from codexctl.context import Context
+from codexctl.locks import LockBusy, account_lock
 
 log = logging.getLogger(__name__)
 
@@ -77,6 +78,8 @@ def record(ctx: Context, account_pk: int, ts: int, windows: list[QuotaWindow], s
 
 
 def evaluate_thresholds(ctx: Context, acc: account_repo.Account) -> None:
+    if acc.status != "active":
+        return
     now = ctx.now()
     rows = usage_repo.latest_quota(ctx.conn, acc.id, api_fresh_since=now - 2 * ctx.settings.quota_poll_seconds)
     if not rows:
@@ -102,6 +105,17 @@ def fetch_usage(ctx: Context, acc: account_repo.Account) -> list[QuotaWindow]:
 
 def poll_account(ctx: Context, acc: account_repo.Account) -> str | None:
     """拉取并记录单个账号的额度；失败返回错误说明，成功返回 None。"""
+    try:
+        with account_lock(ctx.settings.state_dir, acc.label, blocking=False):
+            fresh = account_repo.get_account(ctx.conn, acc.label)
+            if fresh is None or fresh.status != "active":
+                return "仅正常账号可以刷新额度"
+            return _poll_active_account(ctx, fresh)
+    except LockBusy:
+        return "账号正在处理其他操作，请稍后再试"
+
+
+def _poll_active_account(ctx: Context, acc: account_repo.Account) -> str | None:
     try:
         windows = fetch_usage(ctx, acc)
         record(ctx, acc.id, ctx.now(), windows, "api")

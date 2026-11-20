@@ -185,7 +185,8 @@ def test_assign_disabled_and_unknown_user(c, ctx):
     add_acc(ctx)
     ctx.test_users.add("alice")
     assert "msg" in qs(post(c, "/accounts/acc1/disable"))[1]
-    assert "disabled" in c.get("/accounts").text
+    assert 'class="badge disabled"' in c.get("/accounts?status=disabled").text
+    assert "/accounts/acc1/enable" not in c.get("/accounts").text
     assert "acc1" not in c.get("/users").text
     r = c.post("/users/assign", data={"csrf": c.csrf, "users": ["alice", "ghost"], "account": "acc1"})
     assert "已停用" in qs(r)[1]["err"] and "ghost" in qs(r)[1]["err"]
@@ -193,6 +194,30 @@ def test_assign_disabled_and_unknown_user(c, ctx):
     assert qs(post(c, "/accounts/acc1/republish"))[1]["msg"]
     assert "err" in qs(post(c, "/accounts/nope/republish"))[1]
     assert "err" in qs(post(c, "/users/assign", account="acc1"))[1]
+
+
+def test_account_deletion_and_dashboard_lifecycle(c, ctx):
+    acc = add_acc(ctx)
+    repo.insert_quota_sample(ctx.conn, acc.id, ctx.now(), "secondary", 23, 10080, ctx.now() + 86400, "api")
+    assert '/accounts/acc1/quota' in c.get("/").text
+    assert "msg" in qs(post(c, "/accounts/acc1/disable"))[1]
+    page = c.get("/").text
+    assert "/accounts/acc1/quota" not in page
+    assert "0 个账号" in page and "当前没有启用的账号" in page
+    assert "仅正常账号可以刷新额度" in qs(post(c, "/accounts/acc1/quota-refresh"))[1]["err"]
+    assert "msg" in qs(post(c, "/accounts/acc1/enable"))[1]
+    assert "/accounts/acc1/quota" in c.get("/").text
+    assert "msg" in qs(post(c, "/accounts/acc1/disable"))[1]
+    assert "/accounts/acc1/delete" in c.get("/accounts?status=disabled").text
+    assert c.post("/accounts/acc1/delete", data={"confirmation": "acc1"}).status_code == 403
+    assert "err" in qs(post(c, "/accounts/acc1/delete", confirmation="wrong"))[1]
+    assert "msg" in qs(post(c, "/accounts/acc1/delete", confirmation="acc1"))[1]
+    assert "/accounts/acc1/quota" not in c.get("/accounts?status=all").text
+    assert "还没有账号" in c.get("/").text
+    history = c.get("/accounts/acc1/quota").text
+    assert "已删除" in history and "77%" in history
+    assert "/accounts/acc1/quota-refresh" not in history
+    assert c.get("/accounts/acc1/quota.csv").status_code == 200
 
 
 def test_refresh_success_failure_and_busy(c, ctx, monkeypatch):

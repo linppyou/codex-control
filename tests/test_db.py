@@ -17,6 +17,20 @@ def test_schema_created():
     } <= names
 
 
+def test_migrates_existing_disabled_accounts(tmp_path):
+    path = tmp_path / "legacy.db"
+    conn = db.connect(path)
+    conn.execute("ALTER TABLE accounts DROP COLUMN disabled_from_status")
+    conn.execute(
+        "INSERT INTO accounts(label, account_id, status, last_refresh, access_expires_at, created_at) "
+        "VALUES ('a', 'x', 'disabled', 0, 0, 0)"
+    )
+    conn.close()
+    conn = db.connect(path)
+    assert tuple(conn.execute("SELECT status, disabled_from_status FROM accounts").fetchone()) == ("disabled", None)
+    conn.close()
+
+
 def test_transaction_rolls_back_on_error():
     conn = db.connect(":memory:")
     with pytest.raises(RuntimeError):
@@ -31,6 +45,15 @@ def test_transaction_commits():
     with db.transaction(conn):
         conn.execute("INSERT INTO audit_log(ts, actor, action, target) VALUES (1, 'a', 'b', 'c')")
     assert conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == 1
+
+
+def test_transaction_rolls_back_when_commit_fails():
+    conn = db.connect(":memory:")
+    with pytest.raises(sqlite3.IntegrityError), db.transaction(conn):
+        conn.execute("PRAGMA defer_foreign_keys = ON")
+        conn.execute("INSERT INTO assignments(username, account_pk, started_at) VALUES ('alice', 1, 0)")
+    assert not conn.in_transaction
+    assert conn.execute("SELECT count(*) FROM assignments").fetchone()[0] == 0
 
 
 def test_only_one_active_assignment_per_user():

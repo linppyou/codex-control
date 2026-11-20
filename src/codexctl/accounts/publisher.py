@@ -77,6 +77,25 @@ class Publisher:
     def set_readers(self, label: str, readers: list[SysUser]) -> None:
         self._apply_acl(self.account_file(label), readers)
 
+    def revoke_readers(self, label: str) -> None:
+        target = self.account_file(label)
+        with suppress(FileNotFoundError):
+            if not stat.S_ISREG(target.lstat().st_mode):
+                raise PublishError(f"{target} 不是普通凭证文件")
+            self.set_readers(label, [])
+
+    def unpublish(self, label: str) -> None:
+        target = self.account_file(label)
+        with suppress(FileNotFoundError):
+            fd = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                for name in (target.name, _FILE_TMP):
+                    with suppress(FileNotFoundError):
+                        os.unlink(name, dir_fd=fd)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+
     def read_readers(self, label: str) -> set[str]:
         out = self._run([self._getfacl, "--omit-header", "--absolute-names", str(self.account_file(label))])
         names = set()

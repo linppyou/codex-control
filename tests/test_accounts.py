@@ -4,7 +4,10 @@ from fakes import T0, make_auth_json
 import codexctl.accounts.service as accounts
 import codexctl.events as events
 import codexctl.repo as repo
+import codexctl.users.assignments as assignments
 from codexctl.accounts.authfile import AuthBundle, AuthFileError
+from codexctl.accounts.refresher import refresh_account
+from codexctl.locks import LockBusy, account_lock
 
 
 def test_import_encrypts_and_publishes(ctx):
@@ -64,6 +67,105 @@ def test_set_disabled_and_enable(ctx):
     assert repo.get_account(ctx.conn, "acc1").status == "disabled"
     accounts.set_disabled(ctx, "acc1", False, "test")
     assert repo.get_account(ctx.conn, "acc1").status == "active"
+
+
+def test_disabling_preserves_assignment_but_revokes_readers(ctx):
+    acc = accounts.import_account(ctx, "acc1", make_auth_json(), "test")
+    user = ctx.test_users.add("alice")
+    assignments.assign(ctx, "alice", acc.label, "test")
+    repo.set_status(ctx.conn, acc.id, "needs_relogin", "token reused")
+
+    accounts.set_disabled(ctx, acc.label, True, "test")
+    assert ctx.test_runner.calls[-1][2] == "u::rw-,g::---,o::---"
+    assert repo.active_assignment(ctx.conn, user.name).account_pk == acc.id
+    assert ctx.publisher.read_link(user).kind == "symlink"
+    with pytest.raises(accounts.AccountError, match="已停用"):
+        accounts.republish_account(ctx, acc.label)
+    assignments.reconcile_user(ctx, user.name, "test")
+    assert ctx.test_runner.calls[-1][2] == "u::rw-,g::---,o::---"
+
+    accounts.set_disabled(ctx, acc.label, False, "test")
+    account = accounts.require_account(ctx, acc.label)
+    assert (account.status, account.last_error) == ("needs_relogin", "token reused")
+    assert "u:alice:r--" in ctx.test_runner.calls[-1][2]
+
+
+def test_enable_failure_after_publish_rolls_back_and_revokes_readers(ctx, monkeypatch):
+    acc = accounts.import_account(ctx, "acc1", make_auth_json(), "test")
+    ctx.test_users.add("alice")
+    assignments.assign(ctx, "alice", acc.label, "test")
+    accounts.set_disabled(ctx, acc.label, True, "test")
+    publish = ctx.publisher.publish
+
+    def fail_after_publish(*args):
+        publish(*args)
+        raise OSError("directory sync failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ctx.publisher, "publish", fail_after_publish)
+        with pytest.raises(accounts.AccountError, match="凭证权限失败"):
+            accounts.set_disabled(ctx, acc.label, False, "test")
+    assert accounts.require_account(ctx, acc.label).status == "disabled"
+    assert ctx.test_runner.calls[-1][2] == "u::rw-,g::---,o::---"
+    accounts.set_disabled(ctx, acc.label, False, "test")
+    assert "u:alice:r--" in ctx.test_runner.calls[-1][2]
+
+
+def test_delete_cleans_credentials_and_preserves_history(ctx):
+    acc = accounts.import_account(ctx, "acc1", make_auth_json(), "test")
+    ctx.test_users.add("alice")
+    assignments.assign(ctx, "alice", acc.label, "test")
+    repo.insert_quota_sample(ctx.conn, acc.id, ctx.now(), "secondary", 26, 10080, None, "api")
+    tokens = dict.fromkeys(repo.USAGE_FIELDS, 0)
+    tokens.update(input_tokens=25, total_tokens=25)
+    repo.insert_usage(ctx.conn, "alice", acc.id, T0, tokens, "record.jsonl")
+    with pytest.raises(accounts.AccountError, match="先停用"):
+        accounts.delete_account(ctx, acc.label, acc.label, "test")
+    accounts.set_disabled(ctx, acc.label, True, "test")
+    with pytest.raises(accounts.AccountError, match="alice"):
+        accounts.delete_account(ctx, acc.label, acc.label, "test")
+    with pytest.raises(accounts.AccountError, match="确认删除"):
+        accounts.delete_account(ctx, acc.label, "wrong", "test")
+    ctx.test_clock.t += 1
+    assignments.unassign(ctx, "alice", "test")
+
+    with account_lock(ctx.settings.state_dir, acc.label):
+        with pytest.raises(LockBusy):
+            accounts.delete_account(ctx, acc.label, acc.label, "test")
+    accounts.delete_account(ctx, acc.label, acc.label, "test")
+    accounts.delete_account(ctx, acc.label, acc.label, "test")
+
+    assert repo.list_accounts(ctx.conn) == []
+    assert repo.get_account(ctx.conn, acc.label, include_deleted=True).id == acc.id
+    assert repo.secret_version(ctx.conn, acc.id) is None
+    assert not ctx.publisher.account_file(acc.label).exists()
+    assert repo.account_at(ctx.conn, "alice", T0) == acc.id
+    assert repo.usage_user_accounts(ctx.conn) == {"alice": ["acc1"]}
+    assert repo.latest_quota(ctx.conn, acc.id)[0]["used_percent"] == 26
+    assert ctx.conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert ctx.conn.execute("SELECT count(*) FROM audit_log WHERE action = 'account.delete'").fetchone()[0] == 1
+    assert not refresh_account(ctx, acc)
+    with pytest.raises(accounts.AccountError, match="账号不存在"):
+        accounts.relogin_account(ctx, acc.label, make_auth_json(), "test")
+    with pytest.raises(accounts.AccountError, match="已登记为 acc1"):
+        accounts.import_account(ctx, "other", make_auth_json(), "test")
+
+
+def test_delete_can_retry_after_local_cleanup_failure(ctx, monkeypatch):
+    acc = accounts.import_account(ctx, "acc1", make_auth_json(), "test")
+    accounts.set_disabled(ctx, acc.label, True, "test")
+
+    def fail(label):
+        raise PermissionError("denied")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ctx.publisher, "unpublish", fail)
+        with pytest.raises(accounts.AccountError, match="可重新删除"):
+            accounts.delete_account(ctx, acc.label, acc.label, "test")
+    assert accounts.require_account(ctx, acc.label).status == "disabled"
+    assert repo.secret_version(ctx.conn, acc.id) is not None
+    accounts.delete_account(ctx, acc.label, acc.label, "test")
+    assert repo.secret_version(ctx.conn, acc.id) is None
 
 
 def test_require_account_missing(ctx):

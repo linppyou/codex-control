@@ -83,6 +83,9 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         a = acc.add_parser(name, help=help_text)
         a.add_argument("label")
+    a = acc.add_parser("delete", help="删除已停用且没有当前分配的账号，保留历史记录")
+    a.add_argument("label")
+    a.add_argument("--confirm", required=True, metavar="LABEL", help="再次输入完整账号标签以确认删除")
 
     a = sub.add_parser("assign", help="把账号分配给用户（已分配则切换）")
     a.add_argument("--account", required=True)
@@ -369,20 +372,36 @@ def account_cmd(ctx: Context, args: argparse.Namespace) -> int:
     if c == "relogin":
         accounts.require_account(ctx, args.label)
         data = args.file.read_bytes() if args.file else accounts.device_login(ctx, args.label)
-        accounts.relogin_account(ctx, args.label, data, ACTOR)
-        print(f"{args.label} 已重新登录" + ("并发布" if ctx.settings.manages_local_codex else ""))
+        acc = accounts.relogin_account(ctx, args.label, data, ACTOR)
+        published = ctx.settings.manages_local_codex and acc.status == "active"
+        print(f"{args.label} 已重新登录" + ("并发布" if published else ""))
         return 0
     if c == "refresh":
+        acc = accounts.require_account(ctx, args.label)
+        if acc.status == "disabled":
+            raise accounts.AccountError(f"账号 {args.label} 已停用，不能刷新凭证")
         try:
-            ok = refresher.refresh_account(ctx, accounts.require_account(ctx, args.label), ACTOR, blocking=False)
+            ok = refresher.refresh_account(ctx, acc, ACTOR, blocking=False)
         except locks.LockBusy:
             print(f"错误：账号 {args.label} 正在被刷新，请稍后再试", file=sys.stderr)
             return 1
-        print("刷新成功" if ok else _safe(f"刷新失败：{account_repo.get_account(ctx.conn, args.label).last_error}"))
-        return 0 if ok else 1
+        if ok:
+            print("刷新成功")
+            return 0
+        fresh = account_repo.get_account(ctx.conn, args.label)
+        detail = fresh.last_error if fresh else "账号已删除"
+        print(_safe(f"刷新失败：{detail or '账号当前不可刷新'}"))
+        return 1
     if c in ("disable", "enable"):
         accounts.set_disabled(ctx, args.label, c == "disable", ACTOR)
         print(f"{args.label} 已{'停用' if c == 'disable' else '启用'}")
+        return 0
+    if c == "delete":
+        try:
+            accounts.delete_account(ctx, args.label, args.confirm, ACTOR)
+        except locks.LockBusy as e:
+            raise accounts.AccountError(f"账号 {args.label} 正在处理其他操作，请稍后再试") from e
+        print(f"{args.label} 已删除")
         return 0
     if c == "name":
         value = accounts.set_display_name(ctx, args.label, args.name, ACTOR)

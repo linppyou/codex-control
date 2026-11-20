@@ -90,6 +90,7 @@ GET /v1/models
 GET /wp-center
 POST /accounts/login
 POST /accounts/login/{login_id}/cancel
+POST /accounts/{label}/delete
 POST /accounts/{label}/disable
 POST /accounts/{label}/enable
 POST /accounts/{label}/models/action
@@ -121,6 +122,7 @@ POST /tasks/import
 POST /tasks/{task_id}/cancel
 POST /tasks/{task_id}/confirm
 POST /tasks/{task_id}/prompt
+POST /tasks/{task_id}/run-immediately
 POST /users/assign
 POST /users/create
 POST /users/unassign
@@ -158,7 +160,7 @@ def test_repository_exports_keep_identity():
 def test_schema_matches_expected_definition():
     assert (
         hashlib.sha256(db.SCHEMA.encode()).hexdigest()
-        == "cb555fe3b76429b541204655e86d94368f4edf686942c6006490894a791c1a4c"
+        == "704d69be59796540b8fb1755af229a96bff1717f756b4e5e35469cf337fe826b"
     )
 
 

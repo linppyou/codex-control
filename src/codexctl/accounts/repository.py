@@ -19,6 +19,7 @@ class Account:
     next_retry_at: int | None
     created_at: int
     display_name: str | None = None
+    disabled_from_status: str | None = None
 
     @property
     def name(self) -> str:
@@ -49,8 +50,10 @@ def insert_account(
     return int(cur.lastrowid)
 
 
-def get_account(conn: sqlite3.Connection, label: str) -> Account | None:
-    return _account(conn.execute("SELECT * FROM accounts WHERE label = ?", (label,)).fetchone())
+def get_account(conn: sqlite3.Connection, label: str, *, include_deleted: bool = False) -> Account | None:
+    return _account(conn.execute(
+        "SELECT * FROM accounts WHERE label = ? AND (status != 'deleted' OR ?)", (label, include_deleted)
+    ).fetchone())
 
 
 def get_account_by_pk(conn: sqlite3.Connection, pk: int) -> Account | None:
@@ -62,7 +65,29 @@ def find_by_account_id(conn: sqlite3.Connection, account_id: str) -> Account | N
 
 
 def list_accounts(conn: sqlite3.Connection) -> list[Account]:
-    return [Account(**dict(r)) for r in conn.execute("SELECT * FROM accounts ORDER BY label")]
+    return [Account(**dict(r)) for r in conn.execute("SELECT * FROM accounts WHERE status != 'deleted' ORDER BY label")]
+
+
+def disable_account(conn: sqlite3.Connection, pk: int) -> None:
+    conn.execute(
+        "UPDATE accounts SET disabled_from_status = status, status = 'disabled' WHERE id = ? AND status != 'disabled'",
+        (pk,),
+    )
+
+
+def enable_account(conn: sqlite3.Connection, pk: int) -> None:
+    conn.execute(
+        "UPDATE accounts SET status = COALESCE(disabled_from_status, 'active'), disabled_from_status = NULL "
+        "WHERE id = ? AND status = 'disabled'", (pk,),
+    )
+
+
+def delete_account(conn: sqlite3.Connection, pk: int) -> None:
+    conn.execute("DELETE FROM account_secrets WHERE account_pk = ?", (pk,))
+    conn.execute(
+        "UPDATE accounts SET status = 'deleted', disabled_from_status = NULL, last_error = NULL, "
+        "retry_count = 0, next_retry_at = NULL WHERE id = ?", (pk,),
+    )
 
 
 def set_display_name(conn: sqlite3.Connection, pk: int, name: str | None) -> None:
@@ -105,7 +130,9 @@ def update_token_meta(
 ) -> None:
     conn.execute(
         "UPDATE accounts SET email = ?, plan_type = ?, last_refresh = ?, access_expires_at = ?, "
-        "status = CASE WHEN status = 'disabled' THEN 'disabled' ELSE 'active' END, last_error = NULL, retry_count = 0, next_retry_at = NULL WHERE id = ?",
+        "status = CASE WHEN status = 'disabled' THEN 'disabled' ELSE 'active' END, "
+        "disabled_from_status = CASE WHEN status = 'disabled' THEN 'active' END, "
+        "last_error = NULL, retry_count = 0, next_retry_at = NULL WHERE id = ?",
         (email, plan_type, last_refresh, access_expires_at, pk),
     )
 

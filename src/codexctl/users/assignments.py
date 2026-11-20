@@ -24,7 +24,11 @@ def _sync_acl(ctx: Context, account_pk: int) -> None:
     acc = account_repo.get_account_by_pk(ctx.conn, account_pk)
     # 与刷新/重新发布互斥，避免读者列表在并发发布中被旧值覆盖（调用方不得已持有同一账号的锁）
     with account_lock(ctx.settings.state_dir, acc.label):
-        ctx.publisher.set_readers(acc.label, accounts.readers_for(ctx, account_pk))
+        acc = account_repo.get_account_by_pk(ctx.conn, account_pk)
+        if acc.status == "disabled":
+            ctx.publisher.revoke_readers(acc.label)
+        elif acc.status != "deleted":
+            ctx.publisher.set_readers(acc.label, accounts.readers_for(ctx, account_pk))
 
 
 def assign(ctx: Context, username: str, label: str, actor: str) -> Path | None:
@@ -35,13 +39,13 @@ def assign(ctx: Context, username: str, label: str, actor: str) -> Path | None:
         webauth.get_hash(ctx.conn, username) is None and storage.user_key(ctx.conn, username) is None
     )):
         raise AssignError(f"用户不存在：{username}")
-    acc = account_repo.get_account(ctx.conn, label)
-    if acc is None:
-        raise AssignError(f"账号不存在：{label}")
-    if acc.status == "disabled":
-        raise AssignError(f"账号 {label} 已停用，不能分配")
     now = ctx.now()
     with transaction(ctx.conn):
+        acc = account_repo.get_account(ctx.conn, label)
+        if acc is None:
+            raise AssignError(f"账号不存在：{label}")
+        if acc.status == "disabled":
+            raise AssignError(f"账号 {label} 已停用，不能分配")
         current = user_repo.active_assignment(ctx.conn, username)
         switching = current is not None and current.account_pk != acc.id
         if current is None or switching:

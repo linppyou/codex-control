@@ -67,6 +67,23 @@ def client_for(ctx, handler):
     return TestClient(create_app(ctx, gateway=gateway))
 
 
+def test_deleted_gateway_account_keeps_api_usage(setup):
+    ctx, (account, _), ((_, token), _) = setup
+    authorization = bearer(token)["Authorization"]
+    key = storage.authorize(ctx.conn, authorization)
+    accounts.set_disabled(ctx, account.label, True, "test")
+    with pytest.raises(storage.GatewayError, match="unavailable"):
+        storage.authorize(ctx.conn, authorization)
+    repo.end_assignment(ctx.conn, account.label, ctx.now())
+    accounts.delete_account(ctx, account.label, account.label, "test")
+
+    # A request that began before retirement can still finish recording its usage.
+    storage.Usage("req-1", key, "model-a", ctx.now(), status="completed").save(ctx.conn)
+    assert [(row["label"], row["completed"]) for row in storage.usage_summary(ctx.conn, 0)] == [(account.label, 1)]
+    assert repo.secret_version(ctx.conn, account.id) is None
+    assert ctx.test_runner.calls == []
+
+
 def test_permissions_versioned_catalog_and_key_lifecycle(setup):
     ctx, accs, tokens = setup
     (public_id, secret), (_, other_secret) = tokens

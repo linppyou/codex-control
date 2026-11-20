@@ -16,6 +16,12 @@ from codexctl.context import Context
 from codexctl.db import transaction
 from codexctl.locks import account_lock
 from codexctl.users.sysusers import SysUser, UserError
+from codexctl.vault import VaultError
+
+ACCOUNT_ALERTS = (
+    "refresh_failed", "refresh_retry", "publish_failed", "auth_rejected", "quota_high",
+    "acl_mismatch", "published_mismatch", "token_expiring",
+)
 
 
 class AccountError(Exception):
@@ -33,8 +39,10 @@ def _check_label(label: str) -> None:
 
 def check_new_label(ctx: Context, label: str) -> None:
     _check_label(label)
-    if account_repo.get_account(ctx.conn, label) is not None:
-        raise AccountError(f"账号标签已存在：{label}")
+    existing = account_repo.get_account(ctx.conn, label, include_deleted=True)
+    if existing is not None:
+        detail = "（已删除，标签保留）" if existing.status == "deleted" else ""
+        raise AccountError(f"账号标签已存在：{label}{detail}")
 
 
 def require_account(ctx: Context, label: str) -> account_repo.Account:
@@ -60,7 +68,7 @@ def load_bundle(ctx: Context, acc: account_repo.Account) -> AuthBundle:
 
 
 def publish_account(ctx: Context, acc: account_repo.Account, bundle: AuthBundle | None = None) -> None:
-    if not ctx.settings.manages_local_codex:
+    if not ctx.settings.manages_local_codex or acc.status in ("disabled", "deleted"):
         return
     bundle = bundle or load_bundle(ctx, acc)
     ctx.publisher.publish(acc.label, bundle.to_bytes(), readers_for(ctx, acc.id))
@@ -70,45 +78,49 @@ def republish_account(ctx: Context, label: str) -> None:
     """加账号锁后重新读取账号与保险库内容再发布，避免用过期 token 覆盖刚刷新的凭证。"""
     if not ctx.settings.manages_local_codex:
         raise AccountError("网关模式只使用保险库凭证")
-    require_account(ctx, label)
+    _check_label(label)
     with account_lock(ctx.settings.state_dir, label):
         acc = require_account(ctx, label)
-        publish_account(ctx, acc, load_bundle(ctx, acc))
+        if acc.status == "disabled":
+            raise AccountError(f"账号 {label} 已停用，不能重新发布")
+        publish_account(ctx, acc)
 
 
 def import_account(ctx: Context, label: str, data: bytes, actor: str) -> account_repo.Account:
     _check_label(label)
     bundle = AuthBundle.from_bytes(data)
-    if account_repo.get_account(ctx.conn, label) is not None:
-        raise AccountError(f"账号标签已存在：{label}")
-    dup = account_repo.find_by_account_id(ctx.conn, bundle.account_id)
-    if dup is not None:
-        raise AccountError(f"该 ChatGPT 账号已登记为 {dup.label}")
-    now = ctx.now()
-    with transaction(ctx.conn):
-        pk = account_repo.insert_account(
-            ctx.conn,
-            label=label,
-            email=bundle.email,
-            account_id=bundle.account_id,
-            plan_type=bundle.plan_type,
-            last_refresh=bundle.last_refresh or now,
-            access_expires_at=bundle.access_expires_at,
-            now=now,
-        )
-        account_repo.store_secret(ctx.conn, pk, ctx.vault.encrypt(bundle.to_bytes(), _aad(label)), now)
-        events.audit(ctx.conn, actor, "account.add", label, f"email={bundle.email} plan={bundle.plan_type}", now=now)
-    acc = require_account(ctx, label)
-    publish_account(ctx, acc, bundle)
+    with account_lock(ctx.settings.state_dir, label):
+        now = ctx.now()
+        with transaction(ctx.conn):
+            check_new_label(ctx, label)
+            dup = account_repo.find_by_account_id(ctx.conn, bundle.account_id)
+            if dup is not None:
+                detail = "（已删除，账号标识保留）" if dup.status == "deleted" else ""
+                raise AccountError(f"该 ChatGPT 账号已登记为 {dup.label}{detail}")
+            pk = account_repo.insert_account(
+                ctx.conn,
+                label=label,
+                email=bundle.email,
+                account_id=bundle.account_id,
+                plan_type=bundle.plan_type,
+                last_refresh=bundle.last_refresh or now,
+                access_expires_at=bundle.access_expires_at,
+                now=now,
+            )
+            account_repo.store_secret(ctx.conn, pk, ctx.vault.encrypt(bundle.to_bytes(), _aad(label)), now)
+            events.audit(ctx.conn, actor, "account.add", label, f"email={bundle.email} plan={bundle.plan_type}", now=now)
+        acc = require_account(ctx, label)
+        publish_account(ctx, acc, bundle)
     return acc
 
 
 def relogin_account(ctx: Context, label: str, data: bytes, actor: str) -> account_repo.Account:
-    acc = require_account(ctx, label)
+    _check_label(label)
     bundle = AuthBundle.from_bytes(data)
-    if bundle.account_id != acc.account_id:
-        raise AccountError(f"登录的是另一个 ChatGPT 账号（{bundle.email}），与 {label} 不一致")
     with account_lock(ctx.settings.state_dir, label):
+        acc = require_account(ctx, label)
+        if bundle.account_id != acc.account_id:
+            raise AccountError(f"登录的是另一个 ChatGPT 账号（{bundle.email}），与 {label} 不一致")
         now = ctx.now()
         with transaction(ctx.conn):
             account_repo.store_secret(ctx.conn, acc.id, ctx.vault.encrypt(bundle.to_bytes(), _aad(label)), now)
@@ -133,31 +145,76 @@ DISPLAY_NAME_MAX = 32
 
 def set_display_name(ctx: Context, label: str, name: str, actor: str) -> str | None:
     """设置账号的备注名（只用于展示，不影响标签、凭证路径和用户链接）；空字符串表示清除。"""
-    acc = require_account(ctx, label)
     name = " ".join(name.split())
     if len(name) > DISPLAY_NAME_MAX:
         raise AccountError(f"名称不能超过 {DISPLAY_NAME_MAX} 个字符")
     if any(unicodedata.category(c)[0] == "C" for c in name):
         raise AccountError("名称不能包含控制字符")
     value = name or None
-    if value == acc.display_name:
-        return value
     now = ctx.now()
     with transaction(ctx.conn):
+        acc = require_account(ctx, label)
+        if value == acc.display_name:
+            return value
         account_repo.set_display_name(ctx.conn, acc.id, value)
         events.audit(ctx.conn, actor, "account.rename", label, f"{acc.display_name or '-'} -> {value or '-'}", now=now)
     return value
 
 
 def set_disabled(ctx: Context, label: str, disabled: bool, actor: str) -> None:
-    acc = require_account(ctx, label)
-    now = ctx.now()
+    _check_label(label)
+    try:
+        with account_lock(ctx.settings.state_dir, label, blocking=False):
+            restoring_readers = False
+            try:
+                with transaction(ctx.conn):
+                    acc = require_account(ctx, label)
+                    now = ctx.now()
+                    if disabled:
+                        if ctx.settings.manages_local_codex:
+                            ctx.publisher.revoke_readers(label)
+                        account_repo.disable_account(ctx.conn, acc.id)
+                        for kind in ACCOUNT_ALERTS:
+                            events.resolve_alert(ctx.conn, kind, label, now=now)
+                    elif acc.status == "disabled":
+                        account_repo.enable_account(ctx.conn, acc.id)
+                        restoring_readers = ctx.settings.manages_local_codex
+                        publish_account(ctx, require_account(ctx, label))
+                    events.audit(ctx.conn, actor, "account.disable" if disabled else "account.enable", label, now=now)
+            except BaseException:
+                # 发布可先替换文件再失败，此时数据库已回滚为停用状态。
+                if restoring_readers:
+                    ctx.publisher.revoke_readers(label)
+                raise
+    except (LookupError, OSError, VaultError) as e:
+        raise AccountError(f"更新账号 {label} 的凭证权限失败：{e}") from e
+
+
+def delete_account(ctx: Context, label: str, confirmation: str, actor: str) -> None:
+    _check_label(label)
+    if confirmation != label:
+        raise AccountError("请输入完整的账号标签确认删除")
     with account_lock(ctx.settings.state_dir, label, blocking=False), transaction(ctx.conn):
-        if disabled:
-            account_repo.set_status(ctx.conn, acc.id, "disabled")
-        elif acc.status == "disabled":
-            account_repo.set_status(ctx.conn, acc.id, "active")
-        events.audit(ctx.conn, actor, "account.disable" if disabled else "account.enable", label, now=now)
+        acc = account_repo.get_account(ctx.conn, label, include_deleted=True)
+        if acc is None:
+            raise AccountError(f"账号不存在：{label}")
+        if acc.status == "deleted":
+            return
+        if acc.status != "disabled":
+            raise AccountError(f"请先停用账号 {label}")
+        users = user_repo.active_usernames(ctx.conn, acc.id)
+        if users:
+            raise AccountError(f"请先转移或解除 {label} 的用户分配：{', '.join(users)}")
+        if ctx.settings.manages_local_codex:
+            try:
+                ctx.publisher.unpublish(label)
+            except OSError as e:
+                raise AccountError(f"清理账号 {label} 的本机凭证失败，可重新删除：{e}") from e
+        now = ctx.now()
+        account_repo.delete_account(ctx.conn, acc.id)
+        for kind in ACCOUNT_ALERTS:
+            events.resolve_alert(ctx.conn, kind, label, now=now)
+        events.audit(ctx.conn, actor, "account.delete", label, now=now)
 
 
 def device_login(ctx: Context, label: str) -> bytes:

@@ -24,6 +24,18 @@ def test_account_import_and_list(ctx, tmp_path, capsys):
     assert "acc1" in out and "a@example.com" in out and "用户数=0" in out
 
 
+def test_account_delete_command(ctx, tmp_path, capsys):
+    auth = tmp_path / "auth.json"
+    auth.write_bytes(make_auth_json())
+    assert run_cli(ctx, "account", "import", "acc1", str(auth)) == 0
+    assert run_cli(ctx, "account", "disable", "acc1") == 0
+    assert run_cli(ctx, "account", "delete", "acc1", "--confirm", "wrong") == 1
+    assert run_cli(ctx, "account", "delete", "acc1", "--confirm", "acc1") == 0
+    assert "acc1 已删除" in capsys.readouterr().out
+    assert run_cli(ctx, "account", "list") == 0
+    assert not capsys.readouterr().out
+
+
 def test_assign_users_and_unassign(ctx, tmp_path, capsys):
     f = tmp_path / "auth.json"
     f.write_bytes(make_auth_json())

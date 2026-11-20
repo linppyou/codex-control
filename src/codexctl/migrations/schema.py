@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS accounts (
     retry_count INTEGER NOT NULL DEFAULT 0,
     next_retry_at INTEGER,
     created_at INTEGER NOT NULL,
-    display_name TEXT
+    display_name TEXT,
+    disabled_from_status TEXT
 );
 CREATE TABLE IF NOT EXISTS account_secrets (
     account_pk INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,

@@ -30,6 +30,11 @@ from codexctl.web.presenters import (
 )
 from codexctl.web.responses import _csv_cell, _flash, _redirect
 
+ACCOUNT_FILTERS = {
+    "enabled": "已启用", "all": "全部", "active": "正常",
+    "needs_relogin": "需重新登录", "disabled": "已停用",
+}
+
 
 def register(app) -> None:
     ctx = app.state.ctx
@@ -42,22 +47,27 @@ def register(app) -> None:
 
 
     @app.get("/accounts", response_class=HTMLResponse)
-    def accounts_page(request: Request, admin: tuple[str, str] = Depends(current_admin)):
+    def accounts_page(request: Request, status: str = "enabled", admin: tuple[str, str] = Depends(current_admin)):
+        if status not in ACCOUNT_FILTERS:
+            status = "enabled"
         with lock:
             devlogins.sweep()
             msg, err = _complete_finished_logins(app, admin)
-            rows = _account_table(ctx)
-        return render(request, "accounts.html", admin=admin[0], csrf=admin[1], rows=rows, **_flash(msg, err))
+            rows = _account_table(ctx, status)
+        return render(request, "accounts.html", admin=admin[0], csrf=admin[1], rows=rows,
+                      status_filter=status, account_filters=ACCOUNT_FILTERS, **_flash(msg, err))
 
 
-    def account_action(label: str, admin, fn, ok_msg: str) -> RedirectResponse:
+    def account_action(admin, fn, ok_msg: str, *, back: str = "/accounts") -> RedirectResponse:
         with lock:
             devlogins.sweep()
             try:
                 fn(actor_of(admin))
+            except LockBusy as e:
+                return _redirect(back, err=f"账号 {e} 正在处理其他操作，请稍后再试")
             except HANDLED as e:
-                return _redirect("/accounts", err=str(e))
-        return _redirect("/accounts", msg=ok_msg)
+                return _redirect(back, err=str(e))
+        return _redirect(back, msg=ok_msg)
 
 
     @app.post("/accounts/{label}/name")
@@ -95,7 +105,7 @@ def register(app) -> None:
     def quota_data(label: str, days: int):
         with lock:
             devlogins.sweep()
-            acc = account_repo.get_account(ctx.conn, label)
+            acc = account_repo.get_account(ctx.conn, label, include_deleted=True)
             if acc is None:
                 return None
             now = ctx.now()
@@ -111,7 +121,7 @@ def register(app) -> None:
                     names[key] = window_name(h[key]["window_minutes"])
             if all(n not in ("主窗口", "次窗口") for n in names.values()):
                 break
-        return history, latest, names
+        return acc, history, latest, names
 
 
     def _cell(w: dict | None) -> tuple[float | None, str]:
@@ -126,10 +136,8 @@ def register(app) -> None:
         got = quota_data(label, days)
         if got is None:
             return _redirect("/accounts", err="账号不存在")
-        history, latest, names = got
-        with lock:
-            acc = account_repo.get_account(ctx.conn, label)
-        title = clean_text(acc.name if acc else label)
+        acc, history, latest, names = got
+        title = clean_text(acc.name)
         rows = []
         for h in history:
             p, s = _cell(h["primary"]), _cell(h["secondary"])
@@ -146,7 +154,7 @@ def register(app) -> None:
         chart = quota_chart(points, width=1100, height=280, gap=3 * ctx.settings.quota_poll_seconds)
         return render(
             request, "account_quota.html", admin=admin[0], csrf=admin[1], label=clean_text(label), title=title,
-            rows=rows, latest=latest, names=names, days=days, chart=chart,
+            rows=rows, latest=latest, names=names, days=days, chart=chart, account_status=acc.status,
         )
 
 
@@ -156,7 +164,7 @@ def register(app) -> None:
         got = quota_data(label, days)
         if got is None:
             return _redirect("/accounts", err="账号不存在")
-        history, _latest, names = got
+        _acc, history, _latest, names = got
         buf = io.StringIO()
         w = csv.writer(buf)
         p, s = names["primary"], names["secondary"]
@@ -247,6 +255,8 @@ def register(app) -> None:
             devlogins.sweep()
             try:
                 acc = accounts.require_account(ctx, label)
+                if acc.status == "disabled":
+                    raise accounts.AccountError(f"账号 {label} 已停用，不能刷新凭证")
                 ok = refresher.refresh_account(ctx, acc, actor_of(admin), blocking=False)
                 if not ok:
                     fresh = account_repo.get_account(ctx.conn, label)
@@ -261,12 +271,19 @@ def register(app) -> None:
 
     @app.post("/accounts/{label}/disable")
     def account_disable(label: str, admin: tuple[str, str] = Depends(current_admin)):
-        return account_action(label, admin, lambda a: accounts.set_disabled(ctx, label, True, a), f"已停用 {label}")
+        return account_action(admin, lambda a: accounts.set_disabled(ctx, label, True, a), f"已停用 {label}",
+                              back="/accounts?status=disabled")
 
 
     @app.post("/accounts/{label}/enable")
     def account_enable(label: str, admin: tuple[str, str] = Depends(current_admin)):
-        return account_action(label, admin, lambda a: accounts.set_disabled(ctx, label, False, a), f"已启用 {label}")
+        return account_action(admin, lambda a: accounts.set_disabled(ctx, label, False, a), f"已启用 {label}")
+
+
+    @app.post("/accounts/{label}/delete")
+    def account_delete(label: str, confirmation: str = Form(""), admin: tuple[str, str] = Depends(current_admin)):
+        return account_action(admin, lambda a: accounts.delete_account(ctx, label, confirmation, a), f"已删除 {label}",
+                              back="/accounts?status=disabled")
 
 
     def republish(label: str, actor: str) -> None:
@@ -276,5 +293,5 @@ def register(app) -> None:
 
     @app.post("/accounts/{label}/republish")
     def account_republish(label: str, admin: tuple[str, str] = Depends(current_admin)):
-        return account_action(label, admin, lambda a: republish(label, a), f"已重新发布 {label}")
+        return account_action(admin, lambda a: republish(label, a), f"已重新发布 {label}")
 

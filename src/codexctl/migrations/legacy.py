@@ -20,6 +20,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE log_offsets ADD COLUMN last_model TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS usage_events_user_session ON usage_events(username, session_file)")
     with transaction(conn):
+        if "disabled_from_status" not in {r["name"] for r in conn.execute("PRAGMA table_info(accounts)")}:
+            conn.execute("ALTER TABLE accounts ADD COLUMN disabled_from_status TEXT")
         if "upload" not in {r["name"] for r in conn.execute("PRAGMA table_info(dispatch_tasks)")}:
             conn.execute("ALTER TABLE dispatch_tasks ADD COLUMN upload BLOB")
         task_columns = {r["name"] for r in conn.execute("PRAGMA table_info(dispatch_tasks)")}

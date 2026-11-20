@@ -413,6 +413,7 @@ progress.bad::-moz-progress-bar { background: var(--red); }
 .rename-form { display: flex; gap: 6px; margin-top: 6px; }
 .rename-form input[type=text] { width: 150px; }
 .rename .hint { margin-top: 4px; white-space: normal; max-width: 240px; }
+.account-filters { flex-wrap: wrap; }
 
 /* 用量页 */
 .usage-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 16px; }
