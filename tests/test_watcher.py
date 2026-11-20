@@ -6,6 +6,7 @@ import codexctl.events as events
 import codexctl.repo as repo
 import codexctl.usage.watcher as watcher
 import codexctl.users.assignments as assignments
+from codexctl.locks import account_lock
 from codexctl.runner import CommandError
 
 ACL_ALICE = "user::rw-\nuser:alice:r--\ngroup::---\nmask::r--\nother::---\n"
@@ -43,6 +44,43 @@ def test_reconciles_legacy_disabled_acl_and_reports_failure(setup, monkeypatch):
     assert kinds(watcher.run_checks(ctx)) == [("acl_mismatch", "acc1")]
     assert watcher.run_checks(ctx, reconcile_disabled=True) == []
     assert ctx.test_runner.calls[-1][2] == "u::rw-,g::---,o::---"
+    assert not events.open_alerts(ctx.conn)
+
+
+def test_reconciles_disabled_account_with_only_a_pending_publish(ctx):
+    acc = accounts.import_account(ctx, "acc1", make_auth_json(), "t")
+    target = ctx.publisher.account_file(acc.label)
+    pending = target.with_name(".auth.json.tmp")
+    target.rename(pending)
+    repo.set_status(ctx.conn, acc.id, "disabled")
+
+    assert kinds(watcher.run_checks(ctx)) == [("acl_mismatch", acc.label)]
+    assert pending.exists()
+    with account_lock(ctx.settings.state_dir, acc.label):
+        assert watcher.run_checks(ctx, reconcile_disabled=True) == []
+    assert [(a["kind"], a["target"]) for a in events.open_alerts(ctx.conn)] == [("acl_mismatch", acc.label)]
+
+    assert watcher.run_checks(ctx, reconcile_disabled=True) == []
+    assert not pending.exists()
+    assert not events.open_alerts(ctx.conn)
+
+
+@pytest.mark.parametrize("delete", [False, True])
+def test_discards_findings_if_account_is_disabled_during_watch(ctx, monkeypatch, delete):
+    acc = accounts.import_account(ctx, "acc1", make_auth_json(), "t")
+    ctx.test_clock.t = acc.access_expires_at - 3600
+    check_accounts = watcher._check_accounts
+
+    def check_then_disable(ctx, findings, *, reconcile_disabled):
+        statuses = check_accounts(ctx, findings, reconcile_disabled=reconcile_disabled)
+        assert kinds(findings) == [("token_expiring", acc.label)]
+        accounts.set_disabled(ctx, acc.label, True, "t")
+        if delete:
+            accounts.delete_account(ctx, acc.label, acc.label, "t")
+        return statuses
+
+    monkeypatch.setattr(watcher, "_check_accounts", check_then_disable)
+    assert watcher.run_checks(ctx) == []
     assert not events.open_alerts(ctx.conn)
 
 

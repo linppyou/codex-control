@@ -14,7 +14,8 @@ from codexctl.locks import LockBusy, account_lock
 from codexctl.runner import CommandError
 from codexctl.users.sysusers import UserError
 
-WATCH_KINDS = frozenset({"link_mismatch", "stale_link", "acl_mismatch", "published_mismatch", "token_expiring"})
+ACCOUNT_WATCH_KINDS = frozenset({"acl_mismatch", "published_mismatch", "token_expiring"})
+WATCH_KINDS = ACCOUNT_WATCH_KINDS | {"link_mismatch", "stale_link"}
 
 
 @dataclass(frozen=True)
@@ -52,25 +53,29 @@ def _check_stale_links(ctx: Context, findings: list) -> None:
             findings.append(Finding("warning", "stale_link", user.name, f"未分配账号但仍链接到 {state.target}"))
 
 
-def _check_accounts(ctx: Context, findings: list, *, reconcile_disabled: bool) -> None:
+def _check_accounts(ctx: Context, findings: list[Finding], *, reconcile_disabled: bool) -> dict[str, str]:
     now = ctx.now()
+    checked_statuses = {}
     for acc in account_repo.list_accounts(ctx.conn):
         if acc.status == "disabled":
             try:
                 with account_lock(ctx.settings.state_dir, acc.label, blocking=False):
                     fresh = account_repo.get_account(ctx.conn, acc.label)
-                    if fresh and fresh.status == "disabled" and ctx.publisher.account_file(acc.label).exists():
-                        actual = ctx.publisher.read_readers(acc.label)
-                        if actual and reconcile_disabled:
-                            ctx.publisher.revoke_readers(acc.label)
-                        elif actual:
-                            findings.append(Finding("critical", "acl_mismatch", acc.label,
-                                                    f"停用账号仍有凭证读取权限：{sorted(actual)}"))
+                    if fresh is None or fresh.status != "disabled":
+                        continue
+                    checked_statuses[acc.label] = acc.status
+                    message = _disabled_credential_issue(ctx, acc.label)
+                    if message and reconcile_disabled:
+                        ctx.publisher.revoke_readers(acc.label)
+                    elif message:
+                        findings.append(Finding("critical", "acl_mismatch", acc.label, message))
             except LockBusy:
                 pass
             except (CommandError, OSError, PublishError) as e:
+                checked_statuses[acc.label] = acc.status
                 findings.append(Finding("critical", "acl_mismatch", acc.label, f"无法撤销停用账号的凭证读取权限：{e}"))
             continue
+        checked_statuses[acc.label] = acc.status
         expected = {u.name for u in accounts.readers_for(ctx, acc.id)}
         try:
             actual = ctx.publisher.read_readers(acc.label)
@@ -99,6 +104,17 @@ def _check_accounts(ctx: Context, findings: list, *, reconcile_disabled: bool) -
             findings.append(
                 Finding("critical", "token_expiring", acc.label, "access_token 将在 24 小时内过期，刷新尚未成功")
             )
+    return checked_statuses
+
+
+def _disabled_credential_issue(ctx: Context, label: str) -> str | None:
+    if ctx.publisher.has_pending_publish(label):
+        return "停用账号仍有未清理的临时凭证文件"
+    if ctx.publisher.account_file(label).exists():
+        actual = ctx.publisher.read_readers(label)
+        if actual:
+            return f"停用账号仍有凭证读取权限：{sorted(actual)}"
+    return None
 
 
 def run_checks(ctx: Context, *, reconcile_disabled: bool = False) -> list[Finding]:
@@ -106,10 +122,17 @@ def run_checks(ctx: Context, *, reconcile_disabled: bool = False) -> list[Findin
     findings: list[Finding] = []
     _check_assigned_links(ctx, findings)
     _check_stale_links(ctx, findings)
-    _check_accounts(ctx, findings, reconcile_disabled=reconcile_disabled)
+    checked_statuses = _check_accounts(ctx, findings, reconcile_disabled=reconcile_disabled)
     now = ctx.now()
-    problems = {(f.kind, f.target) for f in findings}
     with transaction(ctx.conn):
+        current_accounts = account_repo.list_accounts(ctx.conn)
+        checked_accounts = {acc.label for acc in current_accounts if acc.status == checked_statuses.get(acc.label)}
+        unchecked_accounts = {acc.label for acc in current_accounts} - checked_accounts
+        findings = [
+            f for f in findings
+            if f.kind not in ACCOUNT_WATCH_KINDS or f.target in checked_accounts
+        ]
+        problems = {(f.kind, f.target) for f in findings}
         for f in findings:
             events.raise_alert(ctx.conn, f.level, f.kind, f.target, f.message, now=now)
         marks = ",".join("?" * len(WATCH_KINDS))
@@ -118,6 +141,9 @@ def run_checks(ctx: Context, *, reconcile_disabled: bool = False) -> list[Findin
             sorted(WATCH_KINDS),
         ).fetchall()
         for r in rows:
-            if (r["kind"], r["target"]) not in problems:
-                events.resolve_alert(ctx.conn, r["kind"], r["target"], now=now)
+            kind, target = r["kind"], r["target"]
+            if kind in ACCOUNT_WATCH_KINDS and target in unchecked_accounts:
+                continue
+            if (kind, target) not in problems:
+                events.resolve_alert(ctx.conn, kind, target, now=now)
     return findings

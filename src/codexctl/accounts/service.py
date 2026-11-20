@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import unicodedata
@@ -165,27 +166,32 @@ def set_disabled(ctx: Context, label: str, disabled: bool, actor: str) -> None:
     _check_label(label)
     try:
         with account_lock(ctx.settings.state_dir, label, blocking=False):
-            restoring_readers = False
+            revoked_readers = False
+            publishing = False
             try:
                 with transaction(ctx.conn):
                     acc = require_account(ctx, label)
                     now = ctx.now()
                     if disabled:
                         if ctx.settings.manages_local_codex:
-                            ctx.publisher.revoke_readers(label)
+                            revoked_readers = ctx.publisher.revoke_readers(label) and acc.status != "disabled"
                         account_repo.disable_account(ctx.conn, acc.id)
                         for kind in ACCOUNT_ALERTS:
                             events.resolve_alert(ctx.conn, kind, label, now=now)
                     elif acc.status == "disabled":
                         account_repo.enable_account(ctx.conn, acc.id)
-                        restoring_readers = ctx.settings.manages_local_codex
+                        publishing = ctx.settings.manages_local_codex
                         publish_account(ctx, require_account(ctx, label))
                     events.audit(ctx.conn, actor, "account.disable" if disabled else "account.enable", label, now=now)
             except BaseException:
-                # 发布可先替换文件再失败，此时数据库已回滚为停用状态。
-                if restoring_readers:
+                # 数据库已回滚，在释放账号锁前恢复原状态对应的读者。
+                if revoked_readers:
+                    ctx.publisher.set_readers(label, readers_for(ctx, acc.id))
+                elif publishing:
                     ctx.publisher.revoke_readers(label)
                 raise
+    except sqlite3.Error as e:
+        raise AccountError(f"保存账号 {label} 的状态失败：{e}") from e
     except (LookupError, OSError, VaultError) as e:
         raise AccountError(f"更新账号 {label} 的凭证权限失败：{e}") from e
 

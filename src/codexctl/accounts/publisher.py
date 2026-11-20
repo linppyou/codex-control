@@ -77,12 +77,29 @@ class Publisher:
     def set_readers(self, label: str, readers: list[SysUser]) -> None:
         self._apply_acl(self.account_file(label), readers)
 
-    def revoke_readers(self, label: str) -> None:
+    def has_pending_publish(self, label: str) -> bool:
+        try:
+            self.account_file(label).with_name(_FILE_TMP).lstat()
+        except FileNotFoundError:
+            return False
+        return True
+
+    def revoke_readers(self, label: str) -> bool:
+        """清理中断发布遗留的临时文件，返回是否撤销了正式文件的 ACL。调用方持有账号锁。"""
         target = self.account_file(label)
+        with suppress(FileNotFoundError):
+            target.with_name(_FILE_TMP).unlink()
+            fd = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
         with suppress(FileNotFoundError):
             if not stat.S_ISREG(target.lstat().st_mode):
                 raise PublishError(f"{target} 不是普通凭证文件")
             self.set_readers(label, [])
+            return True
+        return False
 
     def unpublish(self, label: str) -> None:
         target = self.account_file(label)

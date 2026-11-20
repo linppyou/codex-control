@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 from fakes import T0, make_auth_json
 
@@ -109,6 +111,43 @@ def test_enable_failure_after_publish_rolls_back_and_revokes_readers(ctx, monkey
     assert ctx.test_runner.calls[-1][2] == "u::rw-,g::---,o::---"
     accounts.set_disabled(ctx, acc.label, False, "test")
     assert "u:alice:r--" in ctx.test_runner.calls[-1][2]
+
+
+def test_disable_failure_at_commit_restores_readers(ctx):
+    acc = accounts.import_account(ctx, "acc1", make_auth_json(), "test")
+    ctx.test_users.add("alice")
+    assignments.assign(ctx, "alice", acc.label, "test")
+
+    def deny_commit(action, operation, *_):
+        if action == sqlite3.SQLITE_TRANSACTION and operation == "COMMIT":
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    ctx.conn.set_authorizer(deny_commit)
+    try:
+        with pytest.raises(accounts.AccountError, match="保存账号 acc1 的状态失败"):
+            accounts.set_disabled(ctx, acc.label, True, "test")
+    finally:
+        ctx.conn.set_authorizer(None)
+
+    assert accounts.require_account(ctx, acc.label).status == "active"
+    revoke_acl, restore_acl = ctx.test_runner.calls[-2:]
+    assert revoke_acl[2] == "u::rw-,g::---,o::---"
+    assert "u:alice:r--" in restore_acl[2]
+    assert ctx.conn.execute("SELECT count(*) FROM audit_log WHERE action = 'account.disable'").fetchone()[0] == 0
+
+
+def test_disable_removes_interrupted_publish_file(ctx):
+    acc = accounts.import_account(ctx, "acc1", make_auth_json(), "test")
+    target = ctx.publisher.account_file(acc.label)
+    pending = target.with_name(".auth.json.tmp")
+    pending.write_bytes(target.read_bytes())
+
+    accounts.set_disabled(ctx, acc.label, True, "test")
+
+    assert not pending.exists()
+    assert target.exists()
+    assert ctx.test_runner.calls[-1][2] == "u::rw-,g::---,o::---"
 
 
 def test_delete_cleans_credentials_and_preserves_history(ctx):
