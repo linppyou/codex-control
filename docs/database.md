@@ -4,10 +4,10 @@ codexctl 使用 SQLite 保存账号凭证、用户分配、用量、面板身份
 
 | 项目 | 内容 |
 | --- | --- |
-| 代码基线 | `38e6cd7`，目录重构后保持同一建表模型 |
-| 更新日期 | 2026-11-17 |
+| 代码基线 | `e912c97`，同步近期账号生命周期与任务分发结构变更 |
+| 更新日期 | 2026-11-20 |
 | 数据库文件 | `{state_dir}/codexctl.db`，默认 `/var/lib/codexctl/codexctl.db` |
-| 当前代码结构 | 23 张业务表、184 个字段、11 个显式索引、12 个声明外键 |
+| 当前代码结构 | 28 张业务表、203 个字段、11 个显式索引、15 个声明外键 |
 | 线上实测结构 | 25 张业务表、196 个字段、12 个显式索引、14 个声明外键 |
 | 线上核对时间 | 2026-11-17 14:40:08，北京时间 |
 | 结构入口 | `db.connect()` 执行建表、迁移和首次价目表初始化 |
@@ -41,13 +41,18 @@ codexctl 使用 SQLite 保存账号凭证、用户分配、用量、面板身份
 | 面板身份与会话 | [admins](#admins) | 使用本地密码验证的面板身份，同时承载管理员和普通面板用户。 |
 | 面板身份与会话 | [web_sessions](#web_sessions) | 面板登录会话及对应 CSRF 校验值。 |
 | 面板身份与会话 | [web_system_users](#web_system_users) | 通过应用登记的 Linux 面板用户及其 UID。配置文件还可单独声明允许登录的系统用户。 |
-| 服务器与站点 | [site_servers](#site_servers) | 远端站点服务器的连接信息、采集密钥和配置版本。 |
+| 服务器与站点 | [site_servers](#site_servers) | 远端站点服务器的连接信息、采集密钥、面板凭据和配置版本。 |
 | 服务器与站点 | [site_inventories](#site_inventories) | 每台服务器最近一次站点清单及同步结果。 |
 | 服务器与站点 | [site_enrollments](#site_enrollments) | 服务器接入令牌，每台服务器最多保存一条当前令牌。 |
+| 服务器与站点 | [site_inventory_generations](#site_inventory_generations) | 服务器站点清单本地变更代数，避免并发采集覆盖较新面板操作。 |
+| 服务器与站点 | [site_domain_refreshes](#site_domain_refreshes) | 记录已触发后台清单刷新的 WP 建站中心换域名任务。 |
+| 任务分发 | [dispatch_prompt_template](#dispatch_prompt_template) | 管理员配置的任务分发提示词生成代码。 |
+| 任务分发 | [dispatch_defaults](#dispatch_defaults) | 管理员配置的任务分发默认模型和思考程度。 |
 | 任务分发 | [dispatch_skills](#dispatch_skills) | 管理员上传的当前 Skill ZIP 包及元信息。 |
 | 任务分发 | [dispatch_targets](#dispatch_targets) | 旧版显式站点绑定，当前代码用于兼容已有任务。新导入批次直接从站点清单匹配目标。 |
-| 任务分发 | [dispatch_tasks](#dispatch_tasks) | 一条上传批次及其完整预览、执行选项和父会话回执。 |
-| 任务分发 | [dispatch_children](#dispatch_children) | 已有子会话记录的存储及展示。当前 Worker 将新批次整体交给父会话，保留对子记录的展示和重启恢复。 |
+| 任务分发 | [dispatch_tasks](#dispatch_tasks) | 一条上传批次及其完整预览、执行选项、调度方式和父会话回执。 |
+| 任务分发 | [dispatch_children](#dispatch_children) | 已有子会话记录的存储及展示。 |
+| 任务分发 | [dispatch_tool_calls](#dispatch_tool_calls) | 父会话调用项目会话工具的回执缓存，用于重放与幂等保护。 |
 | API 网关 | [account_models](#account_models) | 每个账号的模型可用性、管理员开关及探测结果。 |
 | API 网关 | [account_model_catalogs](#account_model_catalogs) | 按账号和客户端版本保存的完整上游模型目录。 |
 | API 网关 | [api_keys](#api_keys) | 用户网关凭据及 Fast 权限。认证时通过 username 查找当前账号分配。 |
@@ -69,8 +74,11 @@ flowchart LR
     api_usage_events -->|key_pk| api_keys
     site_inventories -->|server_id| site_servers
     site_enrollments -->|server_id| site_servers
+    site_inventory_generations -->|server_id| site_servers
+    site_domain_refreshes -->|server_id| site_servers
     dispatch_targets -->|server_id| site_servers
     dispatch_children -->|task_id| dispatch_tasks
+    dispatch_tool_calls -->|task_id| dispatch_tasks
 ```
 
 另有以下应用层关联。
@@ -87,7 +95,7 @@ flowchart LR
 | 模型字段与 `model_prices.aliases` | 按应用的模型名称归一化规则匹配价格 |
 | `alerts.target`、`audit_log.target` | 由告警类型或审计 action 决定目标含义 |
 
-`ON DELETE CASCADE` 覆盖账号的密文、服务器的清单和接入令牌及旧目标绑定、任务的子记录。其余声明外键采用默认 `NO ACTION`，删除被引用对象需先处理引用记录。删除 Skill 或服务器会通过应用快照校验影响历史预览的可执行性。
+`ON DELETE CASCADE` 覆盖账号的密文、服务器的清单、接入令牌、清单代数、换域名刷新记录及旧目标绑定、任务的子记录及工具调用回执。其余声明外键采用默认 `NO ACTION`，删除被引用对象需先处理引用记录。删除 Skill 或服务器会通过应用快照校验影响历史预览的可执行性。
 
 ## 字段字典
 
@@ -104,7 +112,7 @@ ChatGPT 账号元信息，供账号管理、分配、刷新和网关共同使用
 | `email` | TEXT | — | 否 | 未声明 | 从登录凭证解析的邮箱，可为空。 |
 | `account_id` | TEXT | — | 是 | 未声明 | 上游 ChatGPT 账号 ID，阻止同一账号重复登记。 |
 | `plan_type` | TEXT | — | 否 | 未声明 | 上游套餐标识，从凭证解析。 |
-| `status` | TEXT | — | 是 | `'active'` | 账号状态，应用使用 active、disabled、needs_relogin。 |
+| `status` | TEXT | — | 是 | `'active'` | 账号状态，应用使用 active、disabled、needs_relogin、deleted。 |
 | `last_refresh` | INTEGER | — | 是 | 未声明 | 凭证最近刷新时间，Unix 秒。导入时取登录文件中的时间。 |
 | `access_expires_at` | INTEGER | — | 是 | 未声明 | Access Token 到期时间，Unix 秒。 |
 | `last_error` | TEXT | — | 否 | 未声明 | 最近刷新错误或账号异常说明，成功刷新后清空。 |
@@ -112,6 +120,7 @@ ChatGPT 账号元信息，供账号管理、分配、刷新和网关共同使用
 | `next_retry_at` | INTEGER | — | 否 | 未声明 | 允许下次自动重试的时间，Unix 秒。 |
 | `created_at` | INTEGER | — | 是 | 未声明 | 账号登记时间，Unix 秒。 |
 | `display_name` | TEXT | — | 否 | 未声明 | 可选展示名称，未设置时显示 label。 |
+| `disabled_from_status` | TEXT | — | 否 | 未声明 | 停用前保留的账号状态，重新启用时恢复；停用期间重新登录成功后更新为 `'active'`。 |
 
 - 主键 `(id)`。
 - 唯一约束 `(account_id)`。
@@ -405,6 +414,66 @@ host、port、host_key 变更会增加 revision 并删除旧清单和接入令�
 
 [site_enrollment.py](/home/linpp/.codex/worktrees/60ae/codex_control/src/codexctl/sites/enrollment.py)
 
+### site_inventory_generations
+
+服务器站点清单本地变更代数，避免并发采集覆盖较新的面板操作结果。
+
+| 字段 | 类型 | 主键位置 | 显式非空 | 默认值 | 含义 |
+| --- | --- | --- | --- | --- | --- |
+| `server_id` | TEXT | 1 | 否 | 未声明 | 所属服务器 ID。 |
+| `generation` | INTEGER | — | 是 | `0` | 本地变更代数，站点操作或同步前递增。 |
+
+- 主键 `(server_id)`。
+- 外键 `server_id` → `site_servers.id`，删除规则 `CASCADE`，更新规则 `NO ACTION`。
+
+[sites.py](/home/linpp/.codex/worktrees/60ae/codex_control/src/codexctl/sites/inventory.py) · [site_actions.py](/home/linpp/.codex/worktrees/60ae/codex_control/src/codexctl/web/routes/site_actions.py)
+
+### site_domain_refreshes
+
+记录已触发后台清单刷新的 WP 建站中心换域名任务，防止重复刷新。
+
+| 字段 | 类型 | 主键位置 | 显式非空 | 默认值 | 含义 |
+| --- | --- | --- | --- | --- | --- |
+| `server_id` | TEXT | 1 | 是 | 未声明 | 所属服务器 ID。 |
+| `task_id` | TEXT | 2 | 是 | 未声明 | WP 建站中心换域名任务 ID。 |
+
+- 主键 `(server_id, task_id)`。
+- 外键 `server_id` → `site_servers.id`，删除规则 `CASCADE`，更新规则 `NO ACTION`。
+
+[servers.py](/home/linpp/.codex/worktrees/60ae/codex_control/src/codexctl/web/routes/servers.py) · [site_registry.py](/home/linpp/.codex/worktrees/60ae/codex_control/src/codexctl/sites/registry.py)
+
+### dispatch_prompt_template
+
+管理员配置的任务分发提示词生成代码，最多保存一条全局记录。
+
+| 字段 | 类型 | 主键位置 | 显式非空 | 默认值 | 含义 |
+| --- | --- | --- | --- | --- | --- |
+| `id` | INTEGER | 1 | 否 | 未声明 | 固定主键 `1`，由 `CHECK (id = 1)` 约束。 |
+| `code` | TEXT | — | 是 | 未声明 | 受限 Python 表达式代码，用于生成新导入批次的初始提示词。 |
+| `updated_at` | REAL | — | 是 | 未声明 | 最近保存时间，Unix 时间戳。 |
+
+- 主键 `(id)`。
+- CHECK 约束 `id = 1`。
+
+[prompts.py](/home/linpp/.codex/worktrees/60ae/codex_control/src/codexctl/dispatch/prompts.py)
+
+### dispatch_defaults
+
+管理员配置的任务分发默认执行选项，最多保存一条全局记录。
+
+| 字段 | 类型 | 主键位置 | 显式非空 | 默认值 | 含义 |
+| --- | --- | --- | --- | --- | --- |
+| `id` | INTEGER | 1 | 否 | 未声明 | 固定主键 `1`，由 `CHECK (id = 1)` 约束。 |
+| `model` | TEXT | — | 是 | 未声明 | 新导入批次默认使用的模型 ID。 |
+| `reasoning_effort` | TEXT | — | 是 | 未声明 | 新导入批次默认使用的思考程度。 |
+
+- 主键 `(id)`。
+- CHECK 约束 `id = 1`。
+
+无记录时应用回退到内置默认值。
+
+[dispatch_tasks.py](/home/linpp/.codex/worktrees/60ae/codex_control/src/codexctl/dispatch/tasks.py)
+
 ### dispatch_skills
 
 管理员上传的当前 Skill ZIP 包及元信息。
@@ -472,6 +541,7 @@ host、port、host_key 变更会增加 revision 并删除旧清单和接入令�
 | `reasoning_effort` | TEXT | — | 否 | 未声明 | 执行思考程度。新预览设置应用默认值，历史记录可为空。 |
 | `sandbox` | TEXT | — | 是 | `'danger-full-access'` | 执行沙箱模式。当前新建任务使用 danger-full-access，旧库默认值存在兼容差异。 |
 | `working_directory` | TEXT | — | 否 | 未声明 | 执行工作目录。新预览设置用户家目录下的 wp_front，允许成员修改。 |
+| `run_immediately` | INTEGER | — | 是 | `0` | 是否允许与同一执行用户的其他批次并行调度，0 或 1。 |
 | `status` | TEXT | — | 是 | 未声明 | 分发状态，见任务状态说明。 |
 | `created_at` | INTEGER | — | 是 | 未声明 | 预览创建时间，Unix 秒。 |
 | `confirmed_at` | INTEGER | — | 否 | 未声明 | 人工确认入队时间，Unix 秒。 |
@@ -513,6 +583,22 @@ status 表示分发过程，turn_status 表示 Codex 轮次。sent 可对应运�
 复合主键保证父任务内行号唯一，额外唯一约束保证父任务内 dispatch_id 唯一。当前新批次流程保持此表为空也属于正常情况。
 
 [dispatch_worker.py](/home/linpp/.codex/worktrees/60ae/codex_control/src/codexctl/dispatch/worker.py) · [web/dispatch_views.py](/home/linpp/.codex/worktrees/60ae/codex_control/src/codexctl/web/routes/dispatch.py)
+
+### dispatch_tool_calls
+
+父会话调用原生项目会话工具的请求与响应缓存，用于断线重放和幂等保护。
+
+| 字段 | 类型 | 主键位置 | 显式非空 | 默认值 | 含义 |
+| --- | --- | --- | --- | --- | --- |
+| `task_id` | TEXT | 1 | 是 | 未声明 | 所属父任务 ID。 |
+| `call_id` | TEXT | 2 | 是 | 未声明 | Codex App Server 工具调用标识。 |
+| `tool` | TEXT | — | 是 | 未声明 | 调用的工具名称。 |
+| `response` | TEXT | — | 否 | 未声明 | JSON 编码的工具返回结果；尚无响应时表示调用处于待核对状态。 |
+
+- 主键 `(task_id, call_id)`。
+- 外键 `task_id` → `dispatch_tasks.id`，删除规则 `CASCADE`，更新规则 `NO ACTION`。
+
+[threads.py](/home/linpp/.codex/worktrees/60ae/codex_control/src/codexctl/dispatch/threads.py)
 
 ### account_models
 
@@ -729,10 +815,11 @@ status 表示分发过程，turn_status 表示 Codex 轮次。sent 可对应运�
 | 状态 | 含义 |
 | --- | --- |
 | `active` | 正常账号，参与自动刷新和额度轮询 |
-| `disabled` | 停用账号，自动刷新和网关认证会检查该状态 |
+| `disabled` | 停用账号，自动刷新和网关认证会检查该状态；停用前状态保存在 `disabled_from_status` |
 | `needs_relogin` | 刷新失败且需要重新登录或凭证恢复 |
+| `deleted` | 已软删除账号；清除 `account_secrets` 凭证并保留账号标签及历史配额、分配与审计记录 |
 
-重新登录成功后更新凭证和元信息，已停用账号保持停用状态。重试性失败记录 `retry_count`、`next_retry_at` 和 `last_error`。 [repo.py](/home/linpp/.codex/worktrees/60ae/codex_control/src/codexctl/repo.py) · [refresher.py](/home/linpp/.codex/worktrees/60ae/codex_control/src/codexctl/accounts/refresher.py)
+停用账号重新启用时通过 `disabled_from_status` 恢复原状态；停用期间重新登录成功后会将 `disabled_from_status` 更新为 `active` 并保持停用状态。重试性失败记录 `retry_count`、`next_retry_at` 和 `last_error`。 [repo.py](/home/linpp/.codex/worktrees/60ae/codex_control/src/codexctl/repo.py) · [refresher.py](/home/linpp/.codex/worktrees/60ae/codex_control/src/codexctl/accounts/refresher.py)
 
 ### 分发与轮次状态
 
@@ -747,7 +834,7 @@ status 表示分发过程，turn_status 表示 Codex 轮次。sent 可对应运�
 | `cancelling` | 已请求取消，等待 Worker 处理 |
 | `cancelled` | 已记录取消结果，原轮次可能仍需根据错误说明核对 |
 
-`turn_status` 使用 `inProgress`、`completed`、`failed`、`interrupted`、`unknown`，未取得轮次回执时可以为空。Worker 重启会把发送中的任务和运行中的轮次标记为未知，并处理已有子记录及取消中的记录。当前领取条件阻止同一执行用户或重叠站点的已知运行任务并发，`unknown` 记录尚未纳入该阻止条件。 [dispatch_worker.py](/home/linpp/.codex/worktrees/60ae/codex_control/src/codexctl/dispatch/worker.py) · [web/dispatch_views.py](/home/linpp/.codex/worktrees/60ae/codex_control/src/codexctl/web/routes/dispatch.py)
+`turn_status` 使用 `inProgress`、`completed`、`failed`、`interrupted`、`unknown`，未取得轮次回执时可以为空。Worker 重启会把发送中的任务和运行中的轮次标记为未知，并处理已有子记录及取消中的记录。当前领取条件默认阻止同一执行用户或重叠站点的已知运行任务并发；当任务设置 `run_immediately=1` 时允许与同一执行用户的其他批次并行，但仍阻止与重叠目标站点并发及超过 Worker 最大并发数，`unknown` 记录尚未纳入该阻止条件。 [dispatch_worker.py](/home/linpp/.codex/worktrees/60ae/codex_control/src/codexctl/dispatch/worker.py) · [web/dispatch_views.py](/home/linpp/.codex/worktrees/60ae/codex_control/src/codexctl/web/routes/dispatch.py)
 
 ### 网关请求状态
 
@@ -798,7 +885,7 @@ AES-GCM 字节格式由 12 字节随机 nonce 和包含认证标签的加密结�
 ### 旧数据库兼容
 
 - `db.connect()` 通过检查字段是否存在执行增量迁移，当前使用字段检测管理结构版本。
-- 迁移补齐账号展示名、日志模型信息、上传原件、任务执行选项、会话 UID、管理员密码配置标记和模型可选标记等字段。
+- 迁移补齐账号展示名与停用前状态、日志模型信息、上传原件、任务执行选项与立即执行标记、会话 UID、管理员密码配置标记、服务器面板凭据和模型可选标记等字段，并通过 `CREATE TABLE IF NOT EXISTS` 补充新增配置与状态表。
 - 新建表的 `dispatch_tasks.sandbox` 默认值为 `danger-full-access`。为缺少该列的旧表补列时，默认值为 `workspace-write`，已有数据库保留该默认值。执行前由当前应用再次校验选项。
 - 旧版按账号绑定的 API Key 会重建为按用户绑定的结构，每个用户优先保留与当前分配匹配、最近使用的有效 Key，其余记录转为撤销状态。
 - 重建过程中保留 API 用量历史，删除旧 `api_key_models` 表。旧 Key 的可显示密文为空，重置后由当前流程补齐。
@@ -1067,7 +1154,8 @@ CREATE TABLE accounts (
     retry_count INTEGER NOT NULL DEFAULT 0,
     next_retry_at INTEGER,
     created_at INTEGER NOT NULL,
-    display_name TEXT
+    display_name TEXT,
+    disabled_from_status TEXT
 );
 
 CREATE TABLE account_secrets (
@@ -1176,6 +1264,9 @@ CREATE TABLE site_servers (
     public_key TEXT NOT NULL,
     private_key BLOB NOT NULL,
     revision INTEGER NOT NULL DEFAULT 0,
+    panel_url TEXT,
+    panel_username TEXT,
+    panel_password BLOB,
     UNIQUE (host, port)
 );
 
@@ -1194,6 +1285,29 @@ CREATE TABLE site_enrollments (
     token_hash TEXT NOT NULL UNIQUE,
     token_ciphertext BLOB NOT NULL,
     expires_at INTEGER NOT NULL
+);
+
+CREATE TABLE site_inventory_generations (
+    server_id TEXT PRIMARY KEY REFERENCES site_servers(id) ON DELETE CASCADE,
+    generation INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE site_domain_refreshes (
+    server_id TEXT NOT NULL REFERENCES site_servers(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL,
+    PRIMARY KEY (server_id, task_id)
+);
+
+CREATE TABLE dispatch_prompt_template (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    code TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE dispatch_defaults (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    model TEXT NOT NULL,
+    reasoning_effort TEXT NOT NULL
 );
 
 CREATE TABLE dispatch_skills (
@@ -1235,6 +1349,7 @@ CREATE TABLE dispatch_tasks (
     reasoning_effort TEXT,
     sandbox TEXT NOT NULL DEFAULT 'danger-full-access',
     working_directory TEXT,
+    run_immediately INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     confirmed_at INTEGER,
@@ -1258,6 +1373,14 @@ CREATE TABLE dispatch_children (
     error TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (task_id, row_number),
     UNIQUE (task_id, dispatch_id)
+);
+
+CREATE TABLE dispatch_tool_calls (
+    task_id TEXT NOT NULL REFERENCES dispatch_tasks(id) ON DELETE CASCADE,
+    call_id TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    response TEXT,
+    PRIMARY KEY (task_id, call_id)
 );
 
 CREATE TABLE account_models (
